@@ -1,6 +1,4 @@
-diff -ru less-444.orig/ttyin.c less-444/ttyin.c
---- less-444.orig/ttyin.c	2011-04-12 00:04:23.000000000 +0200
-+++ less-444/ttyin.c	2012-06-15 14:49:18.465893032 +0200
++++ src/noux-pkg/less/ttyin.c	2012-06-15 14:49:18.465893032 +0200
 @@ -74,7 +74,9 @@
  	/* The __open() system call translates "/dev/tty" to "con". */
  	tty = __open("/dev/tty", OPEN_READ);
