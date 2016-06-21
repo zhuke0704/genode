@@ -28,7 +28,7 @@ namespace Lx {
 }
 
 
-class Lx::Malloc
+class Lx::Malloc : public Genode::Allocator
 {
 	public:
 
@@ -56,11 +56,23 @@ class Lx::Malloc
 		 */
 		virtual bool inside(addr_t const addr) const = 0;
 
+		/**
+		 * Genode alllocator interface
+		 */
+		bool need_size_for_free() const { return false; }
+
+		size_t overhead(size_t size) const { return 0; }
+
+		bool alloc(size_t size, void **out_addr)
+		{
+			*out_addr = alloc(size);
+			return *our_addr ? true : false;
+		}
+
+		void free(void *addr, size_t size) { free(addr); }
+
 		static Malloc &mem();
 		static Malloc &dma();
 };
-
-
-void *operator new (Genode::size_t, Lx::Malloc &);
 
 #endif /* _LX_KIT__MALLOC_H_ */
