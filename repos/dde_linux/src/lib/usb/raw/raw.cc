@@ -792,7 +792,7 @@ class Usb::Root : public Genode::Root_component<Session_component>
 
 			try {
 				Xml_node config_node = Lx_kit::Env::instance().config_rom().xml();
-				Xml_node raw = config_node().sub_node("raw");
+				Xml_node raw = config_node.sub_node("raw");
 				Genode::Session_label  label(args);
 				Genode::Session_policy policy(label, raw);
 
