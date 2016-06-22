@@ -59,17 +59,17 @@ class Lx::Malloc : public Genode::Allocator
 		/**
 		 * Genode alllocator interface
 		 */
-		bool need_size_for_free() const { return false; }
+		bool need_size_for_free() const override { return false; }
 
-		size_t overhead(size_t size) const { return 0; }
+		size_t overhead(size_t size) const override { return 0; }
 
-		bool alloc(size_t size, void **out_addr)
+		bool alloc(size_t size, void **out_addr) override
 		{
 			*out_addr = alloc(size);
-			return *our_addr ? true : false;
+			return *out_addr ? true : false;
 		}
 
-		void free(void *addr, size_t size) { free(addr); }
+		void free(void *addr, size_t size) override { free(addr); }
 
 		static Malloc &mem();
 		static Malloc &dma();
