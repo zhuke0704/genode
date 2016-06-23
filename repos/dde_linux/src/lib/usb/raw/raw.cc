@@ -764,9 +764,9 @@ class Usb::Root : public Genode::Root_component<Session_component>
 
 		void _handle_config(unsigned)
 		{
-			Lx_kit::Env::instance().config_rom().update();
+			Lx_kit::env().config_rom().update();
 
-			Genode::Xml_node config = Lx_kit::Env::instance().config_rom().xml();
+			Genode::Xml_node config = Lx_kit::env().config_rom().xml();
 
 			if (!_config_reporter.enabled())
 				_config_reporter.enabled(true);
@@ -791,7 +791,7 @@ class Usb::Root : public Genode::Root_component<Session_component>
 			using namespace Genode;
 
 			try {
-				Xml_node config_node = Lx_kit::Env::instance().config_rom().xml();
+				Xml_node config_node = Lx_kit::env().config_rom().xml();
 				Xml_node raw = config_node.sub_node("raw");
 				Genode::Session_label  label(args);
 				Genode::Session_policy policy(label, raw);
@@ -844,7 +844,7 @@ class Usb::Root : public Genode::Root_component<Session_component>
 		: Genode::Root_component<Session_component>(&env.ep().rpc_ep(), md_alloc),
 			_env(env)
 		{
-			Lx_kit::Env::instance().config_rom().sigh(_config_dispatcher);
+			Lx_kit::env().config_rom().sigh(_config_dispatcher);
 		}
 };
 

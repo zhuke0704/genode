@@ -710,7 +710,7 @@ void random_ether_addr(u8 *addr)
 	u8 fallback[] = { 0x2e, 0x60, 0x90, 0x0c, 0x4e, 0x01 };
 	Nic::Mac_address mac;
 
-	Xml_node config_node = Lx_kit::Env::instance().config_rom().xml();
+	Xml_node config_node = Lx_kit::env().config_rom().xml();
 
 	/* try using configured mac */
 	try {

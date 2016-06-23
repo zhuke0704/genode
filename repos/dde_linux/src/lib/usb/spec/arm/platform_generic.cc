@@ -24,11 +24,11 @@
 
 Genode::Ram_dataspace_capability
 Lx::backend_alloc(Genode::addr_t size, Genode::Cache_attribute cached) {
-	return Lx_kit::Env::instance().env().ram().alloc(size, cached); }
+	return Lx_kit::env().env().ram().alloc(size, cached); }
 
 
 void Lx::backend_free(Genode::Ram_dataspace_capability cap) {
-	return Lx_kit::Env::instance().env().ram().free(cap); }
+	return Lx_kit::env().env().ram().free(cap); }
 
 
 /***********************

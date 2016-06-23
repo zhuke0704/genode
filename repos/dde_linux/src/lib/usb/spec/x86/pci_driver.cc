@@ -61,7 +61,7 @@ class Pci_dev_list
 			 * 'Out_of_metadata' exception.
 			 */
 			auto handler = [&] () {
-				Lx_kit::Env::instance().env().parent().upgrade(Lx::pci()->cap(),
+				Lx_kit::env().env().parent().upgrade(Lx::pci()->cap(),
 				                                               "ram_quota=4096"); };
 
 			/*
@@ -158,7 +158,7 @@ extern "C" int pci_register_driver(struct pci_driver *driver)
 		 * access the USB controller after bootup. For this the ext cap register of
 		 * the PCI config space is checked
 		 */
-		if (Lx_kit::Env::instance().config_rom().xml().attribute_value("bios_handoff", true))
+		if (Lx_kit::env().config_rom().xml().attribute_value("bios_handoff", true))
 			__pci_fixup_quirk_usb_early_handoff(pci_dev);
 
 		/* call probe function of the Linux driver */

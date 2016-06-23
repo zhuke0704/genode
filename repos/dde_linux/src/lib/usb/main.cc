@@ -106,7 +106,7 @@ static void run_linux(void *s)
 void start_usb_driver(Genode::Env &env)
 {
 	/* initialize USB env */
-	Lx_kit::Env::construct(env);
+	Lx_kit::construct_env(env);
 	static Services services(env);
 
 	if (services.hid)
@@ -121,8 +121,8 @@ void start_usb_driver(Genode::Env &env)
 	Lx::Scheduler &sched  = Lx::scheduler();
 	Lx::Timer &timer = Lx::timer(&env.ep(), &jiffies);
 
-	Lx::Irq::irq(&env.ep(), &Lx_kit::Env::instance().heap());
-	Lx::Work::work_queue(&Lx_kit::Env::instance().heap());
+	Lx::Irq::irq(&env.ep(), &Lx_kit::env().heap());
+	Lx::Work::work_queue(&Lx_kit::env().heap());
 
 	static Lx::Task linux(run_linux, &services, "linux", Lx::Task::PRIORITY_0,
 	                      Lx::scheduler());

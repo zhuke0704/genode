@@ -54,7 +54,7 @@ struct Services
 	{
 		using namespace Genode;
 
-		Genode::Xml_node config_node = Lx_kit::Env::instance().config_rom().xml();
+		Genode::Xml_node config_node = Lx_kit::env().config_rom().xml();
 		try {
 			Genode::Xml_node node_hid = config_node.sub_node("hid");
 			hid = true;
