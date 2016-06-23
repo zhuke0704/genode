@@ -21,16 +21,15 @@
 
 namespace Lx_kit {
 	class Env;
+
+	Env &env();
+
+	void construct_env(Genode::Env &env);
 }
 
 class Lx_kit::Env
 {
 	private:
-
-		/**
-		 * This variable is instantiated in lx_kit/env.cc
-		 */
-		static Genode::Lazy_volatile_object<Env> _lx_env;
 
 		Genode::Env                   &_env;
 		Genode::Heap                   _heap { _env.ram(), _env.rm() };
@@ -39,12 +38,6 @@ class Lx_kit::Env
 	public:
 
 		Env(Genode::Env &env) : _env(env) { }
-
-		static void construct(Genode::Env &env) {
-			_lx_env.construct(env);
-		}
-
-		static Env &instance() { return *_lx_env; }
 
 		Genode::Env                    &env()        { return _env; }
 		Genode::Heap                   &heap()       { return _heap; }

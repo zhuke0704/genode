@@ -13,7 +13,19 @@
 
 #include <lx_kit/env.h>
 
-/**
+/*
  * Lx_kit enviroment instance
  */
-Genode::Lazy_volatile_object<Lx_kit::Env> Lx_kit::Env::_lx_env;
+static Genode::Lazy_volatile_object<Lx_kit::Env> _env;
+
+
+Lx_kit::Env &Lx_kit::env()
+{
+	return *_env;
+}
+
+
+void Lx_kit::construct_env(Genode::Env &env)
+{
+	_env.construct(env);
+}
