@@ -66,7 +66,7 @@ class Avl_ds : public Genode::Avl_node<Avl_ds>
 			_mem_allocated -= _size;
 
 			Genode::env()->ram_session()->free(_ds);
-			PWRN("free up %lu %lu/%lu hit=%lu/%lu avail=%lu",
+			PWRN("free up %lu %lu/%lu hit=%lu/%lu avail=%zu",
 			     _size, _mem_allocated, _mem_unused, hit, hit_coarse,
 			     Genode::env()->ram_session()->avail());
 		}
@@ -165,7 +165,7 @@ class Avl_ds : public Genode::Avl_node<Avl_ds>
 			if (ds_obj && ds_obj->_used_size == cb)
 				ds_obj->unused();
 			else {
-				PERR("%s unknown memory region %p(%lx)+%zx(%zx)",
+				PERR("%s unknown memory region %p(%lx)+%zx(%lx)",
 				     __func__, pv, ds_obj ? ds_obj->ds_virt() : 0,
 				     cb, ds_obj ? ds_obj->_size : 0);
 			}
