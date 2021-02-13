@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <util/string.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 
 extern "C" long int strtol(const char *nptr, char **endptr, int base)
@@ -22,7 +22,7 @@ extern "C" long int strtol(const char *nptr, char **endptr, int base)
 	long result = 0;
 
 	if (base != 0 && base != 10) {
-		PERR("strtol: base of %d not supported", base);
+		error("strtol: base of ", base, " not supported");
 		return 0;
 	}
 

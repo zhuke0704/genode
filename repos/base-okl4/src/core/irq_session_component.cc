@@ -6,28 +6,23 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/arg_string.h>
 
 /* core includes */
 #include <irq_root.h>
 #include <irq_session_component.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/thread.h>
-#include <l4/schedule.h>
-#include <l4/interrupt.h>
-#include <l4/security.h>
-#include <l4/ipc.h>
-} }
+/* base-internal includes */
+#include <base/internal/native_utcb.h>
+#include <base/internal/okl4.h>
 
 using namespace Okl4;
 using namespace Genode;
@@ -52,8 +47,8 @@ bool Irq_object::_associate()
 	L4_LoadMR(0, _irq);
 	int ret = L4_AllowInterruptControl(L4_rootspace);
 	if (ret != 1) {
-		PERR("L4_AllowInterruptControl returned %d, error code=%ld\n",
-		     ret, L4_ErrorCode());
+		error("L4_AllowInterruptControl returned ", ret, ", error=",
+		      L4_ErrorCode());
 		return false;
 	}
 
@@ -64,8 +59,8 @@ bool Irq_object::_associate()
 	L4_LoadMR(0, _irq);
 	ret = L4_RegisterInterrupt(thread_get_my_global_id(), IRQ_NOTIFY_BIT, 0, 0);
 	if (ret != 1) {
-		PERR("L4_RegisterInterrupt returned %d, error code=%ld\n",
-		     ret, L4_ErrorCode());
+		error("L4_RegisterInterrupt returned ", ret, ", error=",
+		      L4_ErrorCode());
 		return false;
 	}
 
@@ -88,20 +83,20 @@ void Irq_object::_wait_for_irq()
 void Irq_object::start()
 {
 	::Thread::start();
-	_sync_bootup.lock();
+	_sync_bootup.block();
 }
 
 
 void Irq_object::entry()
 {
 	if (!_associate())
-		PERR("Could not associate with IRQ 0x%x", _irq);
+		error("could not associate with IRQ ", Hex(_irq));
 
 	/* thread is up and ready */
-	_sync_bootup.unlock();
+	_sync_bootup.wakeup();
 
 	/* wait for first ack_irq */
-	_sync_ack.lock();
+	_sync_ack.block();
 
 	while (true) {
 
@@ -115,15 +110,14 @@ void Irq_object::entry()
 
 		Genode::Signal_transmitter(_sig_cap).submit(1);
 
-		_sync_ack.lock();
+		_sync_ack.block();
 	}
 }
 
 
 Irq_object::Irq_object(unsigned irq)
 :
-	Thread_deprecated<4096>("irq"),
-	_sync_ack(Lock::LOCKED), _sync_bootup(Lock::LOCKED),
+	Thread(Weight::DEFAULT_WEIGHT, "irq", 4096 /* stack */, Type::NORMAL),
 	_irq(irq)
 { }
 
@@ -133,7 +127,7 @@ Irq_object::Irq_object(unsigned irq)
  ***************************/
 
 
-Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
+Irq_session_component::Irq_session_component(Range_allocator &irq_alloc,
                                              const char      *args)
 :
 	_irq_number(Arg_string::find_arg(args, "irq_number").long_value(-1)),
@@ -142,11 +136,11 @@ Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
 {
 	long msi = Arg_string::find_arg(args, "device_config_phys").long_value(0);
 	if (msi)
-		throw Root::Unavailable();
+		throw Service_denied();
 
-	if (!irq_alloc || irq_alloc->alloc_addr(1, _irq_number).error()) {
-		PERR("Unavailable IRQ 0x%x requested", _irq_number);
-		throw Root::Unavailable();
+	if (irq_alloc.alloc_addr(1, _irq_number).error()) {
+		error("unavailable IRQ ", Hex(_irq_number), " requested");
+		throw Service_denied();
 	}
 
 	_irq_object.start();
@@ -155,7 +149,7 @@ Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
 
 Irq_session_component::~Irq_session_component()
 {
-	PDBG("Not yet implemented!");
+	warning(__func__, " not yet implemented!");
 }
 
 
@@ -171,8 +165,8 @@ void Irq_session_component::sigh(Genode::Signal_context_capability cap)
 }
 
 
-Genode::Irq_session::Info Irq_session_component::info()
+Irq_session::Info Irq_session_component::info()
 {
 	/* no MSI support */
-	return { .type = Genode::Irq_session::Info::Type::INVALID };
+	return { .type = Info::Type::INVALID, .address = 0, .value = 0 };
 }

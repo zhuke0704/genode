@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CANVAS_H_
@@ -34,7 +34,9 @@ namespace Decorator {
 		TEXTURE_ID_WINDOWED
 	};
 
-	Genode::Texture_base const &texture_by_id(Texture_id);
+	Genode::Texture_base const &texture_by_id(Texture_id,
+	                                          Genode::Ram_allocator &,
+	                                          Genode::Region_map &);
 
 	class Canvas_base;
 	template <typename PT> class Canvas;
@@ -45,7 +47,7 @@ namespace Decorator {
 /**
  * Abstract interface of graphics back end
  */
-struct Decorator::Canvas_base
+struct Decorator::Canvas_base : Interface
 {
 	virtual Rect clip() const = 0;
 	virtual void clip(Rect) = 0;
@@ -60,11 +62,14 @@ class Decorator::Canvas : public Decorator::Canvas_base
 {
 	private:
 
-		Genode::Surface<PT> _surface;
+		Genode::Ram_allocator &_ram;
+		Genode::Region_map    &_rm;
+		Genode::Surface<PT>    _surface;
 
 	public:
 
-		Canvas(PT *base, Area size) : _surface(base, size) { }
+		Canvas(PT *base, Area size, Genode::Ram_allocator &ram, Genode::Region_map &rm)
+		: _ram(ram), _rm(rm), _surface(base, size) { }
 
 		Rect clip() const override { return _surface.clip(); }
 
@@ -78,13 +83,14 @@ class Decorator::Canvas : public Decorator::Canvas_base
 		void draw_text(Point pos, Font const &font,
 		               Color color, char const *string) override
 		{
-			Text_painter::paint(_surface, pos, font, color, string);
+			Text_painter::paint(_surface, Text_painter::Position(pos.x(), pos.y()),
+			                    font, color, string);
 		}
 
-		void draw_texture(Point pos, Texture_id id)
+		void draw_texture(Point pos, Texture_id id) override
 		{
 			Genode::Texture<PT> const &texture =
-				static_cast<Genode::Texture<PT> const &>(texture_by_id(id));
+				static_cast<Genode::Texture<PT> const &>(texture_by_id(id, _ram, _rm));
 
 			unsigned const alpha = 255;
 

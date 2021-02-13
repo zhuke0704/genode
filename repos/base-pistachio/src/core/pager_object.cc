@@ -5,14 +5,17 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
 #include <pager.h>
+
+/* base-internal includes */
+#include <base/internal/capability_space_tpl.h>
 
 /* Pistachio includes */
 namespace Pistachio {
@@ -40,7 +43,7 @@ void Pager_object::wake_up()
 	L4_LoadMR(1, 0);                    /* fault address */
 	L4_LoadMR(2, (unsigned long)this);  /* instruction pointer */
 
-	L4_Call(cap().dst());
+	L4_Call(Capability_space::ipc_cap_data(cap()).dst);
 }
 
 

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__NATIVE_PD_COMPONENT_H_
@@ -27,7 +27,7 @@ namespace Genode {
 }
 
 
-class Genode::Native_pd_component : public Rpc_object<Nova_native_pd>
+class Genode::Native_pd_component : public Rpc_object<Pd_session::Native_pd>
 {
 	private:
 
@@ -40,7 +40,7 @@ class Genode::Native_pd_component : public Rpc_object<Nova_native_pd>
 		~Native_pd_component();
 
 		/**
-		 * Nova_native_pd interface
+		 * Native_pd interface
 		 */
 		Native_capability alloc_rpc_cap(Native_capability, addr_t, addr_t) override;
 		void imprint_rpc_cap(Native_capability, unsigned long) override;

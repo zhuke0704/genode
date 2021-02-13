@@ -22,10 +22,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REPORT_SESSION__REPORT_SESSION_H_
@@ -44,12 +44,25 @@ namespace Report {
 	using Genode::size_t;
 
 	struct Session;
+	struct Session_client;
 }
 
 
 struct Report::Session : Genode::Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Report"; }
+
+	/*
+	 * A report session consumes a dataspace capability for the server's
+	 * session-object allocation, the session capability, and a dataspace
+	 * capability for the report buffer.
+	 */
+	enum { CAP_QUOTA = 3 };
+
+	typedef Session_client Client;
 
 	/**
 	 * Request the dataspace used to carry reports and responses

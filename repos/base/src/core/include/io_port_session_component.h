@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IO_PORT_SESSION_COMPONENT_H_
@@ -30,16 +30,15 @@ namespace Genode {
 	{
 		private:
 
-			Range_allocator *_io_port_alloc;
-			unsigned short   _base;
-			unsigned short   _size;
+			Range_allocator &_io_port_alloc;
+			unsigned short   _base = 0;
+			unsigned short   _size = 0;
 
 			/**
 			 * Check if access exceeds range
              */
 			bool _in_bounds(unsigned short address, unsigned width) {
 				return (address >= _base) && (address + width <= _base + _size); }
-
 
 		public:
 
@@ -49,9 +48,9 @@ namespace Genode {
 			 * \param io_port_alloc  IO_PORT region allocator
 			 * \param args           session construction arguments, in
 			 *                       particular port base and size
-			 * \throw                Root::Invalid_args
+			 * \throw                Service_denied
 			 */
-			Io_port_session_component(Range_allocator *io_port_alloc,
+			Io_port_session_component(Range_allocator &io_port_alloc,
 			                          const char      *args);
 
 			/**
@@ -64,13 +63,13 @@ namespace Genode {
 			 ** Io-port session interface **
 			 *******************************/
 
-			unsigned char  inb(unsigned short);
-			unsigned short inw(unsigned short);
-			unsigned       inl(unsigned short);
+			unsigned char  inb(unsigned short) override;
+			unsigned short inw(unsigned short) override;
+			unsigned       inl(unsigned short) override;
 
-			void outb(unsigned short, unsigned char);
-			void outw(unsigned short, unsigned short);
-			void outl(unsigned short, unsigned);
+			void outb(unsigned short, unsigned char)  override;
+			void outw(unsigned short, unsigned short) override;
+			void outl(unsigned short, unsigned)       override;
 	};
 }
 

@@ -5,16 +5,17 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__AVL_TREE_H_
 #define _INCLUDE__UTIL__AVL_TREE_H_
 
 #include <util/misc_math.h>
+#include <util/noncopyable.h>
 
 namespace Genode {
 	
@@ -24,7 +25,7 @@ namespace Genode {
 }
 
 
-class Genode::Avl_node_base
+class Genode::Avl_node_base : Noncopyable
 {
 	protected:
 
@@ -58,9 +59,11 @@ class Genode::Avl_node_base
 			virtual void recompute(Avl_node_base *) { }
 		};
 
-		Avl_node_base *_child[2];  /* left and right subtrees */
-		Avl_node_base *_parent;    /* parent of subtree       */
-		unsigned char  _depth;     /* depth of subtree        */
+		struct {
+			Avl_node_base *_child[2];  /* left and right subtrees */
+			Avl_node_base *_parent;    /* parent of subtree       */
+			unsigned char  _depth;     /* depth of subtree        */
+		};
 
 	public:
 
@@ -161,6 +164,19 @@ struct Genode::Avl_node : Avl_node_base
 	 * \noapi
 	 */
 	void recompute() { }
+
+	/**
+	 * Apply a functor (read-only) to every node within this subtree
+	 *
+	 * \param functor  function that takes a const NT reference
+	 */
+	template <typename FUNC>
+	void for_each(FUNC && functor) const
+	{
+		if (NT * l = child(Avl_node<NT>::LEFT))  l->for_each(functor);
+		functor(*static_cast<NT const *>(this));
+		if (NT * r = child(Avl_node<NT>::RIGHT)) r->for_each(functor);
+	}
 };
 
 
@@ -179,17 +195,17 @@ class Genode::Avl_tree : Avl_node<NT>
 		 */
 		class Policy : public Avl_node_base::Policy
 		{
-			bool higher(Avl_node_base *n1, Avl_node_base *n2) const
+			bool higher(Avl_node_base *n1, Avl_node_base *n2) const override
 			{
 				return static_cast<NT *>(n1)->higher(static_cast<NT *>(n2));
 			}
 
-			void recompute(Avl_node_base *node)
+			void recompute(Avl_node_base *node) override
 			{
 				static_cast<NT *>(node)->recompute();
 			}
 
-		} _policy;
+		} _policy { };
 
 	public:
 
@@ -209,6 +225,17 @@ class Genode::Avl_tree : Avl_node<NT>
 		 * \return  first node, or nullptr if the tree is empty
 		 */
 		inline NT *first() const { return this->child(Avl_node<NT>::LEFT); }
+
+		/**
+		 * Apply a functor (read-only) to every node within the tree
+		 *
+		 * \param functor  function that takes a const NT reference
+		 *
+		 * The iteration order corresponds to the order of the keys
+		 */
+		template <typename FUNC>
+		void for_each(FUNC && functor) const {
+			if (first()) first()->for_each(functor); }
 };
 
 #endif /* _INCLUDE__UTIL__AVL_TREE_H_ */

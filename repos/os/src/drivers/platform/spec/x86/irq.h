@@ -5,22 +5,22 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#pragma once
+#ifndef _X86__IRQ_H_
+#define _X86__IRQ_H_
 
 #include <base/rpc_server.h>
-
+#include <base/allocator.h>
 #include <util/list.h>
-
-#include <irq_session/irq_session.h>
-#include <irq_session/capability.h>
+#include <irq_session/connection.h>
 
 /* platform local includes */
+#include <pci_config_access.h>
 #include <irq_proxy.h>
 
 
@@ -31,26 +31,30 @@ namespace Platform {
 }
 
 
-class Platform::Irq_session_component : public Genode::Rpc_object<Genode::Irq_session>,
-                                        public Genode::List<Irq_session_component>::Element
+class Platform::Irq_session_component : public  Genode::Rpc_object<Genode::Irq_session>,
+                                        private Genode::List<Irq_session_component>::Element
 {
 	private:
 
-		unsigned                        _gsi;
-		Genode::Irq_sigh                _irq_sigh;
-		Genode::Irq_session_capability  _irq_cap;
-		Genode::Irq_session::Info       _msi_info;
+		friend class Genode::List<Irq_session_component>;
+
+		unsigned                  _gsi;
+		Platform::Irq_sigh        _irq_sigh { };
+		Genode::Irq_session::Info _msi_info { };
+
+		Genode::Constructible<Genode::Irq_connection> _irq_conn { };
 
 	public:
 
 		enum { INVALID_IRQ = 0xffU };
 
-		Irq_session_component(unsigned, Genode::addr_t);
+		Irq_session_component(unsigned, Genode::addr_t, Genode::Env &,
+		                      Genode::Allocator &heap);
 		~Irq_session_component();
 
 		bool msi()
 		{
-			return _irq_cap.valid() &&
+			return _irq_conn.constructed() &&
 			       _msi_info.type == Genode::Irq_session::Info::Type::MSI;
 		}
 
@@ -65,8 +69,11 @@ class Platform::Irq_session_component : public Genode::Rpc_object<Genode::Irq_se
 
 		void ack_irq() override;
 		void sigh(Genode::Signal_context_capability) override;
-		Info info() override { 
-			return { .type = Genode::Irq_session::Info::Type::INVALID }; }
+
+		Info info() override
+		{
+			return { .type = Info::Type::INVALID, .address = 0, .value = 0 };
+		}
 };
 
 
@@ -175,6 +182,7 @@ class Platform::Irq_routing : public Genode::List<Platform::Irq_routing>::Elemen
 			_device_pin(device_pin)
 		{ }
 
-		static unsigned short rewrite(unsigned char bus, unsigned char dev,
-		                              unsigned char func, unsigned char pin);
+		static unsigned short rewrite(Pci::Bdf, unsigned char pin);
 };
+
+#endif /* _X86__IRQ_H_ */

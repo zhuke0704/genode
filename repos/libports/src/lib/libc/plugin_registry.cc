@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <libc-plugin/plugin_registry.h>
@@ -40,20 +40,6 @@ using namespace Libc;
 Plugin *Plugin_registry::get_plugin_for_access(char const *path, int amode) {
 	GET_PLUGIN_FOR(access, path, amode) }
 
-Plugin *Plugin_registry::get_plugin_for_execve(char const *filename, char *const argv[],
-        char *const envp[]) {
-	GET_PLUGIN_FOR(execve, filename, argv, envp) }
-
-
-Plugin *Plugin_registry::get_plugin_for_freeaddrinfo(struct addrinfo *res) {
-	GET_PLUGIN_FOR(freeaddrinfo, res) }
-
-
-Plugin *Plugin_registry::get_plugin_for_getaddrinfo(const char *node, const char *service,
-                                                    const struct addrinfo *hints,
-                                                    struct addrinfo **res) {
-	GET_PLUGIN_FOR(getaddrinfo, node, service, hints, res) }
-
 
 Plugin *Plugin_registry::get_plugin_for_mkdir(const char *path, mode_t mode) {
 	GET_PLUGIN_FOR(mkdir, path, mode) }
@@ -67,7 +53,7 @@ Plugin *Plugin_registry::get_plugin_for_pipe() {
 	GET_PLUGIN_FOR(pipe) }
 
 
-Plugin *Plugin_registry::get_plugin_for_readlink(const char *path, char *buf, size_t bufsiz) {
+Plugin *Plugin_registry::get_plugin_for_readlink(const char *path, char *buf, ::size_t bufsiz) {
 	GET_PLUGIN_FOR(readlink, path, buf, bufsiz) }
 
 

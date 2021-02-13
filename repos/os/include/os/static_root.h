@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__STATIC_ROOT_H_
@@ -51,14 +51,14 @@ class Genode::Static_root : public Genode::Rpc_object<Genode::Typed_root<SESSION
 		 ** Root interface **
 		 ********************/
 
-		Capability<Session> session(Root::Session_args const &args, Affinity const &)
+		Capability<Session> session(Root::Session_args const &, Affinity const &) override
 		{
 			return _session;
 		}
 
-		void upgrade(Capability<Session>, Root::Upgrade_args const &) { }
+		void upgrade(Capability<Session>, Root::Upgrade_args const &) override { }
 
-		void close(Capability<Session>) { }
+		void close(Capability<Session>) override { }
 };
 
 #endif /* _INCLUDE__OS__STATIC_ROOT_H_ */

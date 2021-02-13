@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__ATTACHED_RAM_DATASPACE_H_
 #define _INCLUDE__BASE__ATTACHED_RAM_DATASPACE_H_
 
-#include <ram_session/ram_session.h>
 #include <util/touch.h>
+#include <base/ram_allocator.h>
 #include <base/env.h>
 
 namespace Genode { class Attached_ram_dataspace; }
@@ -34,12 +34,12 @@ class Genode::Attached_ram_dataspace
 {
 	private:
 
-		size_t                    _size;
-		Ram_session              *_ram;
-		Region_map               *_rm;
-		Ram_dataspace_capability  _ds;
+		size_t                    _size = 0;
+		Ram_allocator            *_ram  = nullptr;
+		Region_map               *_rm   = nullptr;
+		Ram_dataspace_capability  _ds { };
 		void                     *_local_addr = nullptr;
-		Cache_attribute const     _cached;
+		Cache_attribute const     _cached = CACHED;
 
 		template <typename T>
 		static void _swap(T &v1, T &v2) { T tmp = v1; v1 = v2; v2 = tmp; }
@@ -60,12 +60,10 @@ class Genode::Attached_ram_dataspace
 			try {
 				_ds         = _ram->alloc(_size, _cached);
 				_local_addr = _rm->attach(_ds);
-
-			/* revert allocation if attaching the dataspace failed */
-			} catch (Region_map::Attach_failed) {
-				_ram->free(_ds);
-				throw;
 			}
+			/* revert allocation if attaching the dataspace failed */
+			catch (Region_map::Region_conflict)   { _ram->free(_ds); throw; }
+			catch (Region_map::Invalid_dataspace) { _ram->free(_ds); throw; }
 
 			/*
 			 * Eagerly map dataspace if used for DMA
@@ -85,33 +83,26 @@ class Genode::Attached_ram_dataspace
 			}
 		}
 
+		/*
+		 * Noncopyable
+		 */
+		Attached_ram_dataspace(Attached_ram_dataspace const &);
+		Attached_ram_dataspace &operator = (Attached_ram_dataspace const &);
+
 	public:
 
 		/**
 		 * Constructor
 		 *
-		 * \throw Ram_session::Alloc_failed
-		 * \throw Rm_session::Attach_failed
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
+		 * \throw Region_map::Region_conflict
+		 * \throw Region_map::Invalid_dataspace
 		 */
-		Attached_ram_dataspace(Ram_session &ram, Region_map &rm,
+		Attached_ram_dataspace(Ram_allocator &ram, Region_map &rm,
 		                       size_t size, Cache_attribute cached = CACHED)
 		:
 			_size(size), _ram(&ram), _rm(&rm), _cached(cached)
-		{
-			_alloc_and_attach();
-		}
-
-		/**
-		 * Constructor
-		 *
-		 * \noapi
-		 * \deprecated  Use the constructor with the 'Ram_session &' and
-		 *              'Region_map &' arguments instead.
-		 */
-		Attached_ram_dataspace(Ram_session *ram, size_t size,
-		                       Cache_attribute cached = CACHED)
-		:
-			_size(size), _ram(ram), _rm(env()->rm_session()), _cached(cached)
 		{
 			_alloc_and_attach();
 		}
@@ -154,14 +145,14 @@ class Genode::Attached_ram_dataspace
 		 *
 		 * The content of the original dataspace is not retained.
 		 */
-		void realloc(Ram_session *ram_session, size_t new_size)
+		void realloc(Ram_allocator *ram_allocator, size_t new_size)
 		{
 			if (new_size < _size) return;
 
 			_detach_and_free_dataspace();
 
 			_size = new_size;
-			_ram  = ram_session;
+			_ram  = ram_allocator;
 
 			_alloc_and_attach();
 		}

@@ -1,67 +1,12 @@
-##
-# Read the location of the Fiasco user directory from 'etc/fiasco.conf'
-#
-proc l4_dir { } {
-	global _l4_dir
+proc binary_name_ld_lib_so { } { return "ld-fiasco.lib.so" }
+proc binary_name_core_o    { } { return "core-fiasco.o"    }
+proc binary_name_timer     { } { return "fiasco_timer_drv" }
 
-	if {![info exists _l4_dir]} {
-		if {[file exists etc/fiasco.conf]} {
-			set _l4_dir [exec sed -n "/^L4_BUILD_DIR/s/^.*=\\s*//p" etc/fiasco.conf]
-			if {[file exists $_l4_dir]} { return $_l4_dir }
-		}
+proc kernel_files { } { return { fiasco sigma0-fiasco bootstrap-fiasco } }
 
-		set _l4_dir "[pwd]/l4"
-		if {![file exists $_l4_dir]} {
-			puts -nonewline stderr "Error: Could neither find the L4 build directory "
-			puts -nonewline stderr "within '<genode-build-dir>/l4' nor at a location "
-			puts -nonewline stderr "specified via 'L4_BUILD_DIR = <l4v2-build-dir>' "
-			puts            stderr "in <genode-build-dir>/etc/fiasco.conf'."
-			exit 1
-		}
-	}
-	return $_l4_dir
-}
-
-
-##
-# Return whether the l4-buid-directory is provided from the outside
-#
-proc l4_dir_external { } {
-	if {[l4_dir] == "[pwd]/l4"} { return 0 }
-	return 1
-}
-
-
-##
-# Return the location of the Fiasco kernel
-#
-proc fiasco { } {
-	return [kernel_location_from_config_file etc/fiasco.conf [pwd]/kernel/fiasco/fiasco]
-}
-
-
-##
-# Return whether fiasco kernel is provided from the outside
-#
-proc fiasco_external { } {
-	if {[fiasco] == "[pwd]/kernel/fiasco/fiasco"} { return 0 }
-	return 1
-}
-
-
-proc bin_dir { } {
-	if {[have_spec x86_32]}  { return "[l4_dir]/bin/x86_586" }
-
-	puts stderr "Error: Cannot determine bin directory"
-	exit 1
-}
-
-set fiasco_serial_esc_arg "-serial_esc "
-
-
-proc run_boot_string { } {
-	return "L4 Bootstrapper"
-}
+proc fiasco_serial_esc_arg { } { return "-serial_esc " }
+proc run_boot_string       { } { return "\nL4 Bootstrapper" }
+proc core_link_address     { } { return "0x01000000" }
 
 
 ##
@@ -69,32 +14,48 @@ proc run_boot_string { } {
 #
 proc run_boot_dir {binaries} {
 
-	global fiasco_serial_esc_arg
+	#
+	# Build kernel and dynamic linker on demand, if not yet present in
+	# '[run_dir]/genode/'
+	#
+	set kernel_arg ""
+	set ld_arg     ""
+	if {![file exists [run_dir]/genode/fiasco]}    { set kernel_arg "kernel/fiasco" }
+	if {![file exists [run_dir]/genode/ld.lib.so]} { set ld_arg     "lib/ld/fiasco" }
+	set targets "$kernel_arg $ld_arg"
 
-	exec mkdir -p [run_dir]/fiasco
+	if {[llength $targets]} { build $targets }
+
+	if {$kernel_arg != ""} {
+		file copy -force [pwd]/bin/fiasco           [run_dir]/genode/fiasco
+		file copy -force [pwd]/bin/sigma0-fiasco    [run_dir]/genode/sigma0-fiasco
+		file copy -force [pwd]/bin/bootstrap-fiasco [run_dir]/genode/bootstrap-fiasco
+	}
+
+	build_core_image $binaries
 
 	#
-	# Collect contents of the ISO image
+	# Move kernel files to distinct location within the boot directory so that
+	# we can remove [run_dir]/genode after the core image has been built.
 	#
-	copy_and_strip_genode_binaries_to_run_dir $binaries
+	exec mkdir -p [run_dir]/boot
+	file copy -force [run_dir]/genode/fiasco           [run_dir]/boot/kernel
+	file copy -force [run_dir]/genode/sigma0-fiasco    [run_dir]/boot/sigma0
+	file copy -force [run_dir]/genode/bootstrap-fiasco [run_dir]/boot/bootstrap
+	remove_genode_dir
 
-	if {![fiasco_external]} { build { kernel } }
-	if {![l4_dir_external]} { build { bootstrap sigma0 } }
-
-	# assert existence of the L4 build directory
-	l4_dir
-
-	puts "using fiasco kernel [fiasco]"
-	exec cp [fiasco] [run_dir]/fiasco/fiasco
-	puts "using sigma0/bootstrap at [l4_dir]"
-	exec cp [bin_dir]/l4v2/sigma0 [run_dir]/fiasco
-	exec cp [bin_dir]/bootstrap [run_dir]/fiasco
+	exec mv [run_dir]/image.elf [run_dir]/boot/image.elf
 
 	if {[have_include "image/iso"] || [have_include "image/disk"]} {
-		#
-		# Install isolinux/GRUB files and bender
-		#
-		install_iso_bootloader_to_run_dir
+
+		if {[have_include "image/disk"]} {
+			exec mkdir -p [run_dir]/boot/grub
+			exec cp [genode_dir]/tool/boot/bender [run_dir]/boot/bender
+		}
+
+		if {[have_include "image/iso"]} {
+			install_iso_bootloader_to_run_dir
+		}
 
 		#
 		# Generate GRUB config file
@@ -102,20 +63,16 @@ proc run_boot_dir {binaries} {
 		# The core binary is part of the 'binaries' list but it must
 		# appear right after 'sigma0' as boot module. Hence the special case.
 		#
-		set fh [open "[run_dir]/boot/grub/menu.lst" "WRONLY CREAT TRUNC"]
-		puts $fh "timeout 0"
-		puts $fh "default 0"
-		puts $fh "\ntitle Genode on L4/Fiasco"
-		puts $fh " kernel /boot/bender"
-		puts $fh " module /fiasco/bootstrap -serial -modaddr=0x02000000"
-		puts $fh " module /fiasco/fiasco -serial -jdb_cmd=JH $fiasco_serial_esc_arg"
-		puts $fh " module /fiasco/sigma0"
-		puts $fh " module /genode/core"
-		puts $fh " module /genode/config"
-		foreach binary $binaries {
-			if {$binary != "core"} {
-				puts $fh " module /genode/$binary" } }
-		puts $fh " vbeset 0x117 506070"
+		set fh [open "[run_dir]/boot/grub/grub.cfg" "WRONLY CREAT TRUNC"]
+		puts $fh "set timeout=0"
+		puts $fh "menuentry 'Genode on L4/Fiasco' {"
+		puts $fh " insmod multiboot"
+		puts $fh " multiboot /boot/bender"
+		puts $fh " module /boot/bootstrap -serial"
+		puts $fh " module /boot/kernel -serial -jdb_cmd=JH [fiasco_serial_esc_arg]"
+		puts $fh " module /boot/sigma0"
+		puts $fh " module /boot/image.elf"
+		puts $fh "}"
 		close $fh
 	}
 
@@ -132,14 +89,10 @@ proc run_boot_dir {binaries} {
 		#
 		set fh [open "[run_dir]/config-52-54-00-12-34-56" "WRONLY CREAT TRUNC"]
 		puts $fh " exec /boot/bender"
-		puts $fh " load /fiasco/bootstrap -serial -modaddr=0x02000000"
-		puts $fh " load /fiasco/fiasco -serial -serial_esc -jdb_cmd=JH"
-		puts $fh " load /fiasco/sigma0"
-		puts $fh " load /genode/core"
-		puts $fh " load /genode/config"
-		foreach binary $binaries {
-			if {$binary != "core"} {
-				puts $fh " load /genode/$binary" } }
+		puts $fh " load /boot/bootstrap -serial"
+		puts $fh " load /boot/kernel -serial -serial_esc -jdb_cmd=JH"
+		puts $fh " load /boot/sigma0"
+		puts $fh " load /boot/image.elf"
 		close $fh
 
 		generate_tftp_config
@@ -150,4 +103,19 @@ proc run_boot_dir {binaries} {
 		update_ipxe_boot_dir
 		create_symlink_for_iso
 	}
+}
+
+
+##
+# Base source archive within depot
+#
+proc base_src { } {
+
+	if {[have_spec x86_32]} { return base-fiasco }
+
+	global specs
+
+	puts stderr "Test requires base-fiasco kernel archive, which is missing for this build configuration"
+	puts stderr "  SPECS=\"$specs\""
+	exit 0
 }

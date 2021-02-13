@@ -17,6 +17,20 @@ PRG_DIR := $(dir $(TARGET_MK))
 include $(TARGET_MK)
 
 #
+# Add libgcov if coverage is requested
+#
+ifeq ($(COVERAGE),yes)
+LIBS += libgcov
+endif
+
+#
+# Add libraries for undefined behavior sanitizer if requested
+#
+ifeq ($(SANITIZE_UNDEFINED),yes)
+LIBS += libubsan libsanitizer_common
+endif
+
+#
 # Include lib-import description files
 #
 include $(foreach LIB,$(LIBS),$(call select_from_repositories,lib/import/import-$(LIB).mk))
@@ -25,7 +39,6 @@ include $(foreach LIB,$(LIBS),$(call select_from_repositories,lib/import/import-
 # Add globally defined library supplements
 #
 include $(SPEC_FILES)
-LIBS += $(PRG_LIBS)
 
 #
 # Determine location of $(TARGET_MK) within 'src/', remove trailing slash
@@ -52,7 +65,10 @@ LIBS_TO_VISIT = $(filter-out $(LIBS_READY),$(LIBS))
 #
 gen_prg_rule:
 ifneq ($(LIBS),)
-	@(echo "DEP_$(TARGET).prg = $(foreach l,$(LIBS),$l.lib \$$(DEP_$l.lib))"; \
+	@for i in $(LIBS_TO_VISIT); do \
+	  $(MAKE) $(VERBOSE_DIR) -f $(BASE_DIR)/mk/dep_lib.mk REP_DIR=$(REP_DIR) LIB=$$i; done
+	@(echo "DEP_A_$(TARGET).prg = $(foreach l,$(LIBS),\$${ARCHIVE_NAME($l)} \$$(DEP_A_$l))"; \
+	  echo "DEP_SO_$(TARGET).prg = $(foreach l,$(LIBS),\$${SO_NAME($l)} \$$(DEP_SO_$l))"; \
 	  echo "") >> $(LIB_DEP_FILE)
 endif
 ifneq ($(DEP_MISSING_PORTS),)
@@ -65,20 +81,19 @@ endif
 	  echo "	     REP_DIR=$(REP_DIR) \\"; \
 	  echo "	     PRG_REL_DIR=$(PRG_REL_DIR) \\"; \
 	  echo "	     BUILD_BASE_DIR=$(BUILD_BASE_DIR) \\"; \
-	  echo "	     DEPS=\"\$$(DEP_$(TARGET).prg)\" \\"; \
+	  echo "	     ARCHIVES=\"\$$(sort \$$(DEP_A_$(TARGET).prg))\" \\"; \
+	  echo "	     SHARED_LIBS=\"\$$(sort \$$(DEP_SO_$(TARGET).prg))\" \\"; \
 	  echo "	     SHELL=$(SHELL) \\"; \
-	  echo "	     INSTALL_DIR=\"\$$(INSTALL_DIR)\""; \
+	  echo "	     INSTALL_DIR=\"\$$(INSTALL_DIR)\" \\"; \
+	  echo "	     DEBUG_DIR=\"\$$(DEBUG_DIR)\""; \
 	  echo "") >> $(LIB_DEP_FILE)
-	@for i in $(LIBS_TO_VISIT); do \
-	  $(MAKE) $(VERBOSE_DIR) -f $(BASE_DIR)/mk/dep_lib.mk REP_DIR=$(REP_DIR) LIB=$$i; done
 #
 # Make 'all' depend on the target, which triggers the building of the target
 # and the traversal of the target's library dependencies. But we only do so
 # if the target does not depend on any library with unsatisfied build
 # requirements. In such a case, the target cannot be linked anyway.
 #
-	@(echo ""; \
-	  echo "ifeq (\$$(filter \$$(DEP_$(TARGET).prg:.lib=),\$$(INVALID_DEPS)),)"; \
+	@(echo "ifeq (\$$(filter \$$(DEP_A_$(TARGET).prg:.lib.a=) \$$(DEP_SO_$(TARGET).prg:.lib.so=) $(LIBS),\$$(INVALID_DEPS)),)"; \
 	  echo "all: $(TARGET).prg"; \
 	  echo "endif") >> $(LIB_DEP_FILE)
 #

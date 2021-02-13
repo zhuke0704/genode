@@ -1,167 +1,132 @@
 /*
  * \brief  Fork bomb to stress Genode
  * \author Christian Helmuth
+ * \author Norman Feske
+ * \author Alexander Böttcher
  * \date   2007-08-16
- *
- * The better part of this code is derived from the original init
- * implementation by Norman.
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/env.h>
+#include <base/component.h>
 #include <base/child.h>
-#include <base/sleep.h>
 #include <base/service.h>
-#include <base/snprintf.h>
+#include <base/attached_rom_dataspace.h>
 #include <init/child_policy.h>
-#include <ram_session/connection.h>
-#include <cpu_session/connection.h>
-#include <rom_session/connection.h>
-#include <cap_session/connection.h>
-#include <pd_session/connection.h>
 #include <timer_session/connection.h>
-
-#include <os/config.h>
 #include <os/child_policy_dynamic_rom.h>
-#include <util/xml_node.h>
+#include <os/static_parent_services.h>
 
 using namespace Genode;
 
 
-class Bomb_child_resources
-{
-	protected:
-
-		Genode::Pd_connection  _pd;
-		Genode::Rom_connection _rom;
-		Genode::Ram_connection _ram;
-		Genode::Cpu_connection _cpu;
-
-		typedef String<32> Name;
-		Name _name;
-
-		Genode::Region_map_client _address_space { _pd.address_space() };
-
-		Bomb_child_resources(const char *file_name, const char *name,
-		                     Genode::size_t ram_quota)
-		:
-			_pd(name), _rom(file_name, name), _ram(name), _cpu(name), _name(name)
-		{
-			_ram.ref_account(env()->ram_session_cap());
-			Genode::env()->ram_session()->transfer_quota(_ram.cap(), ram_quota);
-
-			if (!_ram.cap().valid() || !_cpu.cap().valid()) {
-				class Ram_or_cpu_session_not_valid { };
-				throw Ram_or_cpu_session_not_valid();
-			}
-		}
-};
-
-
-class Bomb_child : private Bomb_child_resources,
-                   public  Genode::Child_policy,
-                   public  Genode::List<Bomb_child>::Element
+class Bomb_child : public Child_policy
 {
 	private:
 
-		Init::Child_policy_enforce_labeling _enforce_labeling_policy;
+		Env              &_env;
+		Binary_name const _binary_name;
+		Name        const _label;
+		Cap_quota   const _cap_quota;
+		Ram_quota   const _ram_quota;
 
-		Genode::Child::Initial_thread _initial_thread;
+		Registry<Registered<Parent_service> > &_parent_services;
 
-		/*
-		 * Entry point used for serving the parent interface
-		 */
-		enum { STACK_SIZE =  2048 * sizeof(Genode::addr_t) };
-		Genode::Rpc_entrypoint _entrypoint;
+		Child_policy_dynamic_rom_file _config_policy { _env.rm(), "config", _env.ep().rpc_ep(), &_env.ram() };
 
-		Genode::Child                          _child;
-		Genode::Service_registry              *_parent_services;
-		Genode::Child_policy_dynamic_rom_file  _config_policy;
+		Child _child { _env.rm(), _env.ep().rpc_ep(), *this };
 
 	public:
 
-		Bomb_child(const char       *file_name,
-		           const char       *unique_name,
-		           Genode::size_t    ram_quota,
-		           Cap_session      *cap_session,
-		           Service_registry *parent_services,
-		           unsigned          generation)
+		Bomb_child(Env                                   &env,
+		           Name                            const &binary_name,
+		           Name                            const &label,
+		           Cap_quota                       const  cap_quota,
+		           Ram_quota                       const  ram_quota,
+		           Registry<Registered<Parent_service> > &parent_services,
+		           unsigned                               generation)
 		:
-			Bomb_child_resources(file_name, unique_name, ram_quota),
-			_enforce_labeling_policy(_name.string()),
-			_initial_thread(_cpu, _pd, unique_name),
-			_entrypoint(cap_session, STACK_SIZE, "bomb_ep_child", false),
-			_child(_rom.dataspace(), Genode::Dataspace_capability(),
-			       _pd, _pd, _ram, _ram, _cpu, _initial_thread,
-			       *Genode::env()->rm_session(), _address_space, _entrypoint, *this),
-			_parent_services(parent_services),
-			_config_policy("config", _entrypoint, &_ram)
+			_env(env), _binary_name(binary_name), _label(label),
+			_cap_quota(Child::effective_quota(cap_quota)),
+			_ram_quota(Child::effective_quota(ram_quota)),
+			_parent_services(parent_services)
 		{
-			char client_config[64];
-			snprintf(client_config, sizeof(client_config),
-			         "<config generations=\"%u\"/>", generation);
-			_config_policy.load(client_config, strlen(client_config) + 1);
-
-			_entrypoint.activate();
+			String<64> config("<config generations=\"", generation, "\" master=\"no\"/>");
+			_config_policy.load(config.string(), config.length());
 		}
 
-		~Bomb_child() { PLOG("%s", __PRETTY_FUNCTION__); }
+		~Bomb_child() { log(__PRETTY_FUNCTION__); }
 
 
 		/****************************
 		 ** Child-policy interface **
 		 ****************************/
 
-		const char *name() const { return Bomb_child_resources::_name.string(); }
+		Name name() const override { return _label; }
 
-		void filter_session_args(const char * x, char *args, Genode::size_t args_len)
+		Binary_name binary_name() const override { return _binary_name; }
+
+		void init(Pd_session &pd, Pd_session_capability pd_cap) override
 		{
-			_enforce_labeling_policy.filter_session_args(0, args, args_len);
+			pd.ref_account(_env.pd_session_cap());
+			_env.pd().transfer_quota(pd_cap, _cap_quota);
+			_env.pd().transfer_quota(pd_cap, _ram_quota);
 		}
 
-		Service *resolve_session_request(const char *service_name,
-		                                 const char *args)
+		Pd_session           &ref_pd()           override { return _env.pd(); }
+		Pd_session_capability ref_pd_cap() const override { return _env.pd_session_cap(); }
+
+		Service &_matching_service(Service::Name const &service_name,
+		                           Session_label const &label)
 		{
-			Service * service = nullptr;
+			Service *service = nullptr;
 
 			/* check for config file request */
-			if ((service = _config_policy.resolve_session_request(service_name,
-			                                                      args)))
-				return service;
+			if ((service = _config_policy.resolve_session_request(service_name, label)))
+				return *service;
 
-			return _parent_services->find(service_name);
+			_parent_services.for_each([&] (Service &s) {
+				if (!service && service_name == s.name())
+					service = &s; });
+
+			if (!service)
+				throw Service_denied();
+
+			return *service;
+		}
+
+		Route resolve_session_request(Service::Name const &service_name,
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
+		{
+			return Route { .service = _matching_service(service_name, label),
+			               .label   = label,
+			               .diag    = diag };
 		}
 };
 
 
-/*
- * List of children
- *
- * Access to the children list from different threads
- * must be synchronized via the children lock.
- */
-static Lock             _children_lock;
-static List<Bomb_child> _children;
+typedef Registry<Registered<Bomb_child> > Children;
 
 
 /**
  * Check if a program with the specified name already exists
  */
-static bool child_name_exists(const char *name)
+static bool child_name_exists(Children const &children,
+                              Bomb_child::Name const &name)
 {
-	Bomb_child *c = _children.first();
+	bool found = false;
 
-	for ( ; c; c = c->List<Bomb_child>::Element::next())
-		if (strcmp(c->name(), name) == 0)
-			return true;
+	children.for_each([&] (Bomb_child const &child) {
+		if (!found && child.name() == name)
+			found = true; });
 
-	return false;
+	return found;
 }
 
 
@@ -171,149 +136,152 @@ static bool child_name_exists(const char *name)
  * If a program with the filename as name already exists, we
  * add a counting number as suffix.
  */
-static void get_unique_child_name(const char *filename, char *dst,
-                                  size_t dst_len, unsigned generation)
+static Bomb_child::Name
+unique_child_name(Children const &children, Bomb_child::Name const &binary_name,
+                  unsigned const generation)
 {
-	Lock::Guard lock_guard(_children_lock);
+	/* serialize calls to this function */
+	static Mutex mutex;
+	Mutex::Guard guard(mutex);
 
-	char buf[32];
-	char suffix[8];
-	suffix[0] = 0;
-
-	for (int cnt = 1; true; cnt++) {
-
-		/* build program name composed of filename and numeric suffix */
-		snprintf(buf, sizeof(buf), "%s_g%u%s", filename, generation, suffix);
+	for (unsigned cnt = 1; ; cnt++) {
 
 		/* if such a program name does not exist yet, we are happy */
-		if (!child_name_exists(buf)) {
-			strncpy(dst, buf, dst_len);
+		Bomb_child::Name const unique(binary_name, "_g", generation, ".", cnt);
+		if (!child_name_exists(children, unique.string()))
+			return unique;
+	}
+}
+
+
+struct Bomb
+{
+	Genode::Env &env;
+
+	Constructible<Timer::Connection> timer { };
+
+	Genode::Signal_handler<Bomb> signal_timeout  { env.ep(), *this, &Bomb::destruct_children };
+	Genode::Signal_handler<Bomb> signal_resource { env.ep(), *this, &Bomb::resource_request };
+
+	Attached_rom_dataspace config { env, "config" };
+
+	unsigned round = 0;
+	unsigned const rounds     = config.xml().attribute_value("rounds", 1U);
+	unsigned const generation = config.xml().attribute_value("generations", 1U);
+	unsigned const children   = config.xml().attribute_value("children", 2U);
+	uint64_t const sleeptime  = config.xml().attribute_value("sleep", (uint64_t)2000);
+	size_t   const ram_demand = config.xml().attribute_value("demand", 1024UL * 1024);
+	bool     const master     = config.xml().attribute_value("master", true);
+
+	Heap heap { env.ram(), env.rm() };
+
+	Children child_registry { };
+
+	Static_parent_services<Pd_session, Cpu_session, Rom_session, Log_session, Timer::Session>
+		parent_services { env };
+
+	void construct_children()
+	{
+		size_t const preserved_ram = Pd_connection::RAM_QUOTA;
+		size_t const avail_ram     = env.pd().avail_ram().value;
+
+		if (avail_ram < preserved_ram + ram_demand) {
+			error("RAM demand exceeds available RAM");
 			return;
 		}
 
-		/* increase number of suffix */
-		snprintf(suffix, sizeof(suffix), ".%d", cnt + 1);
-	}
-}
+		Ram_quota const ram_amount { (avail_ram - preserved_ram - ram_demand) / children };
 
-
-/**
- * Start a child
- */
-static int start_child(const char *file_name, Cap_session *cap_session,
-                       size_t ram_quota, Service_registry *parent_services,
-                       unsigned generation)
-{
-	char name[64];
-	get_unique_child_name(file_name, name, sizeof(name), generation);
-
-	Bomb_child *c = new (env()->heap())
-		Bomb_child(file_name, name, ram_quota, cap_session, parent_services,
-		           generation);
-
-	Lock::Guard lock_guard(_children_lock);
-	_children.insert(c);
-	return 0;
-}
-
-
-/**
- * Kill child
- */
-static void exit_child(Bomb_child *child)
-{
-	destroy(env()->heap(), child);
-}
-
-
-/**
- * Request timer service
- *
- * \return  timer session, or 0 if bomb is our parent
- */
-Timer::Session *timer()
-{
-	try {
-		static Timer::Connection timer_inst;
-		return &timer_inst;
-	} catch (Parent::Service_denied) { }
-
-	return 0;
-}
-
-
-int main(int argc, char **argv)
-{
-	Genode::Xml_node node = config()->xml_node();
-
-	unsigned const rounds      = node.attribute_value("rounds", 1U);
-	unsigned const generation  = node.attribute_value("generations", 1U);
-	unsigned const children    = node.attribute_value("children", 2U);
-	unsigned const sleeptime   = node.attribute_value("sleep", 2000U);
-	unsigned long const demand = node.attribute_value("demand", 1024UL * 1024);
-
-	printf("--- bomb started ---\n");
-
-	/* connect to core's cap service used for creating parent capabilities */
-	Cap_connection cap;
-
-	/* names of services provided by the parent */
-	static const char *names[] = {
-		"CAP", "RAM", "RM", "PD", "CPU", "ROM", "LOG", 0 };
-
-	static Service_registry parent_services;
-	for (unsigned i = 0; names[i]; i++)
-		parent_services.insert(new (env()->heap()) Parent_service(names[i]));
-
-	unsigned long avail = env()->ram_session()->avail();
-	unsigned long amount = (avail - demand) / children;
-	if (amount < (demand * children)) {
-		PLOG("I'm a leaf node - generation %u - not enough memory.",
-		     generation);
-		sleep_forever();
-	}
-	if (generation == 0) {
-		PLOG("I'm a leaf node - generation 0");
-		sleep_forever();
-	}
-
-	for (unsigned round = 0; round < rounds ; ++round) {
-		for (unsigned i = children; i; --i)
-			start_child("bomb", &cap, amount, &parent_services, generation - 1);
-
-		/* is init our parent? */
-		if (!timer()) sleep_forever();
-
-		/* don't ask parent for further resources if we ran out of memory */
-		static Signal_receiver sig_rec;
-		static Signal_context  sig_ctx_res_avail;
-		if (round == 0) {
-			/* prevent to block for resource upgrades caused by clients */
-			env()->parent()->resource_avail_sigh(sig_rec.manage(&sig_ctx_res_avail));
+		if (ram_amount.value < (ram_demand * children)) {
+			log("I'm a leaf node - generation ", generation,
+			    " - not enough memory.");
+			return;
 		}
 
-		timer()->msleep(sleeptime);
-		PINF("[%03d] It's time to kill all my children...", round);
+		size_t const avail_caps     = env.pd().avail_caps().value;
+		size_t const preserved_caps = children*30;
 
-		while (1) {
-			Bomb_child *c;
-
-			_children_lock.lock();
-			c = _children.first();
-			if (c) _children.remove(c);
-			_children_lock.unlock();
-
-			if (c) exit_child(c);
-			else break;
+		if (avail_caps < preserved_caps) {
+			log("I ran out of capabilities.");
+			return;
 		}
 
-		PINF("[%03d] Done.", round);
+		Cap_quota const cap_quota { (avail_caps - preserved_caps) / children };
+
+		if (generation == 0) {
+			log("I'm a leaf node - generation 0");
+			return;
+		}
+
+		log("[", round, "] It's time to start all my children...");
+
+		Bomb_child::Name const binary_name("bomb");
+
+		for (unsigned i = children; i; --i) {
+			try {
+				new (heap)
+					Registered<Bomb_child>(child_registry, env, binary_name,
+					                       unique_child_name(child_registry,
+					                                         binary_name,
+					                                         generation - 1),
+					                       cap_quota, ram_amount,
+					                       parent_services, generation - 1);
+			} catch (...) {
+				Genode::error("creation of child ", i, " failed");
+			}
+		}
+
+		/* master if we have a timer connection */
+		if (master)
+			timer->trigger_once(sleeptime * 1000);
 	}
 
-	/* master if we have a timer connection */
-	if (timer())
-		PINF("Done. Going to sleep");
+	void destruct_children()
+	{
+		log("[", round, "] It's time to kill all my children...");
 
-	sleep_forever();
-	return 0;
-}
+		child_registry.for_each([&] (Registered<Bomb_child> &child) {
+			destroy(heap, &child); });
+
+		log("[", round, "] Done.");
+
+		++round;
+
+		/* master if we have a timer connection */
+		if (round == rounds && master) {
+			log("Done. Going to sleep");
+			return;
+		}
+
+		construct_children();
+	}
+
+	void resource_request()
+	{
+		Genode::error("resource request");
+	}
+
+	Bomb(Genode::Env &env) : env(env)
+	{
+		/*
+		 * Don't ask parent for further resources if we ran out of memory.
+		 * Prevent us to block for resource upgrades caused by clients
+		 */
+		env.parent().resource_avail_sigh(signal_resource);
+
+		log("--- bomb started ---");
+
+		if (master) {
+			timer.construct(env);
+
+			timer->sigh(signal_timeout);
+
+			log("rounds=", rounds, " generations=", generation, " children=",
+			    children, " sleep=", sleeptime, " demand=", ram_demand/1024, "K");
+		}
+
+		construct_children();
+	}
+};
+
+void Component::construct(Genode::Env &env) { static Bomb bomb(env); }

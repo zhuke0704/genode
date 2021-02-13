@@ -5,49 +5,47 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/env.h>
-#include <base/printf.h>
-#include <ram_session/connection.h>
+#include <base/component.h>
+#include <pd_session/connection.h>
 #include <timer_session/connection.h>
 
+using namespace Genode;
 
-static void test_linux_rmmap_bug()
+static void test_linux_rmmap_bug(Env &env)
 {
 	enum { QUOTA = 1*1024*1024, CHUNK = 0x1000, ROUNDS = 0x10 };
 
-	using namespace Genode;
+	log("line: ", __LINE__);
+	Pd_connection pd(env);
 
-	PLOG("line: %d", __LINE__);
-	Ram_connection ram;
+	log("line: ", __LINE__);
+	pd.ref_account(env.pd_session_cap());
+	env.pd().transfer_quota(pd.cap(), Ram_quota{QUOTA});
+	env.pd().transfer_quota(pd.cap(), Cap_quota{30});
 
-#if 1 /* transfer quota */
-	PLOG("line: %d", __LINE__);
-	ram.ref_account(env()->ram_session_cap());
-	env()->ram_session()->transfer_quota(ram.cap(), QUOTA);
-#endif
-
-	PLOG("line: %d", __LINE__);
+	log("line: ", __LINE__);
 	for (unsigned i = 0; i < ROUNDS; ++i) {
-		Ram_dataspace_capability ds(ram.alloc(CHUNK));
-		PLOG("%d of %d pages allocated", (i + 1), ROUNDS);
+		Ram_dataspace_capability ds(pd.alloc(CHUNK));
+		log(i + 1, " of ", (unsigned)ROUNDS, " pages allocated");
 	}
 
-	PLOG("Done.");
+	log("Done.");
 }
 
+struct Main { Main(Env &env); };
 
-int main()
+Main::Main(Env &env)
 {
-	Genode::printf("--- test-rm_session_mmap started ---\n");
+	Genode::log("--- test-rm_session_mmap started ---");
 
-//	Timer::Connection timer;
-//	timer.msleep(1000);
-
-	test_linux_rmmap_bug();
+	test_linux_rmmap_bug(env);
 }
+
+
+void Component::construct(Env &env) { static Main main(env); }

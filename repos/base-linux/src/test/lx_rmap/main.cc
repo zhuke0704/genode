@@ -5,21 +5,21 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/env.h>
-#include <base/sleep.h>
+#include <base/heap.h>
+#include <base/component.h>
 #include <base/thread.h>
 #include <util/misc_math.h>
 #include <rm_session/connection.h>
 #include <region_map/client.h>
 
+using namespace Genode;
 
 static void blob() __attribute__((used));
 static void blob()
@@ -34,22 +34,26 @@ static void blob()
 		: : : );
 }
 
-
 extern unsigned long blob_beg;
 extern unsigned long blob_end;
 
-
-int main()
+struct Main
 {
-	using namespace Genode;
+	Heap heap;
 
+	Main(Env &env);
+};
+
+Main::Main(Env &env) : heap(env.ram(), env.rm())
+{
 	/* activate for early printf in Rm_session_mmap::attach() etc. */
 	if (0) Thread::trace("FOO");
 
 	/* induce initial heap expansion to remove RM noise */
 	if (1) {
-		void *addr(env()->heap()->alloc(0x100000));
-		env()->heap()->free(addr, 0);
+		void *addr;
+		heap.alloc(0x100000, &addr);
+		heap.free(addr, 0);
 	}
 
 	addr_t beg((addr_t)&blob_beg);
@@ -57,51 +61,54 @@ int main()
 
 	size_t size(end - beg);
 
-	PLOG("blob region region [%016lx,%016lx) size=%zx", beg, end, size);
+	log("blob region region ", Hex_range<addr_t>(beg, size), " size=", size);
 
 	/* RAM dataspace attachment overlapping binary */
 	try {
-		Ram_dataspace_capability ds(env()->ram_session()->alloc(size));
+		Ram_dataspace_capability ds(env.ram().alloc(size));
 
-		PLOG("before RAM dataspace attach");
-		env()->rm_session()->attach_at(ds, beg);
-		PERR("after RAM dataspace attach -- ERROR");
-		sleep_forever();
+		log("before RAM dataspace attach");
+		env.rm().attach_at(ds, beg);
+		error("after RAM dataspace attach -- ERROR");
+		env.parent().exit(-1);
 	} catch (Region_map::Region_conflict) {
-		PLOG("OK caught Region_conflict exception");
+		log("OK caught Region_conflict exception");
 	}
 
 	/* empty managed dataspace overlapping binary */
 	try {
-		Rm_connection        rm_connection;
+		Rm_connection        rm_connection(env);
 		Region_map_client    rm(rm_connection.create(size));
 		Dataspace_capability ds(rm.dataspace());
 
-		PLOG("before sub-RM dataspace attach");
-		env()->rm_session()->attach_at(ds, beg);
-		PERR("after sub-RM dataspace attach -- ERROR");
-		sleep_forever();
+		log("before sub-RM dataspace attach");
+		env.rm().attach_at(ds, beg);
+		error("after sub-RM dataspace attach -- ERROR");
+		env.parent().exit(-1);
 	} catch (Region_map::Region_conflict) {
-		PLOG("OK caught Region_conflict exception");
+		log("OK caught Region_conflict exception");
 	}
 
 	/* sparsely populated managed dataspace in free VM area */
 	try {
-		Rm_connection rm_connection;
+		Rm_connection rm_connection(env);
 		Region_map_client rm(rm_connection.create(0x100000));
 
-		rm.attach_at(env()->ram_session()->alloc(0x1000), 0x1000);
+		rm.attach_at(env.ram().alloc(0x1000), 0x1000);
 
 		Dataspace_capability ds(rm.dataspace());
 
-		PLOG("before populated sub-RM dataspace attach");
-		char *addr = (char *)env()->rm_session()->attach(ds) + 0x1000;
-		PLOG("after populated sub-RM dataspace attach / before touch");
+		log("before populated sub-RM dataspace attach");
+		char *addr = (char *)env.rm().attach(ds) + 0x1000;
+		log("after populated sub-RM dataspace attach / before touch");
 		char const val = *addr;
 		*addr = 0x55;
-		PLOG("after touch (%x/%x)", val, *addr);
+		log("after touch (", val, "/", *addr, ")");
 	} catch (Region_map::Region_conflict) {
-		PERR("Caught Region_conflict exception -- ERROR");
-		sleep_forever();
+		error("Caught Region_conflict exception -- ERROR");
+		env.parent().exit(-1);
 	}
+	env.parent().exit(0);
 }
+
+void Component::construct(Env &env) { static Main main(env); }

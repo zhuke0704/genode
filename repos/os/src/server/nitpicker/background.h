@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _BACKGROUND_H_
@@ -16,55 +16,44 @@
 
 #include <nitpicker_gfx/box_painter.h>
 
-#include "view.h"
+#include "gui_session.h"
 #include "clip_guard.h"
 
-struct Background : private Texture_base, Session, View
+namespace Nitpicker { struct Background; }
+
+
+struct Nitpicker::Background : private Texture_base, View
 {
-	Color color;
+	static Color default_color() { return Color(25, 37, 50); }
+
+	Color color = default_color();
+
+	Resizeable_texture<Pixel> _texture { };
 
 	/*
-	 * The background uses no texture. Therefore
-	 * we can pass a null pointer as texture argument
-	 * to the Session constructor.
+	 * The background uses no texture. Therefore we can pass a null pointer as
+	 * texture argument to the Session constructor.
 	 */
-	Background(Area size)
+	Background(View_owner &owner, Area size)
 	:
-		Texture_base(Area(0, 0)), Session(Genode::Session_label("label=\"\"")),
-		View(*this, View::NOT_TRANSPARENT, View::BACKGROUND, 0),
-		color(25, 37, 50)
+		Texture_base(Area(0, 0)),
+		View(owner, _texture, View::NOT_TRANSPARENT, View::BACKGROUND, 0)
 	{
 		View::geometry(Rect(Point(0, 0), size));
 	}
-
-
-	/***********************
-	 ** Session interface **
-	 ***********************/
-
-	void submit_input_event(Input::Event) override { }
-	void submit_sync() override { }
 
 
 	/********************
 	 ** View interface **
 	 ********************/
 
-	int  frame_size(Mode const &mode) const override { return 0; }
-	void frame(Canvas_base &canvas, Mode const &mode) const override { }
+	int  frame_size(Focus const &) const override { return 0; }
+	void frame(Canvas_base &, Focus const &) const override { }
 
-	void draw(Canvas_base &canvas, Mode const &mode) const override
+	void draw(Canvas_base &canvas, Font const &, Focus const &) const override
 	{
 		Rect const view_rect = abs_geometry();
 		Clip_guard clip_guard(canvas, view_rect);
-
-		if (tmp_fb) {
-			for (unsigned i = 0; i < 7; i++) {
-
-				canvas.draw_box(view_rect, Color(i*2,i*6,i*16*2));
-				tmp_fb->refresh(0,0,1024,768);
-			}
-		}
 
 		canvas.draw_box(view_rect, color);
 	}

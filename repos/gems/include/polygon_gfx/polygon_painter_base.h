@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__POLYGON_GFX__POLYGON_PAINTER_BASE_H_
@@ -117,6 +117,12 @@ class Polygon::Painter_base
 				Genode::size_t _edges_size() { return N*2*_edge_len*sizeof(int); }
 
 				int * const _edges = (int *)_alloc.alloc(_edges_size());
+
+				/**
+				 * Noncopyable
+				 */
+				Edge_buffers(Edge_buffers const &);
+				Edge_buffers &operator = (Edge_buffers const &);
 
 			public:
 

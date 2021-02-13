@@ -9,24 +9,32 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__NATIVE_UTCB_H_
 #define _INCLUDE__BASE__INTERNAL__NATIVE_UTCB_H_
 
-namespace Fiasco {
-#include <l4/sys/utcb.h>
+#include <foc/syscall.h>
+
+namespace Foc {
+
+	enum Utcb_regs {
+		UTCB_TCR_BADGE      = 1,
+		UTCB_TCR_THREAD_OBJ = 2
+	};
 }
+
 
 namespace Genode { struct Native_utcb; }
 
+
 struct Genode::Native_utcb
 {
-	Fiasco::l4_utcb_t *foc_utcb = nullptr;
+	Foc::l4_utcb_t *foc_utcb = nullptr;
 };
 
 #endif /* _INCLUDE__BASE__INTERNAL__NATIVE_UTCB_H_ */

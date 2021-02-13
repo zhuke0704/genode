@@ -1,19 +1,19 @@
-/**
+/*
  * \brief  Linux emulation code
  * \author Josef Soentgen
  * \date   2014-08-04
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 /* local includes */
 #include <lx.h>
@@ -128,14 +128,14 @@ class Lx::Socket
 
 
 		Genode::Signal_transmitter            _sender;
-		Genode::Signal_rpc_member<Lx::Socket> _dispatcher;
-		Lx::Task                              _task;
+		Genode::Signal_handler<Lx::Socket> _dispatcher;
+		Lx::Task                           _task;
 
 		struct socket *_call_socket()
 		{
 			struct socket *sock = static_cast<struct socket*>(_call.handle->socket);
 			if (!sock)
-				PERR("BUG: sock is zero");
+				Genode::error("BUG: sock is zero");
 
 			return sock;
 		}
@@ -151,7 +151,7 @@ class Lx::Socket
 				return;
 			}
 
-			PERR("sock_create_kern failed, res: %d", res);
+			Genode::error("sock_create_kern failed, res: ", res);
 			_call.socket.result = nullptr;
 			_call.err           = res;
 		}
@@ -326,7 +326,7 @@ class Lx::Socket
 			_call.handle->non_block = _call.non_block.value;
 		}
 
-		void _handle(unsigned)
+		void _handle()
 		{
 			_task.unblock();
 			Lx::scheduler().schedule();
@@ -334,7 +334,7 @@ class Lx::Socket
 
 	public:
 
-		Socket(Server::Entrypoint &ep)
+		Socket(Genode::Entrypoint &ep)
 		:
 			_dispatcher(ep, *this, &Lx::Socket::_handle),
 			_task(run_socketcall, nullptr, "socketcall",
@@ -358,13 +358,22 @@ class Lx::Socket
 			case Call::NON_BLOCK:       _do_non_block();       break;
 
 			default:
+				Genode::warning("unknown opcode: ", (int)_call.opcode);
+			case Call::NONE: /* ignore silently */
 				_call.err = -EINVAL;
-				PWRN("unknown opcode: %u", _call.opcode);
 				break;
 			}
 
+			/*
+			 * Save old call opcode as we may only release the blocker
+			 * when actually did something useful, i.e., were called by
+			 * some socket operation and not by kicking the socket.
+			 */
+			Call::Opcode old = _call.opcode;
+
 			_call.opcode = Call::NONE;
-			_block.up();
+
+			if (old != Call::NONE) { _block.up(); }
 		}
 
 		void submit_and_block()
@@ -372,16 +381,33 @@ class Lx::Socket
 			_sender.submit();
 			_block.down();
 		}
+
+		void unblock_task()
+		{
+			_task.unblock();
+		}
 };
 
 
 static Lx::Socket *_socket;
+static Genode::Allocator *_alloc;
 
 
-void Lx::socket_init(Server::Entrypoint &ep)
+void Lx::socket_init(Genode::Entrypoint &ep, Genode::Allocator &alloc)
 {
 	static Lx::Socket socket_ctx(ep);
 	_socket = &socket_ctx;
+	_alloc = &alloc;
+}
+
+
+void Lx::socket_kick()
+{
+	/* ignore silently, the function might be called to before init */
+	if (!_socket) { return; }
+
+	_socket->unblock_task();
+	Lx::scheduler().schedule();
 }
 
 
@@ -414,7 +440,7 @@ Wifi::Socket *Socket_call::socket(int domain, int type, int protocol)
 	/* FIXME domain, type, protocol values */
 	_call.opcode          = Call::SOCKET;
 	_call.socket.domain   = domain;
-	_call.socket.type     = type;
+	_call.socket.type     = type & 0xff;
 	_call.socket.protocol = protocol;
 
 	_socket->submit_and_block();
@@ -422,7 +448,7 @@ Wifi::Socket *Socket_call::socket(int domain, int type, int protocol)
 	if (_call.socket.result == 0)
 		return 0;
 
-	Wifi::Socket *s = new (Genode::env()->heap()) Wifi::Socket(_call.socket.result);
+	Wifi::Socket *s = new (_alloc) Wifi::Socket(_call.socket.result);
 
 	return s;
 }
@@ -435,10 +461,11 @@ int Socket_call::close(Socket *s)
 
 	_socket->submit_and_block();
 
-	if (_call.err)
-		PWRN("error %d on close()", _call.err);
+	if (_call.err) {
+		Genode::error("closing socket failed: ", _call.err);
+	}
 
-	destroy(Genode::env()->heap(), s);
+	destroy(_alloc, s);
 	return 0;
 }
 

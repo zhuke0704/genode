@@ -21,9 +21,9 @@
 STRICT_HASH ?= no
 
 #
-# Utility to check if a tool is installed
+# Utility to check if a python module is installed
 #
-check_tool = $(if $(shell which $(1)),,$(error Need to have '$(1)' installed.))
+check_python_module = $(if $(shell python -c "import $(1)" 2>&1),$(error Need to have python module '$(1)' installed.),)
 
 default:
 
@@ -43,18 +43,18 @@ _assert = $(if $(strip $1),$1,$(info Error: $(strip $2))$(error ))
 _prefer = $(if $1,$1,$2)
 
 #
-# Include definitions provided by the port description file
-#
-include $(PORT)
-
-#
 # Include common definitions
 #
 include $(GENODE_DIR)/tool/ports/mk/common.inc
 
+#
+# Include definitions provided by the port description file
+#
+include $(PORT)
+
 $(call check_tool,wget)
 $(call check_tool,patch)
-$(call check_tool, $(HASHSUM))
+$(call check_tool,sha256sum)
 
 #
 # Assertion for the presence of a LICENSE and VERSION declarations in the port
@@ -162,7 +162,7 @@ _git_dir = $(call _assert,$(DIR($1)),Missing declaration of DIR($*))
 		test -d $$dir || $(MSG_DOWNLOAD)$(URL($*)); \
 		test -d $$dir || git clone $(URL($*)) $$dir &> >(sed 's/^/$(MSG_GIT)/'); \
 		$(MSG_UPDATE)$$dir; \
-		cd $$dir && git fetch && git reset -q --hard HEAD && git checkout -q $(REV($*))
+		cd $$dir && $(GIT) fetch && $(GIT) reset -q --hard HEAD && $(GIT) checkout -q $(REV($*))
 
 
 ##
@@ -196,13 +196,14 @@ _file_name = $(call _prefer,$(NAME($1)),$(notdir $(URL($1))))
 %.file:
 	$(VERBOSE)test -n "$(URL($*))" ||\
 		($(ECHO) "Error: Undefined URL for $(call _file_name,$*)"; false);
+	$(VERBOSE)mkdir -p $(dir $(call _file_name,$*))
 	$(VERBOSE)name=$(call _file_name,$*);\
 		(test -f $$name || $(MSG_DOWNLOAD)$(URL($*))); \
 		(test -f $$name || wget --quiet --no-check-certificate $(URL($*)) -O $$name) || \
 			($(ECHO) Error: Download for $* failed; false)
 	$(VERBOSE)\
 		($(ECHO) "$(SHA($*))  $(call _file_name,$*)" |\
-		$(HASHSUM) -c > /dev/null 2> /dev/null) || \
+		sha256sum -c > /dev/null 2> /dev/null) || \
 			($(ECHO) Error: Hash sum check for $* failed; false)
 
 
@@ -219,13 +220,15 @@ _unzip_opt = $(call _prefer,$(UNZIP_OPT($1)),$(UNZIP_OPT))
 #
 # Archive extraction functions for various archive types
 #
+_extract_function(tar)     = tar xf  $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
 _extract_function(tgz)     = tar xfz $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
 _extract_function(tar.gz)  = tar xfz $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
 _extract_function(tar.xz)  = tar xfJ $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
 _extract_function(tar.bz2) = tar xfj $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
+_extract_function(txz)     = tar xfJ $(ARCHIVE) -C $(DIR) $(call _tar_opt,$1)
 _extract_function(zip)     = unzip -o -q -d $(DIR) $(call _unzip_opt,$1) $(ARCHIVE)
 
-_ARCHIVE_EXTS := tar.gz tar.xz tgz tar.bz2 zip
+_ARCHIVE_EXTS := tar tar.gz tar.xz tgz tar.bz2 txz zip
 
 #
 # Function that returns the matching extraction function for a given archive

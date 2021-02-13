@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PACKET_STREAM_RX__RPC_OBJECT_H_
@@ -26,7 +26,7 @@ class Packet_stream_rx::Rpc_object : public Genode::Rpc_object<CHANNEL, Rpc_obje
 	private:
 
 		Genode::Rpc_entrypoint     &_ep;
-		Genode::Capability<CHANNEL> _cap;
+		Genode::Capability<CHANNEL> _cap { };
 		typename CHANNEL::Source    _source;
 
 		Genode::Signal_context_capability _sigh_ready_to_submit;
@@ -45,13 +45,17 @@ class Packet_stream_rx::Rpc_object : public Genode::Rpc_object<CHANNEL, Rpc_obje
 		 *                      interface
 		 */
 		Rpc_object(Genode::Dataspace_capability  ds,
-		           Genode::Range_allocator      *buffer_alloc,
+		           Genode::Region_map           &rm,
+		           Genode::Range_allocator      &buffer_alloc,
 		           Genode::Rpc_entrypoint       &ep)
-		: _ep(ep), _cap(_ep.manage(this)), _source(buffer_alloc, ds),
+		: _ep(ep), _source(ds, rm, buffer_alloc),
 
 		  /* init signal handlers with default handlers of source */
 		  _sigh_ready_to_submit(_source.sigh_ready_to_submit()),
-		  _sigh_ack_avail(_source.sigh_ack_avail()) { }
+		  _sigh_ack_avail(_source.sigh_ack_avail())
+		{
+			_cap = _ep.manage(this);
+		}
 
 		/**
 		 * Destructor
@@ -99,10 +103,10 @@ class Packet_stream_rx::Rpc_object : public Genode::Rpc_object<CHANNEL, Rpc_obje
 
 		Genode::Dataspace_capability dataspace() { return _source.dataspace(); }
 
-		void sigh_ready_to_ack(Genode::Signal_context_capability sigh) {
+		void sigh_ready_to_ack(Genode::Signal_context_capability sigh) override {
 			_source.register_sigh_ready_to_ack(sigh); }
 
-		void sigh_packet_avail(Genode::Signal_context_capability sigh) {
+		void sigh_packet_avail(Genode::Signal_context_capability sigh) override {
 			_source.register_sigh_packet_avail(sigh); }
 
 		virtual Genode::Signal_context_capability sigh_ready_to_submit() {

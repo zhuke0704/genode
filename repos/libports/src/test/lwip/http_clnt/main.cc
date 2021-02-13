@@ -1,105 +1,137 @@
 /*
  * \brief  HTTP client test
  * \author Ivan Loskutov
+ * \author Martin Stein
  * \date   2012-12-21
  */
 
 /*
  * Copyright (C) 2012 Ksys Labs LLC
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/thread.h>
-#include <util/string.h>
-#include <timer_session/connection.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/log.h>
+#include <libc/component.h>
 #include <nic/packet_allocator.h>
+#include <timer_session/connection.h>
+#include <util/string.h>
 
-extern "C" {
-#include <lwip/sockets.h>
-#include <lwip/api.h>
-#include <netif/etharp.h>
-}
+/* Libc includes */
+#include <stdio.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include <lwip/genode.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
+using namespace Genode;
 
-static const char *http_get_request =
-"GET / HTTP/1.0\r\nHost: localhost:80\r\n\r\n"; /* simple HTTP request header */
-
-
-/**
- * The client thread simply loops endless,
- * and sends as much 'http get' requests as possible,
- * printing out the response.
- */
-int main()
+void close_socket(Libc::Env &env, int sd)
 {
-	enum { BUF_SIZE = Nic::Packet_allocator::DEFAULT_PACKET_SIZE * 128 };
-
-	static Timer::Connection _timer;
-	lwip_tcpip_init();
-
-	char serv_addr[] = "10.0.2.55";
-
-	if( lwip_nic_init(0, 0, 0, BUF_SIZE, BUF_SIZE))
-	{
-		PERR("We got no IP address!");
-		return 0;
+	if (::shutdown(sd, SHUT_RDWR)) {
+		error("failed to shutdown");
+		env.parent().exit(-1);
 	}
-
-	for(int j = 0; j != 5; ++j) {
-		_timer.msleep(2000);
-
-
-		PDBG("Create new socket ...");
-		int s = lwip_socket(AF_INET, SOCK_STREAM, 0 );
-		if (s < 0) {
-			PERR("No socket available!");
-			continue;
-		}
-
-		PDBG("Connect to server ...");
-		struct sockaddr_in addr;
-		addr.sin_port = htons(80);
-		addr.sin_family = AF_INET;
-		addr.sin_addr.s_addr = inet_addr(serv_addr);
-
-		if((lwip_connect(s, (struct sockaddr *)&addr, sizeof(addr))) < 0) {
-			PERR("Could not connect!");
-			lwip_close(s);
-			continue;
-		}
-
-		PDBG("Send request...");
-		unsigned long bytes = lwip_send(s, (char*)http_get_request,
-		                                Genode::strlen(http_get_request), 0);
-		if ( bytes < 0 ) {
-			PERR("Couldn't send request ...");
-			lwip_close(s);
-			continue;
-		}
-
-		/* Receive http header and content independently in 2 packets */
-		for(int i=0; i<2; i++) {
-			char buf[1024];
-			ssize_t buflen;
-			buflen = lwip_recv(s, buf, 1024, 0);
-			if(buflen > 0) {
-				buf[buflen] = 0;
-				PDBG("Packet received!");
-				PDBG("Packet content:\n%s", buf);
-			} else
-				break;
-		}
-
-		/* Close socket */
-		lwip_close(s);
+	if (::close(sd)) {
+		error("failed to close");
+		env.parent().exit(-1);
 	}
-
-	return 0;
 }
+
+
+static void test(Libc::Env &env)
+{
+	using Ipv4_string = String<16>;
+	enum { NR_OF_REPLIES = 5 };
+	enum { NR_OF_TRIALS  = 15 };
+
+	/* read component configuration */
+	Attached_rom_dataspace  config_rom  { env, "config" };
+	Xml_node                config_node { config_rom.xml() };
+	Ipv4_string       const srv_ip      { config_node.attribute_value("server_ip", Ipv4_string("0.0.0.0")) };
+	uint16_t          const srv_port    { config_node.attribute_value("server_port", (uint16_t)0) };
+
+	/* construct server socket address */
+	struct sockaddr_in srv_addr;
+	srv_addr.sin_port        = htons(srv_port);
+	srv_addr.sin_family      = AF_INET;
+	srv_addr.sin_addr.s_addr = inet_addr(srv_ip.string());
+
+	/* try several times to request a reply */
+	for (unsigned trial_cnt = 0, reply_cnt = 0; trial_cnt < NR_OF_TRIALS;
+	     trial_cnt++)
+	{
+		/* pause a while between each trial */
+		usleep(1000000);
+
+		/* create socket */
+		int sd = ::socket(AF_INET, SOCK_STREAM, 0);
+		if (sd < 0) {
+			error("failed to create socket");
+			continue;
+		}
+		/* connect to server */
+		if (::connect(sd, (struct sockaddr *)&srv_addr, sizeof(srv_addr))) {
+			error("Failed to connect to server");
+			close_socket(env, sd);
+			continue;
+		}
+		/* send request */
+		char   const *req    = "GET / HTTP/1.0\r\nHost: localhost:80\r\n\r\n";
+		size_t const  req_sz = Genode::strlen(req);
+		if (::send(sd, req, req_sz, 0) != (int)req_sz) {
+			error("failed to send request");
+			close_socket(env, sd);
+			continue;
+		}
+		/* receive reply */
+		enum { REPLY_BUF_SZ = 1024 };
+		char          reply_buf[REPLY_BUF_SZ];
+		size_t        reply_sz     = 0;
+		bool          reply_failed = false;
+		char   const *reply_end    = "</html>";
+		size_t const  reply_end_sz = Genode::strlen(reply_end);
+		for (; reply_sz <= REPLY_BUF_SZ; ) {
+			char         *rcv_buf    = &reply_buf[reply_sz];
+			size_t const  rcv_buf_sz = REPLY_BUF_SZ - reply_sz;
+			signed long   rcv_sz     = ::recv(sd, rcv_buf, rcv_buf_sz, 0);
+			if (rcv_sz < 0) {
+				reply_failed = true;
+				break;
+			}
+			reply_sz += rcv_sz;
+			if (reply_sz >= reply_end_sz) {
+				if (!strcmp(&reply_buf[reply_sz - reply_end_sz], reply_end, reply_end_sz)) {
+					break; }
+			}
+		}
+		/* ignore failed replies */
+		if (reply_failed) {
+			error("failed to receive reply");
+			close_socket(env, sd);
+			continue;
+		}
+		/* handle reply */
+		reply_buf[reply_sz] = 0;
+		log("Received \"", Cstring(reply_buf), "\"");
+		if (++reply_cnt == NR_OF_REPLIES) {
+			log("Test done");
+			env.parent().exit(0);
+		}
+		/* close socket and retry */
+		close_socket(env, sd);
+	}
+	log("Test failed");
+	env.parent().exit(-1);
+}
+
+void Libc::Component::construct(Libc::Env &env) { with_libc([&] () { test(env); }); }

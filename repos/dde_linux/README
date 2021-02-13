@@ -9,7 +9,7 @@ Controller configuration
 The driver can be started using different or all USB controller types a platform
 offers (USB 1.0/2.0/3.0). Note that not all controllers are supported by all
 platforms.  Controllers can be enabled as attribute in the config node of the
-driver.  Supported attributes are: 'uhci', 'ehci', and 'xhci'.
+driver.  Supported attributes are: 'uhci', 'ohci', 'ehci', and 'xhci'.
 
 
 Configuration snippet to enable UHCI and EHCI
@@ -38,12 +38,14 @@ Supports keyboard and mouse. A run script can be found under 'run/usb_hid.run'.
 Configuration snippet:
 
 !<start name="usb_drv">
-!  <resource name="RAM" quantum="3M"/>
-!  <provides><service name="Input"/></provides>
-!  <config uhci="yes" ehci="yes" xhci="yes">
+!  <resource name="RAM" quantum="12M"/>
+!  <config uhci="yes" ohci="yes" ehci="yes" xhci="yes">
 !    <hid/>
 !  </config>
 !</start>
+
+With '<hid>' config node in place, the USB driver requests an "Event" session
+for reporting input events.
 
 Note: It has been observed that certain 1.0 versions of Qemu do not generate
 mouse interrupts. The mouse driver should work correctly on Qemu 1.0.93 and
@@ -60,7 +62,7 @@ hid xml tag:
 !...
 !<hid>
 !  <touchscreen width="1024" height="768" multitouch="no"/>
-!<hid/>
+!</hid>
 !...
 
 If a touchscreen is multi-touch-capable than the multitouch attribute gears
@@ -77,10 +79,10 @@ run script can be found under 'run/usb_storage.run'.
 Configuration snippet:
 
 !<start name="usb_drv">
-!  <resource name="RAM" quantum="2M"/>
+!  <resource name="RAM" quantum="12M"/>
 !  <provides> <service name="Block"/> </provides>
 !  <config><storage /></config>
-!</start uhci="yes">
+!</start>
 
 
 Network (Nic)
@@ -89,10 +91,9 @@ Network (Nic)
 Configuration snippet:
 
 !<start name="usb_drv">
-!  <resource name="RAM" quantum="3M"/>
+!  <resource name="RAM" quantum="12M"/>
 !  <provides>
 !    <service name="Nic"/>
-!    <service name="Input"/>
 !  </provides>
 !  <config ehci="yes" xhci="yes">
 !    <nic mac="2e:60:90:0c:4e:01" />
@@ -108,102 +109,6 @@ devices hardware address. If this is the case and no 'mac' attribute is given a
 fallback address will be assigned to the network device. Note that the fallback
 address will always be the same.
 
-LXIP
-####
-
-LXIP is a port of the Linux TCP/IP stack to Genode. It is build as a shared
-library named 'lxip.lib.so'. The IP stack can be interfaced using Genode's
-version of 'libc' by linking your application to 'lxip_libc' plugin in your
-'target.mk' file.
-
-WIFI
-####
-
-The wifi_drv component is a port of the Linux mac802.11 stack, including the
-iwlwifi driver as well as libnl and wpa_supplicant, to Genode.
-
-Configuration snippet:
-
-!<start name="wifi_drv">
-!  <resource name="RAM" quantum="32M"/>
-!  <provides><service name="Nic"/></provides>
-!  <config>
-!    <libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc">
-!      <vfs>
-!        <dir name="dev"> <log/> <rtc/>
-!           <jitterentropy name="random"/>
-!           <jitterentropy name="urandom"/>
-!        </dir>
-!        <inline name="wpa_supplicant.conf">
-!network={
-!  id_str="foobar"
-!  ssid="foobar"
-!  key_mgmt=WPA-PSK
-!  psk="foobarfoobar"
-!}
-!        </inline>
-!      </vfs>
-!    </libc>
-!  </config>
-!  <route>
-!    <service name="Rtc"> <any-child /> </service>
-!    <any-service> <parent/> <any-child /> </any-service>
-!  </route>
-!</start
-
-The wifi_drv creates two distinct reports to communicate its state and
-information about the wireless infrastructure to other components. The
-first one is a list of all available accesspoints. The following examplary
-report shows its structure:
-
-!<wlan_accesspoints>
-!  <accesspoint ssid="skynet" bssid="00:01:02:03:04:05" quality="40"/>
-!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:06" quality="70" protection="WPA-PSK"/>
-!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:07" quality="10" protection="WPA-PSK"/>
-!</wlan_accesspoints>
-
-Each accesspoint node has attributes that contain the SSID and the BSSID
-of the accesspoint as well as the link quality (signal strength). These
-attributes are mandatory. If the network is protected, the node will also
-have an attribute describing the type of protection in addition.
-
-The second report provides information about the state of the connection
-to the currently connected accesspoint:
-
-!<wlan_state>
-!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:06" quality="70" protection="WPA-PSK" state="connected"/>
-!</wlan_state>
-
-Valid state values are 'connected', 'disconnected', 'connecting' and
-'disconnecting'.
-
-In return, the wifi_drv get its configuration via a ROM module. This ROM
-module contains the configuration for the selected accesspoint.
-To connect to an open accesspoint a configuration like the following is used:
-
-!<selected_accesspoint ssid="foobar"/>
-
-If the network is protected by, e.g., WPA/WPA2, the protection type as well
-as the the pre-shared key have to be specified:
-
-!<selected_accesspoint ssid="securefoobar" protection="WPA-PSK" psk="foobar123!"/>
-
-If a network consists of several different access points and a particular one
-should be used it can be selected by specifing its BSSID in a 'bssid'
-attribute.
-
-Of all attributes only the 'ssid' attribute is mandatory, all others are
-optional and should only be used when needed.
-
-To disconnect from an accesspoint, a empty configuration is sent:
-
-!<selected_accesspoint/>
-
-By subscribing to both reports and providing the required ROM module, a
-component can control the wireless driver. An example therefore is the Qt
-based component in 'src/app/qt_wifi_connect'.
-
-Currently only WPA/WPA2 protection using a pre-shared key is supported.
 
 RAW
 ~~~
@@ -213,9 +118,9 @@ Allows raw access to USB devices via the 'Usb' session interface.
 Configuration snippet:
 
 !<start name="usb_drv">
-!  <resource name="RAM" quantum="8M"/>
+!  <resource name="RAM" quantum="12M"/>
 !  <provides><service name="Usb"/></provides>
-!  <config uhci="yes" ehci="yes" xhci="yes">
+!  <config uhci="yes" ohci="yes" ehci="yes" xhci="yes">
 !    <raw>
 !        <report devices="yes"/>
 !    </raw>
@@ -244,9 +149,9 @@ can be accessed by a client. The following configuration allows 'comp1' to
 access the device 'usb-1-6':
 
 !<start name="usb_drv">
-!  <resource name="RAM" quantum="8M"/>
+!  <resource name="RAM" quantum="12M"/>
 !  <provides><service name="Usb"/></provides>
-!  <config uhci="yes" ehci="yes" xhci="yes">
+!  <config uhci="yes" ohci="yes" ehci="yes" xhci="yes">
 !    <raw>
 !        <report devices="yes"/>
 !        <policy label="comp1 -> usb-1-6" vendor_id="0x13fe" product_id="0x5200" bus="0x0001" dev="0x0006"/>
@@ -265,6 +170,120 @@ address is not fixed and may change every time the same device is plugged in.
 The configuration of the USB driver can be changed at runtime to satisfy
 dynamic configurations or rather policies when using the 'Usb' session
 interface.
+
+
+LXIP
+####
+
+LXIP is a port of the Linux TCP/IP stack to Genode. It is build as a shared
+library named 'lxip.lib.so'. The IP stack can be interfaced using Genode's
+version of 'libc' by linking your application to 'lxip_libc' plugin in your
+'target.mk' file.
+
+WIFI
+####
+
+The wifi_drv component is a port of the Linux mac802.11 stack, including the
+iwlwifi driver as well as libnl and wpa_supplicant, to Genode.
+
+To start the component the following configuration snippet can be used:
+
+!<start name="wifi_drv" caps="200">
+!  <resource name="RAM" quantum="24M"/>
+!  <provides><service name="Nic"/></provides>
+!  <config>
+!    <libc stdout="/dev/null" stderr="/dev/null" rtc="/dev/rtc"/>
+!    <vfs>
+!      <dir name="dev"> <log/> <null/> <rtc/>
+!      <jitterentropy name="random"/>
+!      <jitterentropy name="urandom"/>
+!      </dir>
+!    </vfs>
+!  </config>
+!  <route>
+!    <service name="Rtc"> <any-child /> </service>
+!    <any-service> <parent/> <any-child /> </any-service>
+!  </route>
+!</start
+
+The driver will request access to the ROM module 'wifi_config' to
+connect to a network:
+
+!<wifi_config connected_scan_interval="30" scan_interval="10" rfkill="no">
+!  <network ssid="Foobar" protection="WPA2" passphrase="allyourbase"/>
+!</wifi_config>
+
+To temporarily prevent any radio activity, the 'rfkill' attribute
+can be set to 'true'.
+
+If the network is protected by, e.g., WPA/WPA2, the protection type, either
+'WPA' or 'WPA2' as well as the the passphrase have to be specified.
+The 'bssid' attribute can be used to select a specifc accesspoint within a
+network. Of all attributes only the 'ssid' attribute is mandatory, all others
+are optional and should only be used when needed.
+
+The configuration may contain more than one network. In This case the driver
+will try to select the best one it gets a response from. To prevent it
+from automatically joining the network the 'auto_connect' attribute must be
+set to 'false'; the default value is 'true'. If the 'explicit_scan' attribute
+is set, the driver will pro-actively scan for a hidden network with the given
+SSID:
+
+!<wifi_config connected_scan_interval="30" scan_interval="10">
+!  <network ssid="Zero" protection="WPA2" passphrase="allyourbase"/>
+!  <network ssid="Skynet" protection="WPA" passphrase="12345678"
+!           explicit_scan="true" auto_connect="false"/>
+!</wifi_config>
+
+By default, the driver scans for available networks only when not
+connected. This can be changed with the 'connected_scan_interval'
+attribute, which specifies the interval for connected scans in
+seconds and directly influences any roaming decision, i.e., select
+a better fit accesspoint for the configured network.
+
+Also, the driver can be switched to verbose logging during runtime
+by setting the 'verbose' or 'verbose_state' attribute to 'true'.
+
+The wifi_drv creates two distinct reports to communicate its state and
+information about the wireless infrastructure to other components. The
+first one is a list of all available accesspoints. The following examplary
+report shows its general structure:
+
+!<accesspoints>
+!  <accesspoint ssid="skynet" bssid="00:01:02:03:04:05" quality="40"/>
+!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:06" quality="70" protection="WPA2"/>
+!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:07" quality="10" protection="WPA2"/>
+!</accesspoints>
+
+Each accesspoint node has attributes that contain the SSID and the BSSID
+of the accesspoint as well as the link quality (signal strength). These
+attributes are mandatory. If the network is protected, the node will also
+have an attribute describing the type of protection in addition.
+
+The second report provides information about the state of the connection
+to the currently connected accesspoint:
+
+!<state>
+!  <accesspoint ssid="foobar" bssid="01:02:03:04:05:06" quality="70" freq="2418" state="connected"/>
+!</state>
+
+Valid state values are 'connected', 'disconnected', 'connecting'. Depending
+on the state, there are additional attributes that can be checked. In case
+of an authentication error, e.g. the passphrase is wrong, the 'auth_failure'
+attribute will be set to 'true'. The 'rfkilled' attribute is set to 'true'
+if a disconnect was triggered by disabling the radio activity via setting
+the 'rfkill' attribute.
+
+By subscribing to both reports and providing the required 'wifi_config' ROM
+module, a component is able control the wireless driver.
+
+Currently only WPA/WPA2 protection using a passphrase is supported and the the
+SSID is copied verbatim. At the moment, there is no way to express or escape
+non alphanumeric characters.
+
+On certain cards, e.g. Intel Wireless 6200 ABG, it may be necessary to disable
+the 11n mode. This can be achieved by setting the 'use_11n' attribute in
+the 'wifi_config' node to 'no'.
 
 
 lx_kit

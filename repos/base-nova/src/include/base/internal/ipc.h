@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__IPC_H_
@@ -17,6 +17,7 @@
 /* NOVA includes */
 #include <nova/syscalls.h>
 #include <nova/native_thread.h>
+#include <nova/capability_space.h>
 
 /**
  * Copy message registers from UTCB to destination message buffer
@@ -43,17 +44,18 @@ static inline Nova::mword_t copy_utcb_to_msgbuf(Nova::Utcb             &utcb,
 		return 0;
 
 	/* the UTCB contains the protocol word followed by the message data */
-	mword_t const protocol_word  = utcb.msg[0];
+	mword_t const protocol_word  = utcb.msg()[0];
 	size_t        num_data_words = num_msg_words - 1;
 
 	if (num_data_words*sizeof(mword_t) > rcv_msg.capacity()) {
-		PERR("receive message buffer too small msg size=%zx, buf size=%zd",
-		     num_data_words*sizeof(mword_t), rcv_msg.capacity());
+		error("receive message buffer too small msg "
+		      "size=", num_data_words*sizeof(mword_t), " "
+		      "buf size=", rcv_msg.capacity());
 		num_data_words = rcv_msg.capacity()/sizeof(mword_t);
 	}
 
 	/* read message payload into destination message buffer */
-	mword_t *src = (mword_t *)(void *)(&utcb.msg[1]);
+	mword_t *src = (mword_t *)(void *)(&utcb.msg()[1]);
 	mword_t *dst = (mword_t *)rcv_msg.data();
 	for (unsigned i = 0; i < num_data_words; i++)
 		*dst++ = *src++;
@@ -90,15 +92,15 @@ static inline bool copy_msgbuf_to_utcb(Nova::Utcb                &utcb,
 
 	enum { NUM_MSG_REGS = 256 };
 	if (num_msg_words > NUM_MSG_REGS) {
-		PERR("Message does not fit into UTCB message registers\n");
+		error("message does not fit into UTCB message registers");
 		num_msg_words = NUM_MSG_REGS;
 	}
 
-	utcb.msg[0] = protocol_value;
+	utcb.msg()[0] = protocol_value;
 
 	/* store message into UTCB message registers */
 	mword_t *src = (mword_t *)&msg_buf[0];
-	mword_t *dst = (mword_t *)(void *)&utcb.msg[1];
+	mword_t *dst = (mword_t *)(void *)&utcb.msg()[1];
 	for (unsigned i = 0; i < num_data_words; i++)
 		*dst++ = *src++;
 
@@ -108,7 +110,7 @@ static inline bool copy_msgbuf_to_utcb(Nova::Utcb                &utcb,
 	for (unsigned i = 0; i < snd_msg.used_caps(); i++) {
 
 		Native_capability const &cap = snd_msg.cap(i);
-		Nova::Obj_crd crd(cap.local_name(), 0, cap.dst().rights());
+		Nova::Crd const crd = Capability_space::crd(cap);
 
 		if (crd.base() == ~0UL) continue;
 

@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2008-2015 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/arg_string.h>
 
 /* core includes */
@@ -54,29 +54,29 @@ void Irq_object::_wait_for_irq()
 	L4_MsgTag_t res = L4_Call(irq_thread);
 
 	if (L4_IpcFailed(res))
-		PERR("ipc error while waiting for interrupt.");
+		error("ipc error while waiting for interrupt");
 }
 
 
 void Irq_object::start()
 {
 	::Thread::start();
-	_sync_bootup.lock();
+	_sync_bootup.block();
 }
 
 
 void Irq_object::entry()
 {
 	if (!_associate()) {
-		PERR("Could not associate with IRQ 0x%x", _irq);
+		error("could not associate with IRQ ", Hex(_irq));
 		return;
 	}
 
 	/* thread is up and ready */
-	_sync_bootup.unlock();
+	_sync_bootup.wakeup();
 
 	/* wait for first ack_irq */
-	_sync_ack.lock();
+	_sync_ack.block();
 
 	/*
 	 * Right after associating with an interrupt, the interrupt is
@@ -88,7 +88,7 @@ void Irq_object::entry()
 	L4_MsgTag_t res = L4_Receive(irq_thread);
 
 	if (L4_IpcFailed(res))
-		PERR("ipc error while attaching to interrupt.");
+		error("ipc error while attaching to interrupt");
 
 	/*
 	 * Now, the IRQ is masked. To receive the next IRQ we have to send
@@ -96,7 +96,7 @@ void Irq_object::entry()
 	 */
 	if (_sig_cap.valid()) {
 		Genode::Signal_transmitter(_sig_cap).submit(1);
-		_sync_ack.lock();
+		_sync_ack.block();
 	}
 
 	while (true) {
@@ -108,15 +108,14 @@ void Irq_object::entry()
 
 		Genode::Signal_transmitter(_sig_cap).submit(1);
 
-		_sync_ack.lock();
+		_sync_ack.block();
 	}
 }
 
 
 Irq_object::Irq_object(unsigned irq)
 :
-	Thread_deprecated<4096>("irq"),
-	_sync_ack(Lock::LOCKED), _sync_bootup(Lock::LOCKED),
+	Thread(Weight::DEFAULT_WEIGHT, "irq", 4096 /* stack */, Type::NORMAL),
 	_irq(irq)
 { }
 
@@ -126,7 +125,7 @@ Irq_object::Irq_object(unsigned irq)
  ***************************/
 
 
-Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
+Irq_session_component::Irq_session_component(Range_allocator &irq_alloc,
                                              const char      *args)
 :
 	_irq_number(Arg_string::find_arg(args, "irq_number").long_value(-1)),
@@ -135,11 +134,11 @@ Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
 {
 	long msi = Arg_string::find_arg(args, "device_config_phys").long_value(0);
 	if (msi)
-		throw Root::Unavailable();
+		throw Service_denied();
 
-	if (!irq_alloc || irq_alloc->alloc_addr(1, _irq_number).error()) {
-		PERR("Unavailable IRQ 0x%x requested", _irq_number);
-		throw Root::Unavailable();
+	if (irq_alloc.alloc_addr(1, _irq_number).error()) {
+		error("unavailable IRQ ", Hex(_irq_number), " requested");
+		throw Service_denied();
 	}
 
 	_irq_object.start();
@@ -151,7 +150,7 @@ Irq_session_component::~Irq_session_component()
 	L4_Word_t res = L4_DeassociateInterrupt(irqno_to_threadid(_irq_number));
 
 	if (res != 1)
-		PERR("L4_DeassociateInterrupt failed");
+		error("L4_DeassociateInterrupt failed");
 }
 
 
@@ -170,5 +169,5 @@ void Irq_session_component::sigh(Genode::Signal_context_capability cap)
 Genode::Irq_session::Info Irq_session_component::info()
 {
 	/* no MSI support */
-	return { .type = Genode::Irq_session::Info::Type::INVALID };
+	return { .type = Info::Type::INVALID, .address = 0, .value = 0 };
 }

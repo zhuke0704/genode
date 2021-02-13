@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__TSLAB_H_
@@ -24,6 +24,10 @@ struct Genode::Tslab : Slab
 {
 	Tslab(Allocator *backing_store, void *initial_sb = 0)
 	: Slab(sizeof(T), BLOCK_SIZE, initial_sb, backing_store)
+	{ }
+
+	Tslab(Allocator &backing_store, void *initial_sb = 0)
+	: Slab(sizeof(T), BLOCK_SIZE, initial_sb, &backing_store)
 	{ }
 
 	T *first_object() { return (T *)Slab::any_used_elem(); }

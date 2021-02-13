@@ -1,5 +1,5 @@
 /*
- * \brief  Fiasco pager framework
+ * \brief  Fiasco.OC pager framework
  * \author Norman Feske
  * \author Christian Helmuth
  * \author Stefan Kalkowski
@@ -7,16 +7,15 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/printf.h>
-#include <base/lock.h>
+#include <base/log.h>
 
 /* core includes */
 #include <pager.h>
@@ -25,10 +24,7 @@
 #include <base/internal/native_thread.h>
 
 /* Fiasco.OC includes */
-namespace Fiasco {
-#include <l4/sys/factory.h>
-#include <l4/sys/ipc.h>
-}
+#include <foc/syscall.h>
 
 using namespace Genode;
 
@@ -46,20 +42,21 @@ void Pager_entrypoint::entry()
 		reply_pending = false;
 
 		apply(_pager.badge(), [&] (Pager_object *obj) {
+
 			/* the pager_object might be destroyed, while we got the message */
 			if (!obj) {
-				PWRN("No pager object found!");
+				warning("no pager object found!");
 				return;
 			}
 
 			switch (_pager.msg_type()) {
-	
+
 			case Ipc_pager::PAGEFAULT:
 			case Ipc_pager::EXCEPTION:
 				{
 					if (_pager.exception()) {
-						Lock::Guard guard(obj->state.lock);
-						_pager.get_regs(&obj->state);
+						Mutex::Guard guard(obj->state.mutex);
+						_pager.get_regs(obj->state.state);
 						obj->state.exceptions++;
 						obj->state.in_exception = true;
 						obj->submit_exception_signal();
@@ -69,8 +66,9 @@ void Pager_entrypoint::entry()
 					/* handle request */
 					if (obj->pager(_pager)) {
 						/* could not resolv - leave thread in pagefault */
-						PDBG("Could not resolve pf=%p ip=%p",
-						     (void*)_pager.fault_addr(), (void*)_pager.fault_ip());
+						warning("page-fault, ", *obj,
+						        " ip=", Hex(_pager.fault_ip()),
+						        " pf-addr=", Hex(_pager.fault_addr()));
 					} else {
 						_pager.set_reply_dst(Native_thread(obj->badge()));
 						reply_pending = true;
@@ -94,11 +92,11 @@ void Pager_entrypoint::entry()
 					_pager.acknowledge_wakeup();
 
 					{
-						Lock::Guard guard(obj->state.lock);
+						Mutex::Guard guard(obj->state.mutex);
 						/* revert exception flag */
 						obj->state.in_exception = false;
 						/* set new register contents */
-						_pager.set_regs(obj->state);
+						_pager.set_regs(obj->state.state);
 					}
 
 					/* send wake up message to requested thread */
@@ -113,8 +111,8 @@ void Pager_entrypoint::entry()
 			 */
 			case Ipc_pager::PAUSE:
 				{
-					Lock::Guard guard(obj->state.lock);
-					_pager.get_regs(&obj->state);
+					Mutex::Guard guard(obj->state.mutex);
+					_pager.get_regs(obj->state.state);
 					obj->state.exceptions++;
 					obj->state.in_exception = true;
 
@@ -131,31 +129,31 @@ void Pager_entrypoint::entry()
 				}
 
 			default:
-				PERR("Got unknown message type %x!", _pager.msg_type());
+				error("got unknown message type ", Hex(_pager.msg_type()));
 			}
 		});
 	};
 }
 
 
-void Pager_entrypoint::dissolve(Pager_object *obj)
+void Pager_entrypoint::dissolve(Pager_object &obj)
 {
 	/* cleanup at cap session */
-	_cap_factory.free(obj->Object_pool<Pager_object>::Entry::cap());
+	_cap_factory.free(obj.Object_pool<Pager_object>::Entry::cap());
 
-	remove(obj);
+	remove(&obj);
 }
 
 
-Pager_capability Pager_entrypoint::manage(Pager_object *obj)
+Pager_capability Pager_entrypoint::manage(Pager_object &obj)
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	Native_capability cap(_cap_factory.alloc(Thread::_thread_cap));
 
 	/* add server object to object pool */
-	obj->cap(cap);
-	insert(obj);
+	obj.cap(cap);
+	insert(&obj);
 
 	/* return capability that uses the object id as badge */
 	return reinterpret_cap_cast<Pager_object>(cap);

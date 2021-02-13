@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT_GFX__ICON_PAINTER_H_
@@ -38,20 +38,6 @@ class Icon_painter
 		 * vs ... vertical slice
 		 */
 
-
-		/**
-		 * Copy pixel with alpha
-		 */
-		template <typename SPT, typename TPT>
-		static inline void _transfer_pixel(TPT const &src, int src_a, int alpha, SPT *dst)
-		{
-			if (src_a) {
-				int register a = (src_a * alpha)>>8;
-				if (a) *dst = SPT::mix(*dst, src, a);
-			}
-		}
-
-
 		/**
 		 * Draw corner slice
 		 */
@@ -67,7 +53,7 @@ class Icon_painter
 				SPT                 *d  = dst;
 
 				for (int i = 0; i < w; i++, s++, sa++, d++)
-					_transfer_pixel(*s, *sa, alpha, d);
+					SPT::transfer(*s, *sa, alpha, *d);
 
 				src += src_pitch, src_a += src_pitch, dst += dst_pitch;
 			}
@@ -89,7 +75,7 @@ class Icon_painter
 				SPT *d =  dst;
 
 				for (int i = 0; i < w; i++, d++)
-					_transfer_pixel(s, sa, alpha, d);
+					SPT::transfer(s, sa, alpha, *d);
 
 				src += src_pitch, src_a += src_pitch, dst += dst_pitch;
 			}
@@ -101,8 +87,8 @@ class Icon_painter
 		 */
 		template <typename SPT, typename TPT>
 		static void _draw_vslice(TPT const *src, unsigned char const *src_a,
-		                         int src_pitch, int alpha, SPT *dst,
-		                         int dst_pitch, int w, int h)
+		                         int /* src_pitch */, int alpha, SPT *dst,
+		                         int    dst_pitch,    int w, int h)
 		{
 			for (int i = 0; i < w; i++) {
 
@@ -111,7 +97,7 @@ class Icon_painter
 				SPT *d =  dst;
 
 				for (int j = 0; j < h; j++, d += dst_pitch)
-					_transfer_pixel(s, sa, alpha, d);
+					SPT::transfer(s, sa, alpha, *d);
 
 				src += 1, src_a += 1, dst += 1;
 			}
@@ -123,8 +109,8 @@ class Icon_painter
 		 */
 		template <typename SPT, typename TPT>
 		static void _draw_center(TPT const *src, unsigned char const *src_a,
-		                         int src_pitch, int alpha, SPT *dst,
-		                         int dst_pitch, int w, int h)
+		                         int /* src_pitch */, int alpha, SPT *dst,
+		                         int    dst_pitch,    int w, int h)
 		{
 			TPT  s = *src;
 			int sa = *src_a;
@@ -134,7 +120,7 @@ class Icon_painter
 				SPT *d = dst;
 
 				for (int i = 0; i < w; i++, d++)
-					_transfer_pixel(s, sa, alpha, d);
+					SPT::transfer(s, sa, alpha, *d);
 			}
 		}
 

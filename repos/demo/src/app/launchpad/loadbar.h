@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _LOADBAR_H_
@@ -18,30 +18,31 @@
 #include "styles.h"
 #include "fade_icon.h"
 
-#include <base/printf.h>
-#include <base/snprintf.h>
+#define LOADBAR_RGBA  _binary_loadbar_rgba_start
+#define REDBAR_RGBA   _binary_redbar_rgba_start
+#define WHITEBAR_RGBA _binary_whitebar_rgba_start
 
-
-#define LOADBAR_RGBA _binary_loadbar_rgba_start
-#define REDBAR_RGBA _binary_redbar_rgba_start
-#define WHITEBAR_RGBA    _binary_whitebar_rgba_start
 extern unsigned char LOADBAR_RGBA[];
 extern unsigned char REDBAR_RGBA[];
 extern unsigned char WHITEBAR_RGBA[];
 
-class Loadbar_listener
+struct Loadbar_listener
 {
-	public:
+	virtual ~Loadbar_listener() { }
 
-		virtual ~Loadbar_listener() { }
-
-		virtual void loadbar_changed(int mx) = 0;
+	virtual void loadbar_changed(int mx) = 0;
 };
 
 
 class Loadbar_event_handler : public Scout::Event_handler
 {
 	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Loadbar_event_handler(Loadbar_event_handler const &);
+		Loadbar_event_handler &operator = (Loadbar_event_handler const &);
 
 		Loadbar_listener *_listener;
 
@@ -53,7 +54,7 @@ class Loadbar_event_handler : public Scout::Event_handler
 		/**
 		 * Event handler interface
 		 */
-		void handle(Scout::Event &ev)
+		void handle_event(Scout::Event const &ev) override
 		{
 			static int key_cnt;
 			using Scout::Event;
@@ -73,6 +74,12 @@ class Loadbar : public Scout::Parent_element
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Loadbar(Loadbar const &);
+		Loadbar &operator = (Loadbar const &);
+
 		enum {
 			_LW = 16,
 			_LH = 16,
@@ -80,8 +87,8 @@ class Loadbar : public Scout::Parent_element
 
 		bool _active;
 
-		Scout::Fade_icon<PT, _LW, _LH> _cover;
-		Scout::Fade_icon<PT, _LW, _LH> _bar;
+		Scout::Fade_icon<PT, _LW, _LH> _cover { };
+		Scout::Fade_icon<PT, _LW, _LH> _bar   { };
 
 		Loadbar_event_handler _ev_handler;
 
@@ -157,15 +164,15 @@ class Loadbar : public Scout::Parent_element
 		{
 			if (!_font) return;
 			_txt     = txt;
-			_txt_w   = _font->str_w(_txt, Scout::strlen(_txt));
-			_txt_h   = _font->str_h(_txt, Scout::strlen(_txt));
+			_txt_w   = _font->string_width(_txt, Scout::strlen(_txt)).decimal();
+			_txt_h   = _font->bounding_box().h();
 			_txt_len = Scout::strlen(_txt);
 		}
 
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			using namespace Scout;
 			_cover.geometry(Rect(Point(0, 0), Area(w, _LH)));
@@ -173,7 +180,7 @@ class Loadbar : public Scout::Parent_element
 			_min_size = Scout::Area(w, _min_size.h());
 		}
 
-		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position)
+		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position) override
 		{
 			Parent_element::draw(canvas, abs_position);
 
@@ -200,7 +207,7 @@ class Loadbar : public Scout::Parent_element
 			canvas.clip(Rect(Point(cx1, cy1), Area(cx2 - cx1 + 1, cy2 - cy1 + 1)));
 		}
 
-		void mfocus(int flag)
+		void mfocus(int flag) override
 		{
 			if (!_active) return;
 
@@ -215,27 +222,31 @@ class Kbyte_loadbar : public Loadbar<PT>
 {
 	private:
 
-		char _label[32];
+		typedef Genode::String<32> Label;
 
-		void _print_kbytes(int kbytes, char *dst, int dst_len)
+		Label _label { };
+
+		struct Kbytes
 		{
-			if (kbytes >= 10*1024)
-				Genode::snprintf(dst, dst_len, "%d MByte", kbytes / 1024);
-			else
-				Genode::snprintf(dst, dst_len, "%d KByte", kbytes);
-		}
+			int const _value;
+
+			Kbytes(int value) : _value(value) { }
+
+			void print(Genode::Output &out) const
+			{
+				if (_value >= 10*1024)
+					Genode::print(out, _value/1024, " MByte");
+				else
+					Genode::print(out, _value, " KByte");
+			}
+		};
 
 		void _update_label()
 		{
-			char value_buf[16];
-			char max_buf[16];
+			_label = Label(Kbytes(Loadbar<PT>::value()), " / ",
+			               Kbytes(Loadbar<PT>::max_value()));
 
-			_print_kbytes(Loadbar<PT>::value(), value_buf, sizeof(value_buf));
-			_print_kbytes(Loadbar<PT>::max_value(), max_buf, sizeof(max_buf));
-
-			Genode::snprintf(_label, sizeof(_label), "%s / %s", value_buf, max_buf);
-
-			Loadbar<PT>::txt(_label);
+			Loadbar<PT>::txt(_label.string());
 		}
 
 	public:
@@ -243,7 +254,6 @@ class Kbyte_loadbar : public Loadbar<PT>
 		Kbyte_loadbar(Loadbar_listener *listener, Scout::Font *font = 0):
 			Loadbar<PT>(listener, font)
 		{
-			_label[0] = 0;
 			_update_label();
 		}
 

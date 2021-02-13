@@ -10,10 +10,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__TRACE__SUBJECT_REGISTRY_H_
@@ -22,7 +22,7 @@
 /* Genode includes */
 #include <util/list.h>
 #include <util/string.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/trace/types.h>
 #include <base/env.h>
 #include <base/weak_ptr.h>
@@ -54,16 +54,22 @@ class Genode::Trace::Subject
 		{
 			private:
 
-				Ram_session             *_ram;
-				size_t                   _size;
-				Ram_dataspace_capability _ds;
+				Ram_allocator           *_ram_ptr { nullptr };
+				size_t                   _size    { 0 };
+				Ram_dataspace_capability _ds      { };
 
 				void _reset()
 				{
-					_ram  = 0;
-					_size = 0;
-					_ds   = Ram_dataspace_capability();
+					_ram_ptr = nullptr;
+					_size    = 0;
+					_ds      = Ram_dataspace_capability();
 				}
+
+				/*
+				 * Noncopyable
+				 */
+				Ram_dataspace(Ram_dataspace const &);
+				Ram_dataspace &operator = (Ram_dataspace const &);
 
 			public:
 
@@ -73,42 +79,44 @@ class Genode::Trace::Subject
 
 				/**
 				 * Allocate new dataspace
-				 *
-				 * \return true on success, false on the attempt to call setup
-				 *         twice.
 				 */
-				bool setup(Ram_session &ram, size_t size)
+				void setup(Ram_allocator &ram, size_t size)
 				{
-					if (_size)
-						return false;
+					if (_size && _size == size)
+						return;
 
-					_ram  = &ram;
-					_size = size;
-					_ds   = ram.alloc(size);
-					return true;
+					if (_size)
+						_ram_ptr->free(_ds);
+
+					_ds      = ram.alloc(size); /* may throw */
+					_ram_ptr = &ram;
+					_size    = size;
 				}
 
 				/**
 				 * Clone dataspace into newly allocated dataspace
 				 */
-				bool setup(Ram_session &ram, Dataspace_capability &from_ds,
-				           size_t size)
+				bool setup(Ram_allocator &ram, Region_map &local_rm,
+				           Dataspace_capability &from_ds, size_t size)
 				{
 					if (!from_ds.valid())
 						return false;
 
-					_ram  = &ram;
-					_size = size;
-					_ds   = ram.alloc(_size);
+					if (_size)
+						flush();
+
+					_ram_ptr = &ram;
+					_size    = size;
+					_ds      = ram.alloc(_size);
 
 					/* copy content */
-					void *src = env()->rm_session()->attach(from_ds),
-					     *dst = env()->rm_session()->attach(_ds);
+					void *src = local_rm.attach(from_ds),
+					     *dst = local_rm.attach(_ds);
 
 					memcpy(dst, src, _size);
 
-					env()->rm_session()->detach(src);
-					env()->rm_session()->detach(dst);
+					local_rm.detach(src);
+					local_rm.detach(dst);
 
 					return true;
 				}
@@ -118,8 +126,8 @@ class Genode::Trace::Subject
 				 */
 				size_t flush()
 				{
-					if (_ram)
-						_ram->free(_ds);
+					if (_ram_ptr)
+						_ram_ptr->free(_ds);
 
 					_reset();
 					return 0;
@@ -135,9 +143,10 @@ class Genode::Trace::Subject
 		Weak_ptr<Source>    _source;
 		Session_label const _label;
 		Thread_name   const _name;
-		Ram_dataspace       _buffer;
-		Ram_dataspace       _policy;
-		Policy_id           _policy_id;
+		Ram_dataspace       _buffer { };
+		Ram_dataspace       _policy { };
+		Policy_id           _policy_id { };
+		size_t              _allocated_memory { 0 };
 
 		Subject_info::State _state()
 		{
@@ -148,12 +157,24 @@ class Genode::Trace::Subject
 				return Subject_info::DEAD;
 
 			if (source->enabled())
-				return source->owned_by(this) ? Subject_info::TRACED
-				                              : Subject_info::FOREIGN;
+				return source->owned_by(*this) ? Subject_info::TRACED
+				                               : Subject_info::FOREIGN;
 			if (source->error())
 				return Subject_info::ERROR;
 
 			return Subject_info::UNTRACED;
+		}
+
+		void _traceable_or_throw()
+		{
+			switch(_state()) {
+				case Subject_info::DEAD    : throw Source_is_dead();
+				case Subject_info::FOREIGN : throw Traced_by_other_session();
+				case Subject_info::ERROR   : throw Source_is_dead();
+				case Subject_info::INVALID : throw Nonexistent_subject();
+				case Subject_info::UNTRACED: return;
+				case Subject_info::TRACED  : return;
+			}
 		}
 
 	public:
@@ -178,33 +199,40 @@ class Genode::Trace::Subject
 		 */
 		bool has_source_id(unsigned id) const { return id == _source_id; }
 
+		size_t allocated_memory() const { return _allocated_memory; }
+		void   reset_allocated_memory() { _allocated_memory = 0; }
+
 		/**
 		 * Start tracing
 		 *
 		 * \param size  trace buffer size
 		 *
-		 * \throw   Out_of_metadata
-		 * \throw   Already_traced
-		 * \throw   Source_is_dead
-		 * \throw   Traced_by_other_session
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
+		 * \throw Already_traced
+		 * \throw Source_is_dead
+		 * \throw Traced_by_other_session
 		 */
 		void trace(Policy_id policy_id, Dataspace_capability policy_ds,
-		           size_t policy_size, Ram_session &ram, size_t size)
+		           size_t policy_size, Ram_allocator &ram,
+		           Region_map &local_rm, size_t size)
 		{
-			_policy_id = policy_id;
+			/* check state and throw error in case subject is not traceable */
+			_traceable_or_throw();
 
-			if (!_buffer.setup(ram, size)
-			 || !_policy.setup(ram, policy_ds, policy_size))
+			_buffer.setup(ram, size);
+			if(!_policy.setup(ram, local_rm, policy_ds, policy_size))
 				throw Already_traced();
 
 			/* inform trace source about the new buffer */
 			Locked_ptr<Source> source(_source);
 
-			if (!source.valid())
-				throw Source_is_dead();
-
-			if (!source->try_acquire(this))
+			if (!source->try_acquire(*this))
 				throw Traced_by_other_session();
+
+			_policy_id = policy_id;
+
+			_allocated_memory = policy_size + size;
 
 			source->trace(_policy.dataspace(), _buffer.dataspace());
 		}
@@ -281,11 +309,10 @@ class Genode::Trace::Subject_registry
 		typedef List<Subject> Subjects;
 
 		Allocator       &_md_alloc;
-		Ram_session     &_ram;
 		Source_registry &_sources;
-		unsigned         _id_cnt;
-		Lock             _lock;
-		Subjects         _entries;
+		unsigned         _id_cnt  { 0 };
+		Mutex            _mutex   { };
+		Subjects         _entries { };
 
 		/**
 		 * Functor for testing the existance of subjects for a given source
@@ -305,7 +332,7 @@ class Genode::Trace::Subject_registry
 						return true;
 				return false;
 			}
-		} _tester;
+		} _tester { _entries };
 
 		/**
 		 * Functor for inserting new subjects into the registry
@@ -322,24 +349,24 @@ class Genode::Trace::Subject_registry
 			                  Session_label const &label, Thread_name const &name)
 			{
 				Subject *subject = new (&registry._md_alloc)
-					Subject(Subject_id(registry._id_cnt++), source_id, source, label, name);
+					Subject(Subject_id(++registry._id_cnt), source_id, source, label, name);
 
 				registry._entries.insert(subject);
 			}
-		} _inserter;
+		} _inserter { *this };
 
 		/**
 		 * Destroy subject, and release policy and trace buffers
 		 *
 		 * \return RAM resources released during destruction
 		 */
-		size_t _unsynchronized_destroy(Subject *s)
+		size_t _unsynchronized_destroy(Subject &s)
 		{
-			_entries.remove(s);
+			_entries.remove(&s);
 
-			size_t const released_ram = s->release();
+			size_t const released_ram = s.release();
 
-			destroy(&_md_alloc, s);
+			destroy(&_md_alloc, &s);
 
 			return released_ram;
 		};
@@ -349,11 +376,11 @@ class Genode::Trace::Subject_registry
 		 *
 		 * \throw Nonexistent_subject
 		 */
-		Subject *_unsynchronized_lookup_by_id(Subject_id id)
+		Subject &_unsynchronized_lookup_by_id(Subject_id id)
 		{
 			for (Subject *s = _entries.first(); s; s = s->next())
 				if (s->id() == id)
-					return s;
+					return *s;
 
 			throw Nonexistent_subject();
 		}
@@ -365,14 +392,13 @@ class Genode::Trace::Subject_registry
 		 *
 		 * \param md_alloc  meta-data allocator used for allocating 'Subject'
 		 *                  objects.
-		 * \param ram       RAM session used for the allocation of trace
+		 * \param ram       allocator used for the allocation of trace
 		 *                  buffers and policy dataspaces.
 		 */
-		Subject_registry(Allocator &md_alloc, Ram_session &ram,
+		Subject_registry(Allocator &md_alloc,
 		                 Source_registry &sources)
 		:
-			_md_alloc(md_alloc), _ram(ram), _sources(sources), _id_cnt(0),
-			_tester(_entries), _inserter(*this)
+			_md_alloc(md_alloc), _sources(sources)
 		{ }
 
 		/**
@@ -380,18 +406,18 @@ class Genode::Trace::Subject_registry
 		 */
 		~Subject_registry()
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			while (Subject *s = _entries.first())
-				_unsynchronized_destroy(s);
+				_unsynchronized_destroy(*s);
 		}
 
 		/**
-		 * \throw  Ram_session::Quota_exceeded
+		 * \throw  Out_of_ram
 		 */
-		void import_new_sources(Source_registry &sources)
+		void import_new_sources(Source_registry &)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			_sources.export_sources(_tester, _inserter);
 		}
@@ -401,11 +427,27 @@ class Genode::Trace::Subject_registry
 		 */
 		size_t subjects(Subject_id *dst, size_t dst_len)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			unsigned i = 0;
 			for (Subject *s = _entries.first(); s && i < dst_len; s = s->next())
 				dst[i++] = s->id();
+			return i;
+		}
+
+		/**
+		 * Retrieve Subject_infos batched
+		 */
+		size_t subjects(Subject_info * const dst, Subject_id * ids, size_t const len)
+		{
+			Mutex::Guard guard(_mutex);
+
+			unsigned i = 0;
+			for (Subject *s = _entries.first(); s && i < len; s = s->next()) {
+				ids[i]   = s->id();
+				dst[i++] = s->info();
+			}
+
 			return i;
 		}
 
@@ -419,18 +461,15 @@ class Genode::Trace::Subject_registry
 		 */
 		size_t release(Subject_id subject_id)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
-			Subject *subject = _unsynchronized_lookup_by_id(subject_id);
-			if (subject)
-				return _unsynchronized_destroy(subject);
-
-			return 0;
+			Subject &subject = _unsynchronized_lookup_by_id(subject_id);
+			return _unsynchronized_destroy(subject);
 		}
 
-		Subject *lookup_by_id(Subject_id id)
+		Subject &lookup_by_id(Subject_id id)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			return _unsynchronized_lookup_by_id(id);
 		}

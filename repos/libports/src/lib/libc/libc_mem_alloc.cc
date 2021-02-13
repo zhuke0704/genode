@@ -16,10 +16,10 @@
 /* Genode includes */
 #include <base/env.h>
 #include <base/allocator_avl.h>
-#include <base/printf.h>
 
-/* local includes */
-#include "libc_mem_alloc.h"
+/* libc-internal includes */
+#include <internal/mem_alloc.h>
+#include <internal/init.h>
 
 using namespace Genode;
 
@@ -36,11 +36,13 @@ Libc::Mem_alloc_impl::Dataspace_pool::~Dataspace_pool()
 		 */
 
 		Ram_dataspace_capability ds_cap = ds->cap;
+		void const * const local_addr = ds->local_addr;
 
 		remove(ds);
 		delete ds;
-		_region_map->detach(ds->local_addr);
-		_ram_session->free(ds_cap);
+
+		_region_map->detach(local_addr);
+		_ram->free(ds_cap);
 	}
 }
 
@@ -52,12 +54,16 @@ int Libc::Mem_alloc_impl::Dataspace_pool::expand(size_t size, Range_allocator *a
 
 	/* make new ram dataspace available at our local address space */
 	try {
-		new_ds_cap = _ram_session->alloc(size);
-		local_addr = _region_map->attach(new_ds_cap);
-	} catch (Ram_session::Alloc_failed) {
-		return -2;
-	} catch (Region_map::Attach_failed) {
-		_ram_session->free(new_ds_cap);
+		new_ds_cap = _ram->alloc(size);
+
+		enum { MAX_SIZE = 0, NO_OFFSET = 0, ANY_LOCAL_ADDR = false };
+		local_addr = _region_map->attach(new_ds_cap, MAX_SIZE, NO_OFFSET,
+		                                 ANY_LOCAL_ADDR, nullptr, _executable);
+	}
+	catch (Out_of_ram) { return -2; }
+	catch (Out_of_caps) { return -4; }
+	catch (Region_map::Region_conflict) {
+		_ram->free(new_ds_cap);
 		return -3;
 	}
 
@@ -66,7 +72,7 @@ int Libc::Mem_alloc_impl::Dataspace_pool::expand(size_t size, Range_allocator *a
 
 	/* now that we have new backing store, allocate Dataspace structure */
 	if (alloc->alloc_aligned(sizeof(Dataspace), &ds_addr, 2).error()) {
-		PWRN("could not allocate meta data - this should never happen");
+		warning("libc: could not allocate meta data - this should never happen");
 		return -1;
 	}
 
@@ -81,7 +87,7 @@ int Libc::Mem_alloc_impl::Dataspace_pool::expand(size_t size, Range_allocator *a
 void *Libc::Mem_alloc_impl::alloc(size_t size, size_t align_log2)
 {
 	/* serialize access of heap functions */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
 	/* try allocation at our local allocator */
 	void *out_addr = 0;
@@ -90,11 +96,12 @@ void *Libc::Mem_alloc_impl::alloc(size_t size, size_t align_log2)
 
 	/*
 	 * Calculate block size of needed backing store. The block must hold the
-	 * requested 'size' with the requested alignment and a new Dataspace
-	 * structure if the allocation above failed.
+	 * requested 'size' with the requested alignment, a new Dataspace structure
+	 * and space for AVL-node slab blocks if the allocation above failed.
 	 * Finally, we align the size to a 4K page.
 	 */
-	size_t request_size = size + max((1 << align_log2), 1024);
+	size_t request_size = size + max((1 << align_log2), 1024) +
+	                      Allocator_avl::slab_block_size() + sizeof(Dataspace);
 
 	if (request_size < _chunk_size*sizeof(umword_t)) {
 		request_size = _chunk_size*sizeof(umword_t);
@@ -107,7 +114,7 @@ void *Libc::Mem_alloc_impl::alloc(size_t size, size_t align_log2)
 	}
 
 	if (_ds_pool.expand(align_addr(request_size, 12), &_alloc) < 0) {
-		PWRN("could not expand dataspace pool");
+		warning("libc: could not expand dataspace pool");
 		return 0;
 	}
 
@@ -119,27 +126,49 @@ void *Libc::Mem_alloc_impl::alloc(size_t size, size_t align_log2)
 void Libc::Mem_alloc_impl::free(void *addr)
 {
 	/* serialize access of heap functions */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
 	/* forward request to our local allocator */
 	_alloc.free(addr);
 }
 
 
-Genode::size_t Libc::Mem_alloc_impl::size_at(void const *addr) const
+size_t Libc::Mem_alloc_impl::size_at(void const *addr) const
 {
 	/* serialize access of heap functions */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
 	/* forward request to our local allocator */
 	return _alloc.size_at(addr);
 }
 
 
-Libc::Mem_alloc *Libc::mem_alloc()
+static Libc::Mem_alloc *_libc_mem_alloc_rw  = nullptr;
+static Libc::Mem_alloc *_libc_mem_alloc_rwx = nullptr;
+
+
+static void _init_mem_alloc(Region_map &rm, Ram_allocator &ram)
 {
-	static Libc::Mem_alloc_impl inst;
-	return &inst;
+	enum { MEMORY_EXECUTABLE = true };
+
+	static Libc::Mem_alloc_impl inst_rw(rm, ram, !MEMORY_EXECUTABLE);
+	static Libc::Mem_alloc_impl inst_rwx(rm, ram, MEMORY_EXECUTABLE);
+
+	_libc_mem_alloc_rw  = &inst_rw;
+	_libc_mem_alloc_rwx = &inst_rwx;
 }
 
 
+void Libc::init_mem_alloc(Genode::Env &env)
+{
+	_init_mem_alloc(env.rm(), env.ram());
+}
+
+
+Libc::Mem_alloc *Libc::mem_alloc(bool executable)
+{
+	if (!_libc_mem_alloc_rw || !_libc_mem_alloc_rwx)
+		error("attempt to use 'Libc::mem_alloc' before call of 'init_mem_alloc'");
+
+	return executable ? _libc_mem_alloc_rwx : _libc_mem_alloc_rw;
+}

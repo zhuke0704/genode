@@ -6,138 +6,120 @@
  */
 
 /*
- * Copyright (C) 2013-2016 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-/* core includes */
-#include <assert.h>
-#include <kernel/thread.h>
-#include <kernel/pd.h>
+#include <cpu/memory_barrier.h>
+
+#include <platform_pd.h>
+#include <kernel/cpu.h>
 #include <kernel/kernel.h>
+#include <kernel/pd.h>
+#include <kernel/thread.h>
 
 using namespace Kernel;
 
-void Kernel::Thread::_init() { cpu_exception = RESET; }
+extern "C" void kernel_to_user_context_switch(Cpu::Context*, Cpu::Fpu_context*);
 
 
-void Thread::exception(unsigned const cpu)
+void Thread::exception(Cpu & cpu)
 {
-	switch (cpu_exception) {
-	case SUPERVISOR_CALL:
+	switch (regs->cpu_exception) {
+	case Cpu::Context::SUPERVISOR_CALL:
 		_call();
 		return;
-	case PREFETCH_ABORT:
-	case DATA_ABORT:
+	case Cpu::Context::PREFETCH_ABORT:
+	case Cpu::Context::DATA_ABORT:
 		_mmu_exception();
 		return;
-	case INTERRUPT_REQUEST:
-	case FAST_INTERRUPT_REQUEST:
-		_interrupt(cpu);
+	case Cpu::Context::INTERRUPT_REQUEST:
+	case Cpu::Context::FAST_INTERRUPT_REQUEST:
+		_interrupt(cpu.id());
 		return;
-	case UNDEFINED_INSTRUCTION:
-		if (_cpu->retry_undefined_instr(*this)) { return; }
-		PWRN("%s -> %s: undefined instruction at ip=%p",
-		     pd_label(), label(), (void*)ip);
-		_stop();
+	case Cpu::Context::UNDEFINED_INSTRUCTION:
+		Genode::raw(*this, ": undefined instruction at ip=",
+		            Genode::Hex(regs->ip));
+		_die();
 		return;
-	case RESET:
+	case Cpu::Context::RESET:
 		return;
 	default:
-		PWRN("%s -> %s: triggered an unknown exception %lu",
-		     pd_label(), label(), (unsigned long)cpu_exception);
-		_stop();
+		Genode::raw(*this, ": triggered an unknown exception ",
+		            regs->cpu_exception);
+		_die();
 		return;
 	}
 }
 
 
-void Thread::_mmu_exception()
+void Kernel::Thread::_call_cache_coherent_region()
 {
-	_become_inactive(AWAITS_RESUME);
-	if (in_fault(_fault_addr, _fault_writes)) {
-		_fault_pd     = (addr_t)_pd->platform_pd();
-		_fault_signal = (addr_t)_fault.signal_context();
+	addr_t       base = (addr_t) user_arg_1();
+	size_t const size = (size_t) user_arg_2();
 
-		/**
-		 * core should never raise a page-fault,
-		 * if this happens print out an error message with debug information
-		 */
-		if (_pd == Kernel::core_pd())
-			PERR("Pagefault in core thread (%s): ip=%p fault=%p",
-			     label(), (void*)ip, (void*)_fault_addr);
-
-		_fault.submit();
-		return;
-	}
-	PERR("%s -> %s: raised unhandled %s DFSR=0x%08x ISFR=0x%08x "
-	     "DFAR=0x%08x ip=0x%08lx sp=0x%08lx", pd_label(), label(),
-	     cpu_exception == DATA_ABORT ? "data abort" : "prefetch abort",
-	     Cpu::Dfsr::read(), Cpu::Ifsr::read(), Cpu::Dfar::read(), ip, sp);
-}
-
-
-void Kernel::Thread::_call_update_data_region()
-{
-	Cpu * const cpu  = cpu_pool()->cpu(Cpu::executing_id());
-
-	/*
-	 * FIXME: If the caller is not a core thread, the kernel operates in a
-	 *        different address space than the caller. Combined with the fact
-	 *        that at least ARMv7 doesn't provide cache operations by physical
-	 *        address, this prevents us from selectively maintaining caches.
-	 *        The future solution will be a kernel that is mapped to every
-	 *        address space so we can use virtual addresses of the caller. Up
-	 *        until then we apply operations to caches as a whole instead.
+	/**
+	 * sanity check that only one small page is affected,
+	 * because we only want to lookup one page in the page tables
+	 * to limit execution time within the kernel
 	 */
-	if (!_core()) {
-		cpu->clean_invalidate_data_cache();
+	if (Hw::trunc_page(base) != Hw::trunc_page(base+size-1)) {
+		Genode::raw(*this, " tried to make cross-page region cache coherent ",
+		            (void*)base, " ", size);
 		return;
 	}
-	auto base = (addr_t)user_arg_1();
-	auto const size = (size_t)user_arg_2();
-	cpu->clean_invalidate_data_cache_by_virt_region(base, size);
-	cpu->invalidate_instr_cache();
-}
 
-
-void Kernel::Thread::_call_update_instr_region()
-{
-	Cpu * const cpu  = cpu_pool()->cpu(Cpu::executing_id());
-
-	/*
-	 * FIXME: If the caller is not a core thread, the kernel operates in a
-	 *        different address space than the caller. Combined with the fact
-	 *        that at least ARMv7 doesn't provide cache operations by physical
-	 *        address, this prevents us from selectively maintaining caches.
-	 *        The future solution will be a kernel that is mapped to every
-	 *        address space so we can use virtual addresses of the caller. Up
-	 *        until then we apply operations to caches as a whole instead.
+	/**
+	 * Lookup whether the page is backed, and if so make the memory coherent
+	 * in between I-, and D-cache
 	 */
-	if (!_core()) {
-		cpu->clean_invalidate_data_cache();
-		cpu->invalidate_instr_cache();
-		return;
+	addr_t phys = 0;
+	if (pd().platform_pd().lookup_translation(base, phys)) {
+		Cpu::cache_coherent_region(base, size);
+	} else {
+		Genode::raw(*this, " tried to make invalid address ",
+		            base, " cache coherent");
 	}
-	auto base = (addr_t)user_arg_1();
-	auto const size = (size_t)user_arg_2();
-	cpu->clean_invalidate_data_cache_by_virt_region(base, size);
-	cpu->invalidate_instr_cache_by_virt_region(base, size);
 }
 
 
-void Thread_event::_signal_acknowledged()
+/**
+ * on ARM with multiprocessing extensions, maintainance operations on TLB,
+ * and caches typically work coherently across CPUs when using the correct
+ * coprocessor registers (there might be ARM SoCs where this is not valid,
+ * with several shareability domains, but until now we do not support them)
+ */
+void Kernel::Thread::Tlb_invalidation::execute() { };
+
+
+void Thread::proceed(Cpu & cpu)
 {
-	/*
-	 * FIXME: this is currently only called as reply to a page-fault resolution.
-	 *        On some ARM platforms, we have to do maintainance operations
-	 *        after new page table entries where added. If core runs completely
-	 *        in privileged mode, we should move this hook to the mappings
-	 *        functions.
-	 */
-	cpu_pool()->cpu(Cpu::executing_id())->translation_table_insertions();
-	_thread->_resume();
+	cpu.switch_to(*regs, pd().mmu_regs);
+
+	regs->cpu_exception = cpu.stack_start();
+	kernel_to_user_context_switch((static_cast<Cpu::Context*>(&*regs)),
+	                              (static_cast<Cpu::Fpu_context*>(&*regs)));
 }
 
+
+void Thread::user_ret_time(Kernel::time_t const t)
+{
+	regs->r0 = t >> 32UL;
+	regs->r1 = t & ~0UL;
+}
+
+void Thread::user_arg_0(Kernel::Call_arg const arg) { regs->r0 = arg; }
+void Thread::user_arg_1(Kernel::Call_arg const arg) { regs->r1 = arg; }
+void Thread::user_arg_2(Kernel::Call_arg const arg) { regs->r2 = arg; }
+void Thread::user_arg_3(Kernel::Call_arg const arg) { regs->r3 = arg; }
+void Thread::user_arg_4(Kernel::Call_arg const arg) { regs->r4 = arg; }
+void Thread::user_arg_5(Kernel::Call_arg const arg) { regs->r5 = arg; }
+
+Kernel::Call_arg Thread::user_arg_0() const { return regs->r0; }
+Kernel::Call_arg Thread::user_arg_1() const { return regs->r1; }
+Kernel::Call_arg Thread::user_arg_2() const { return regs->r2; }
+Kernel::Call_arg Thread::user_arg_3() const { return regs->r3; }
+Kernel::Call_arg Thread::user_arg_4() const { return regs->r4; }
+Kernel::Call_arg Thread::user_arg_5() const { return regs->r5; }

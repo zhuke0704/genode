@@ -5,18 +5,24 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
+/* Genode includes */
 #include <base/thread.h>
 
+/* base-internal includes */
+#include <base/internal/native_utcb.h>
 
-Genode::Thread *Genode::Thread::myself()
+using namespace Genode;
+
+
+Thread *Thread::myself()
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	return reinterpret_cast<Thread*>(l4_utcb_tcr()->user[UTCB_TCR_THREAD_OBJ]);
 }

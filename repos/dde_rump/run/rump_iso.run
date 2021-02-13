@@ -5,18 +5,17 @@ if {[have_spec arm]} {
 #
 # Check used commands
 #
-set mkisofs [check_installed mkisofs]
+set mkisofs [installed_command mkisofs]
 
-#
 #
 # Build
 #
 set build_components {
-	core init
-	drivers/timer
+	core init timer
 	server/fs_rom
-	server/rom_blk
-	server/rump_fs
+	server/vfs_block
+	server/vfs
+	lib/vfs/rump
 	test/iso
 }
 
@@ -30,7 +29,6 @@ append config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -42,19 +40,29 @@ append config {
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="100"/>
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
 	</start>
-	<start name="rom_blk">
+	<start name="vfs_block">
 		<resource name="RAM" quantum="2M"/>
 		<provides><service name="Block"/></provides>
-		<config file="fs.iso" block_size="2048"/>
+		<config>
+			<vfs>
+				<rom name="fs.iso"/>
+			</vfs>
+			<default-policy file="/fs.iso" block_size="2048"
+			                writeable="no"/>
+		</config>
 	</start>
-	<start name="rump_fs">
-		<resource name="RAM" quantum="8M" />
+	<start name="vfs" caps="200">
+		<resource name="RAM" quantum="12M" />
 		<provides><service name="File_system"/></provides>
-		<config fs="cd9660"><policy label="fs_rom" root="/" writeable="no"/></config>
+		<config>
+			<vfs> <rump fs="cd9660" ram="10M" writeable="no"/> </vfs>
+			<policy label_prefix="fs_rom" root="/" writeable="no"/>
+		</config>
 	</start>
 	<start name="fs_rom">
 		<resource name="RAM" quantum="2M"/>
@@ -62,8 +70,9 @@ append config {
 	</start>
 	<start name="test-iso">
 		<resource name="RAM" quantum="1M" />
+		<config/>
 		<route>
-			<service name="ROM"><child name="fs_rom"/></service>
+			<service name="ROM" label_prefix=""><child name="fs_rom"/></service>
 			<any-service> <parent/> <any-child /> </any-service>
 		</route>
 	</start>
@@ -88,17 +97,16 @@ install_config $config
 # Boot modules
 #
 set boot_modules {
-	core init timer test-iso rom_blk
-	rump.lib.so rump_fs.lib.so rump_fs
-	ld.lib.so fs.iso fs_rom
+	core ld.lib.so init timer test-iso vfs_block
+	rump.lib.so rump_fs.lib.so vfs_rump.lib.so vfs vfs.lib.so
+	fs.iso fs_rom
 }
-
 
 build_boot_image $boot_modules
 
-append qemu_args "-nographic -m 64"
+append qemu_args "-nographic "
 
-run_genode_until {child "test-iso" exited with exit value 0.*\n} 60
+run_genode_until {child .* exited with exit value 0.*\n} 60
 
 # pay only attention to the output of init and its children
 grep_output {^\[init -> test-iso}

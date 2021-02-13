@@ -6,22 +6,26 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_H_
 #define _CORE__INCLUDE__PLATFORM_H_
 
+/* Genode includes */
 #include <base/allocator_avl.h>
 
+/* base-internal includes */
+#include <base/internal/capability_space.h>
+
+/* core-local includes */
 #include "synced_range_allocator.h"
 #include "platform_generic.h"
 #include "platform_thread.h"
 #include "platform_pd.h"
-#include "multiboot.h"
 
 
 namespace Genode {
@@ -35,17 +39,15 @@ namespace Genode {
 			 */
 			typedef Synced_range_allocator<Allocator_avl> Phys_allocator;
 
-			Phys_allocator   _ram_alloc;      /* RAM allocator */
-			Phys_allocator   _io_mem_alloc;   /* MMIO allocator */
-			Phys_allocator   _io_port_alloc;  /* I/O port allocator */
-			Phys_allocator   _irq_alloc;      /* IRQ allocator */
-			Phys_allocator   _region_alloc;   /* virtual memory allocator for core */
-			Multiboot_info   _mb_info;        /* multiboot information */
-			Rom_fs           _rom_fs;         /* ROM file system */
-			Rom_module       _kip_rom;        /* ROM module for Fiasco KIP */
-
-			addr_t           _vm_start;       /* begin of virtual memory */
-			size_t           _vm_size;        /* size of virtual memory */
+			Phys_allocator _ram_alloc;      /* RAM allocator */
+			Phys_allocator _io_mem_alloc;   /* MMIO allocator */
+			Phys_allocator _io_port_alloc;  /* I/O port allocator */
+			Phys_allocator _irq_alloc;      /* IRQ allocator */
+			Phys_allocator _region_alloc;   /* virtual memory allocator for core */
+			Rom_fs         _rom_fs { };     /* ROM file system */
+			Rom_module     _kip_rom;        /* ROM module for Fiasco KIP */
+			addr_t         _vm_start = 0;   /* begin of virtual memory */
+			size_t         _vm_size  = 0;   /* size of virtual memory */
 
 			/*
 			 * We do not export any boot module loaded before FIRST_ROM.
@@ -57,7 +59,6 @@ namespace Genode {
 			 *
 			 * - Map and provide KIP as ROM module
 			 * - Initializes region allocator
-			 * - Initializes multiboot info structure
 			 */
 			void _setup_basics();
 
@@ -84,7 +85,9 @@ namespace Genode {
 			/**
 			 * Parse multi-boot information and update ROM database
 			 */
-			void _setup_rom();
+			void _init_rom_modules();
+
+			addr_t _rom_module_phys(addr_t virt) { return virt; }
 
 		public:
 
@@ -98,13 +101,13 @@ namespace Genode {
 				 */
 				Sigma0();
 
-				int pager(Ipc_pager &ps) { /* never called */ return -1; }
+				int pager(Ipc_pager &) override { /* never called */ return -1; }
 			};
 
 			/**
 			 * Return singleton instance of Sigma0 pager object
 			 */
-			static Sigma0 *sigma0();
+			static Sigma0 &sigma0();
 
 			/**
 			 * Core pager thread that handles core-internal page-faults
@@ -114,15 +117,15 @@ namespace Genode {
 				/**
 				 * Constructor
 				 */
-				Core_pager(Platform_pd *core_pd);
+				Core_pager(Platform_pd &core_pd);
 
-				int pager(Ipc_pager &ps) { /* never called */ return -1; }
+				int pager(Ipc_pager &) override { /* never called */ return -1; }
 			};
 
 			/**
 			 * Return singleton instance of core pager object
 			 */
-			Core_pager *core_pager();
+			Core_pager &core_pager();
 
 			/**
 			 * Constructor
@@ -132,26 +135,27 @@ namespace Genode {
 			/**
 			 * Return singleton instance of core PD object
 			 */
-			Platform_pd *core_pd();
+			Platform_pd &core_pd();
 
 
 			/********************************
 			 ** Generic platform interface **
 			 ********************************/
 
-			Range_allocator *core_mem_alloc() { return &_ram_alloc; }
-			Range_allocator *ram_alloc()      { return &_ram_alloc; }
-			Range_allocator *io_mem_alloc()   { return &_io_mem_alloc; }
-			Range_allocator *io_port_alloc()  { return &_io_port_alloc; }
-			Range_allocator *irq_alloc()      { return &_irq_alloc; }
-			Range_allocator *region_alloc()   { return &_region_alloc; }
-			addr_t           vm_start() const { return _vm_start; }
-			size_t           vm_size()  const { return _vm_size; }
-			Rom_fs          *rom_fs()         { return &_rom_fs; }
+			Range_allocator &core_mem_alloc() override { return _ram_alloc; }
+			Range_allocator &ram_alloc()      override { return _ram_alloc; }
+			Range_allocator &io_mem_alloc()   override { return _io_mem_alloc; }
+			Range_allocator &io_port_alloc()  override { return _io_port_alloc; }
+			Range_allocator &irq_alloc()      override { return _irq_alloc; }
+			Range_allocator &region_alloc()   override { return _region_alloc; }
+			addr_t           vm_start() const override { return _vm_start; }
+			size_t           vm_size()  const override { return _vm_size; }
+			Rom_fs          &rom_fs()         override { return _rom_fs; }
+			size_t           max_caps() const override { return Capability_space::max_caps(); }
 
-			void wait_for_exit();
+			void wait_for_exit() override;
 
-			Affinity::Space affinity_space() const
+			Affinity::Space affinity_space() const override
 			{
 				/*
 				 * Ignore topology of CPU nodes, just return a one-dimensional

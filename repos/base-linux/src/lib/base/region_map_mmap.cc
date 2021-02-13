@@ -26,10 +26,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Linux includes */
@@ -53,10 +53,20 @@ using namespace Genode;
 
 static bool is_sub_rm_session(Dataspace_capability ds)
 {
-	if (ds.valid())
+	if (ds.valid() && !local(ds))
 		return false;
 
 	return Local_capability<Dataspace>::deref(ds) != 0;
+}
+
+
+/**
+ * Mutex for protecting mmap/unmap sequences and region-map meta data
+ */
+static Mutex &mutex()
+{
+	static Mutex mutex { };
+	return mutex;
 }
 
 
@@ -98,8 +108,8 @@ addr_t Region_map_mmap::_reserve_local(bool           use_local_addr,
 
 	if ((use_local_addr && addr_in != addr_out)
 	 || (((long)addr_out < 0) && ((long)addr_out > -4095))) {
-		PERR("_reserve_local: lx_mmap failed (addr_in=%p,addr_out=%p/%ld)",
-		     addr_in, addr_out, (long)addr_out);
+		error("_reserve_local: lx_mmap failed "
+		      "(addr_in=", addr_in, ",addr_out=", addr_out, "/", (long)addr_out, ")");
 		throw Region_map::Region_conflict();
 	}
 
@@ -113,10 +123,11 @@ void *Region_map_mmap::_map_local(Dataspace_capability ds,
                                   bool                 use_local_addr,
                                   addr_t               local_addr,
                                   bool                 executable,
-                                  bool                 overmap)
+                                  bool                 overmap,
+                                  bool                 writeable)
 {
 	int  const  fd        = _dataspace_fd(ds);
-	bool const  writable  = _dataspace_writable(ds);
+	bool const  writable  = _dataspace_writable(ds) && writeable;
 
 	int  const  flags     = MAP_SHARED | (overmap ? MAP_FIXED : 0);
 	int  const  prot      = PROT_READ
@@ -139,8 +150,9 @@ void *Region_map_mmap::_map_local(Dataspace_capability ds,
 
 	if ((use_local_addr && addr_in != addr_out)
 	 || (((long)addr_out < 0) && ((long)addr_out > -4095))) {
-		PERR("_map_local: lx_mmap failed (addr_in=%p,addr_out=%p/%ld) overmap=%d",
-		     addr_in, addr_out, (long)addr_out, overmap);
+		error("_map_local: lx_mmap failed"
+		      "(addr_in=", addr_in, ", addr_out=", addr_out, "/", (long)addr_out, ") "
+		      "overmap=", overmap);
 		throw Region_map::Region_conflict();
 	}
 
@@ -151,7 +163,7 @@ void *Region_map_mmap::_map_local(Dataspace_capability ds,
 void Region_map_mmap::_add_to_rmap(Region const &region)
 {
 	if (_rmap.add_region(region) < 0) {
-		PERR("_add_to_rmap: could not add region to sub RM session");
+		error("_add_to_rmap: could not add region to sub RM session");
 		throw Region_conflict();
 	}
 }
@@ -161,20 +173,23 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
                                                size_t size, off_t offset,
                                                bool use_local_addr,
                                                Region_map::Local_addr local_addr,
-                                               bool executable)
+                                               bool executable, bool writeable)
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard mutex_guard(mutex());
 
 	/* only support attach_at for sub RM sessions */
 	if (_sub_rm && !use_local_addr) {
-		PERR("Region_map_mmap::attach: attaching w/o local addr not supported\n");
-		throw Out_of_metadata();
+		error("Region_map_mmap::attach: attaching w/o local addr not supported");
+		throw Region_conflict();
 	}
 
 	if (offset < 0) {
-		PERR("Region_map_mmap::attach: negative offset not supported\n");
+		error("Region_map_mmap::attach: negative offset not supported");
 		throw Region_conflict();
 	}
+
+	if (!ds.valid())
+		throw Invalid_dataspace();
 
 	size_t const remaining_ds_size = _dataspace_size(ds) > (addr_t)offset
 	                               ? _dataspace_size(ds) - (addr_t)offset : 0;
@@ -204,7 +219,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 		 * Case 4
 		 */
 		if (is_sub_rm_session(ds)) {
-			PERR("Region_map_mmap::attach: nesting sub RM sessions is not supported");
+			error("Region_map_mmap::attach: nesting sub RM sessions is not supported");
 			throw Invalid_dataspace();
 		}
 
@@ -213,7 +228,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 		 * sub RM session
 		 */
 		if (region_size + (addr_t)local_addr > _size) {
-			PERR("Region_map_mmap::attach: dataspace does not fit in sub RM session");
+			error("Region_map_mmap::attach: dataspace does not fit in sub RM session");
 			throw Region_conflict();
 		}
 
@@ -228,7 +243,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 		 * argument as the region was reserved by a PROT_NONE mapping.
 		 */
 		if (_is_attached())
-			_map_local(ds, region_size, offset, true, _base + (addr_t)local_addr, executable, true);
+			_map_local(ds, region_size, offset, true, _base + (addr_t)local_addr, executable, true, writeable);
 
 		return (void *)local_addr;
 
@@ -249,8 +264,8 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 			 * Detect if sub RM session is already attached
 			 */
 			if (rm->_base) {
-				PERR("Region_map_mmap::attach: mapping a sub RM session twice is not supported");
-				throw Out_of_metadata();
+				error("Region_map_mmap::attach: mapping a sub RM session twice is not supported");
+				throw Region_conflict();
 			}
 
 			/*
@@ -279,7 +294,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 				 */
 				_map_local(region.dataspace(), region.size(), region.offset(),
 				           true, rm->_base + region.start() + region.offset(),
-				           executable, true);
+				           executable, true, writeable);
 			}
 
 			return rm->_base;
@@ -293,7 +308,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 			 * Note, we do not overmap.
 			 */
 			void *addr = _map_local(ds, region_size, offset, use_local_addr,
-			                        local_addr, executable);
+			                        local_addr, executable, false, writeable);
 
 			_add_to_rmap(Region((addr_t)addr, offset, ds, region_size));
 
@@ -305,7 +320,7 @@ Region_map::Local_addr Region_map_mmap::attach(Dataspace_capability ds,
 
 void Region_map_mmap::detach(Region_map::Local_addr local_addr)
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard mutex_guard(mutex());
 
 	/*
 	 * Cases

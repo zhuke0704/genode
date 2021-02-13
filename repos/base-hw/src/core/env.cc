@@ -5,14 +5,15 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-/* Genode includes */
-#include <base/native_env.h>
-#include <assert.h>
+#include <base/internal/native_env.h>
+#include <assertion.h>
 
-void Genode::upgrade_pd_session_quota(Genode::size_t quota) { assert(false); }
+using namespace Genode;
+
+void Genode::upgrade_capability_slab() { ASSERT_NEVER_CALLED; }

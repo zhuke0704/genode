@@ -5,19 +5,17 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__SIGNAL_SOURCE_COMPONENT_H_
 #define _CORE__INCLUDE__SIGNAL_SOURCE_COMPONENT_H_
 
 #include <signal_source/rpc_object.h>
-#include <base/allocator_guard.h>
 #include <base/tslab.h>
-#include <base/lock.h>
 #include <base/rpc_client.h>
 #include <base/rpc_server.h>
 #include <util/fifo.h>
@@ -29,26 +27,29 @@ namespace Genode {
 	class Signal_source_component;
 
 	typedef Fifo<Signal_context_component> Signal_queue;
+
+	struct Signal_context_slab;
 }
 
 
 class Genode::Signal_context_component : public Rpc_object<Signal_context>,
-                                         public Signal_queue::Element
+                                         private Signal_queue::Element
 {
 	private:
 
+		friend class Fifo<Signal_context_component>;
+
 		long                     _imprint;
-		int                      _cnt;
-		Signal_source_component *_source;
+		int                      _cnt = 0;
+		Signal_source_component &_source;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Signal_context_component(long imprint,
-		                         Signal_source_component *source)
-		: _imprint(imprint), _cnt(0), _source(source) { }
+		Signal_context_component(long imprint, Signal_source_component &source)
+		: _imprint(imprint), _source(source) { }
 
 		/**
 		 * Destructor
@@ -65,65 +66,35 @@ class Genode::Signal_context_component : public Rpc_object<Signal_context>,
 		 */
 		void reset_signal_cnt() { _cnt = 0; }
 
-		long                          imprint()  { return _imprint; }
-		int                           cnt()      { return _cnt; }
-		Signal_source_component      *source()   { return _source; }
+		long imprint() const { return _imprint; }
+		int  cnt()     const { return _cnt; }
+
+		Signal_source_component &source() { return _source; }
+
+		using Signal_queue::Element::enqueued;
 };
 
 
 class Genode::Signal_source_component : public Signal_source_rpc_object
 {
-	/**
-	 * Helper for clean destruction of signal-receiver component
-	 *
-	 * Normally, reply capabilities are implicitly destroyed when answering
-	 * an RPC call. But when destructing a signal session while a signal-
-	 * receiver client is blocking on a 'wait_for_signal' call, this
-	 * blocking call will never return via the normal control flow
-	 * (signal submission). In this case, the reply capability would
-	 * outlive the signal session. To avoid the leakage of such reply
-	 * capabilities, we let the signal-session destructor perform a
-	 * core-local RPC call to the so-called 'Finalizer' object, which has
-	 * the sole purpose of replying to the last outstanding
-	 * 'wait_for_signal' call and thereby releasing the corresponding
-	 * reply capability.
-	 */
-	struct Finalizer
-	{
-		GENODE_RPC(Rpc_exit, void, exit);
-		GENODE_RPC_INTERFACE(Rpc_exit);
-	};
-
-	struct Finalizer_component : Rpc_object<Finalizer, Finalizer_component>
-	{
-		Signal_source_component &source;
-
-		Finalizer_component(Signal_source_component &source)
-		: source(source) { }
-
-		void exit();
-	};
-
 	private:
 
-		Signal_queue          _signal_queue;
-		Rpc_entrypoint       *_entrypoint;
-		Native_capability     _reply_cap;
-		Finalizer_component   _finalizer;
-		Capability<Finalizer> _finalizer_cap;
+		Signal_queue       _signal_queue { };
+		Rpc_entrypoint    &_entrypoint;
+		Native_capability  _reply_cap { };
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Signal_source_component(Rpc_entrypoint *rpc_entrypoint);
+		Signal_source_component(Rpc_entrypoint &);
 
 		~Signal_source_component();
 
-		void release(Signal_context_component *context);
+		void release(Signal_context_component &context);
 
-		void submit(Signal_context_component *context,
+		void submit(Signal_context_component &context,
 		            unsigned long             cnt);
 
 		/*****************************
@@ -136,8 +107,8 @@ class Genode::Signal_source_component : public Signal_source_rpc_object
 
 Genode::Signal_context_component::~Signal_context_component()
 {
-	if (enqueued() && _source)
-		_source->release(this);
+	if (enqueued())
+		_source.release(*this);
 }
 
 #endif /* _CORE__INCLUDE__SIGNAL_SOURCE_COMPONENT_H_ */

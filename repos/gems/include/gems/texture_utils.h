@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__GEMS__TEXTURE_UTILS_H_
@@ -17,14 +17,15 @@
 #include <os/texture.h>
 
 template <typename PT>
-static void scale(Genode::Texture<PT> const &src, Genode::Texture<PT> &dst)
+static void scale(Genode::Texture<PT> const &src, Genode::Texture<PT> &dst,
+                  Genode::Allocator &alloc)
 {
 	/* sanity check to prevent division by zero */
 	if (dst.size().count() == 0)
 		return;
 
 	Genode::size_t const row_num_bytes = dst.size().w()*4;
-	unsigned char *row = (unsigned char *)Genode::env()->heap()->alloc(row_num_bytes);
+	unsigned char *row = (unsigned char *)alloc.alloc(row_num_bytes);
 
 	unsigned const mx = (src.size().w() << 16) / dst.size().w();
 	unsigned const my = (src.size().h() << 16) / dst.size().h();
@@ -53,21 +54,22 @@ static void scale(Genode::Texture<PT> const &src, Genode::Texture<PT> &dst)
 		dst.rgba(row, dst.size().w(), y);
 	}
 
-	Genode::env()->heap()->free(row, row_num_bytes);
+	alloc.free(row, row_num_bytes);
 }
 
 
 template <typename SRC_PT, typename DST_PT>
 static void convert_pixel_format(Genode::Texture<SRC_PT> const &src,
                                  Genode::Texture<DST_PT>       &dst,
-                                 unsigned                       alpha)
+                                 unsigned                       alpha,
+                                 Genode::Allocator             &alloc)
 {
 	/* sanity check */
 	if (src.size() != dst.size())
 		return;
 
 	Genode::size_t const row_num_bytes = dst.size().w()*4;
-	unsigned char *row = (unsigned char *)Genode::env()->heap()->alloc(row_num_bytes);
+	unsigned char *row = (unsigned char *)alloc.alloc(row_num_bytes);
 
 	/* shortcuts */
 	unsigned const w = dst.size().w(), h = dst.size().h();
@@ -91,7 +93,7 @@ static void convert_pixel_format(Genode::Texture<SRC_PT> const &src,
 		dst.rgba(row, w, y);
 	}
 
-	Genode::env()->heap()->free(row, row_num_bytes);
+	alloc.free(row, row_num_bytes);
 }
 
 #endif /* _INCLUDE__GEMS__TEXTURE_UTILS_H_ */

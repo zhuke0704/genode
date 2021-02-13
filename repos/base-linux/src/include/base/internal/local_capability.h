@@ -4,24 +4,33 @@
  * \author Stefan Kalkowski
  * \date   2011-05-22
  *
- * A typed capability is a capability tied to one specifiec RPC interface
+ * A typed capability is a capability tied to one specifiec RPC interface.
  */
 
 /*
- * Copyright (C) 2011-2015 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#ifndef _INCLUDE__BASE__LOCAL_CAPABILITY_H_
-#define _INCLUDE__BASE__LOCAL_CAPABILITY_H_
+#ifndef _INCLUDE__BASE__INTERNAL__LOCAL_CAPABILITY_H_
+#define _INCLUDE__BASE__INTERNAL__LOCAL_CAPABILITY_H_
 
-#include <base/capability.h>
+#include <base/internal/capability_space_tpl.h>
 
 namespace Genode {
 	template <typename> class Local_capability;
+
+	/**
+	 * Return true if argument is a local capability
+	 */
+	static inline bool local(Untyped_capability const &cap)
+	{
+		return Capability_space::ipc_cap_data(cap).dst.socket.value == -1;
+	}
 }
+
 
 /**
  * Local capability referring to a specific RPC interface
@@ -44,7 +53,9 @@ class Genode::Local_capability
 		 * \return a capability that represents the local object.
 		 */
 		static Capability<RPC_INTERFACE> local_cap(RPC_INTERFACE* ptr) {
-			Untyped_capability cap(Cap_dst_policy::Dst(), (long)ptr);
+			Untyped_capability cap =
+				Capability_space::import(Rpc_destination::invalid(),
+				                         Rpc_obj_key((long)ptr));
 			return reinterpret_cap_cast<RPC_INTERFACE>(cap); }
 
 		/**
@@ -57,4 +68,4 @@ class Genode::Local_capability
 			return reinterpret_cast<RPC_INTERFACE*>(c.local_name()); }
 };
 
-#endif /* _INCLUDE__BASE__LOCAL_CAPABILITY_H_ */
+#endif /* _INCLUDE__BASE__INTERNAL__LOCAL_CAPABILITY_H_ */

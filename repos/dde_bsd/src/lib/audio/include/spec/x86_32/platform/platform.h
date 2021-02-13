@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2015 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _X86_32__PLATFORM_H_
@@ -36,6 +36,7 @@ void platform_execute(void *sp, void *func, void *arg)
 	asm volatile ("movl %2, 0(%0);"
 	              "movl %1, -0x4(%0);"
 	              "movl %0, %%esp;"
+	              "xorl %%ebp, %%ebp;"  /* clear frame pointer */
 	              "call *-4(%%esp);"
 	              : : "r" (sp), "r" (func), "r" (arg));
 }

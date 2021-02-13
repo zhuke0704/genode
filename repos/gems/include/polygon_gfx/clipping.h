@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__POLYGON_GFX__CLIPPING_H_
@@ -52,12 +52,12 @@ struct Polygon::Point_base : Genode::Point<>
 	/**
 	 * Return edge attribute by ID
 	 */
-	inline int edge_attr(int id) const { return x(); }
+	inline int edge_attr(int) const { return x(); }
 
 	/**
 	 * Assign value to edge attribute with specified ID
 	 */
-	inline void edge_attr(int id, int value) { *this = Point_base(value, y()); }
+	inline void edge_attr(int, int value) { *this = Point_base(value, y()); }
 };
 
 

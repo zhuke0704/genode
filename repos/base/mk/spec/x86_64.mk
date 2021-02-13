@@ -9,7 +9,7 @@ SPECS += x86 64bit
 REP_INC_DIR += include/spec/x86
 REP_INC_DIR += include/spec/x86_64
 
-CC_MARCH ?= -m64
+CC_MARCH ?= -m64 -mcmodel=large
 
 #
 # Avoid wasting almost 4 MiB by telling the linker that the max page size is
@@ -20,5 +20,4 @@ CC_MARCH ?= -m64
 #
 LD_MARCH ?= -melf_x86_64
 
-
-include $(call select_from_repositories,mk/spec/64bit.mk)
+include $(BASE_DIR)/mk/spec/64bit.mk

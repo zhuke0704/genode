@@ -9,76 +9,70 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <audio_out_session/connection.h>
-#include <base/printf.h>
-#include <base/sleep.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/log.h>
 #include <dataspace/client.h>
 #include <input_session/connection.h>
 #include <input/event.h>
-#include <os/config.h>
-#include <rom_session/connection.h>
 
-
+using Filename = Genode::String<64>;
 using namespace Genode;
 using namespace Audio_out;
 
-static const bool verbose = false;
-
-enum {
-	CHANNELS     = 2,                      /* number of channels */
-	FRAME_SIZE   = sizeof(float),
-	PERIOD_CSIZE = FRAME_SIZE * PERIOD,     /* size of channel packet (bytes) */
-	PERIOD_FSIZE = CHANNELS * PERIOD_CSIZE, /* size of period in file (bytes) */
-};
-
-
-static const char *channel_names[] = { "front left", "front right" };
+static constexpr bool const verbose = false;
+static constexpr char const * channel_names[2] = { "front left", "front right" };
 
 
 class Click
 {
 	private:
 
-		Audio_out::Connection *_audio_out[CHANNELS];
-		char const            *_base;
-		Genode::size_t         _size;
+		/*
+		 * Noncopyable
+		 */
+		Click(Click const &);
+		Click &operator = (Click const &);
+
+		enum {
+			CHANNELS     = 2,                       /* number of channels */
+			FRAME_SIZE   = sizeof(float),
+			PERIOD_CSIZE = FRAME_SIZE * PERIOD,     /* size of channel packet (bytes) */
+			PERIOD_FSIZE = CHANNELS * PERIOD_CSIZE, /* size of period in file (bytes) */
+		};
+
+		Env & _env;
+		Constructible<Audio_out::Connection> _audio_out[CHANNELS];
+
+		Filename const & _name;
+
+		Attached_rom_dataspace _sample_ds { _env, _name.string() };
+		char     const * const _base = _sample_ds.local_addr<char const>();
+		size_t           const _size = _sample_ds.size();
 
 	public:
 
-		Click(char const *file)
+		Click(Env & env, Filename const & name)
+		: _env(env), _name(name)
 		{
 			for (int i = 0; i < CHANNELS; ++i) {
 				/* allocation signal for first channel only */
-				_audio_out[i] = new (env()->heap())
-					Audio_out::Connection(channel_names[i], i == 0);
+				_audio_out[i].construct(env, channel_names[i], i == 0);
 				_audio_out[i]->start();
 			}
-
-			Dataspace_capability  ds_cap;
-
-			try {
-				Rom_connection rom(file);
-				rom.on_destruction(Rom_connection::KEEP_OPEN);
-				ds_cap = rom.dataspace();
-				_base = env()->rm_session()->attach(ds_cap);
-			} catch (...) {
-				PDBG("Error: Could not open: %s", file);
-				return;
-			}
-
-			Dataspace_client ds_client(ds_cap);
-			_size = ds_client.size();
 		}
 
 		void play()
 		{
-			PLOG("play click");
+			log("play click");
 
 			for (int i = 0; i < CHANNELS; i++)
 				_audio_out[i]->stream()->reset();
@@ -127,34 +121,30 @@ class Click
 		}
 };
 
-int main(int argc, char **argv)
+
+struct Main
 {
-	PDBG("--- Audio_out click test ---\n");
+	Env &                _env;
+	Signal_handler<Main> _handler { _env.ep(), *this, &Main::_handle };
+	Input::Connection    _input   { _env };
+	Attached_dataspace   _ev_ds   { _env.rm(), _input.dataspace() };
+	Filename const       _name    { "click.raw" };
+	Click                _click   { _env, _name };
 
-	Genode::Signal_context  sig_ctx;
-	Genode::Signal_receiver sig_rec;
-
-	Genode::Signal_context_capability sig_cap = sig_rec.manage(&sig_ctx);
-
-	Input::Connection input;
-	Input::Event      *ev_buf;
-
-	input.sigh(sig_cap);
-	ev_buf = static_cast<Input::Event *>(Genode::env()->rm_session()->attach(input.dataspace()));
-
-	Click click("click.raw");
-
-	for (;;) {
-		Genode::Signal sig = sig_rec.wait_for_signal();
-
-		for (int i = 0, num_ev = input.flush(); i < num_ev; ++i) {
-			Input::Event &ev = ev_buf[i];
-			if (ev.type() == Input::Event::PRESS) {
-				click.play();
-				break;
-			}
-		}
+	void _handle()
+	{
+		_input.for_each_event([&] (Input::Event const &ev) {
+			if (ev.press())
+				_click.play(); });
 	}
 
-	return 0;
-}
+	Main(Env & env) : _env(env)
+	{
+		log("--- Audio_out click test ---");
+
+		_input.sigh(_handler);
+	}
+};
+
+
+void Component::construct(Env & env) { static Main main(env); }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__RING_BUFFER_H_
@@ -36,15 +36,15 @@ struct Genode::Ring_buffer_unsynchronized
 		void up() { }
 	};
 
-	struct Lock
+	struct Mutex
 	{
-		void lock() { }
-		void unlock() { }
+		void acquire() { }
+		void release() { }
 	};
 
-	struct Lock_guard
+	struct Mutex_guard
 	{
-		Lock_guard(Lock &lock) { }
+		Mutex_guard(Mutex &) { }
 	};
 };
 
@@ -52,8 +52,8 @@ struct Genode::Ring_buffer_unsynchronized
 struct Genode::Ring_buffer_synchronized
 {
 	typedef Genode::Semaphore Sem;
-	typedef Genode::Lock Lock;
-	typedef Genode::Lock::Guard Lock_guard;
+	typedef Genode::Mutex Mutex;
+	typedef Genode::Mutex::Guard Mutex_guard;
 };
 
 
@@ -74,12 +74,13 @@ class Genode::Ring_buffer
 {
 	private:
 
-		int                        _head;
-		int                        _tail;
-		typename SYNC_POLICY::Sem  _sem;        /* element counter */
-		typename SYNC_POLICY::Lock _head_lock;  /* synchronize add */
+		int _head = 0;
+		int _tail = 0;
 
-		ET                         _queue[QUEUE_SIZE];
+		typename SYNC_POLICY::Sem   _sem       { };  /* element counter */
+		typename SYNC_POLICY::Mutex _head_lock { };  /* synchronize add */
+
+		ET _queue[QUEUE_SIZE] { };
 
 	public:
 
@@ -88,8 +89,7 @@ class Genode::Ring_buffer
 		/**
 		 * Constructor
 		 */
-		Ring_buffer(): _head(0), _tail(0) {
-			Genode::memset(_queue, 0, sizeof(_queue)); }
+		Ring_buffer() { }
 
 		/**
 		 * Place element into ring buffer
@@ -98,7 +98,7 @@ class Genode::Ring_buffer
 		 */
 		void add(ET ev)
 		{
-			typename SYNC_POLICY::Lock_guard lock_guard(_head_lock);
+			typename SYNC_POLICY::Mutex_guard mutex_guard(_head_lock);
 
 			if ((_head + 1)%QUEUE_SIZE != _tail) {
 				_queue[_head] = ev;

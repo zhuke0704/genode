@@ -1,34 +1,17 @@
-#
-# Build
-#
-if {![have_spec linux]} {
-	puts "Runs on Linux only"
-	exit 0
-}
-
-set build_components {
-	core init
-	drivers/timer
-	server/nitpicker server/dynamic_rom app/nano3d
-	drivers/framebuffer
-	app/backdrop
-}
-
-lappend_if [have_spec usb] build_components drivers/usb
-
-build $build_components
-
 create_boot_directory
 
-#
-# Generate config
-#
+import_from_depot [depot_user]/src/[base_src] \
+                  [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/raw/genode_bg \
+                  [depot_user]/pkg/backdrop \
+                  [depot_user]/src/init \
+                  [depot_user]/src/dynamic_rom \
+                  [depot_user]/src/nitpicker
 
 append config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -37,16 +20,22 @@ append config {
 		<service name="CPU"/>
 		<service name="LOG"/>
 	</parent-provides>
+
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="100"/>
 
-	<start name="fb_sdl">
-		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
-		</provides>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
+		<binary name="init"/>
+		<route>
+			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
 	</start>
 
 	<start name="timer">
@@ -56,29 +45,36 @@ append config {
 
 	<start name="nitpicker">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
+
 			<domain name="default" layer="2" content="client" label="no"/>
 			<domain name="nano3d"  layer="1" content="client" label="no" origin="pointer"/>
 
-			<policy label="nano3d" domain="nano3d"/>
+			<policy label_prefix="nano3d" domain="nano3d"/>
 			<default-policy domain="default"/>
 		</config>
 	</start>
 
 	<start name="backdrop">
-		<resource name="RAM" quantum="4M"/>
+		<resource name="RAM" quantum="20M"/>
 		<config>
-			<libc>
-				<vfs>
-					<rom name="genode_logo.png"/>
-					<rom name="grid.png"/>
-				</vfs>
-			</libc>
+			<libc/>
+			<vfs>
+				<rom name="genode_logo.png"/>
+				<rom name="grid.png"/>
+			</vfs>
 			<fill color="#122334" />
 			<image png="grid.png"        tiled="yes" alpha="200" />
 			<image png="genode_logo.png" anchor="bottom_right" alpha="150"/>
 		</config>
+		<route>
+			<service name="Gui"> <child name="nitpicker" label="backdrop" /> </service>
+			<any-service> <parent/> <any-child/> </any-service>
+		</route>
 	</start>
 
 	<start name="dynamic_rom">
@@ -108,12 +104,9 @@ append config {
 
 	<start name="nano3d">
 		<resource name="RAM" quantum="8M"/>
-		<configfile name="nano3d.config"/>
 		<route>
-			<service name="ROM">
-				<if-arg key="label" value="nano3d.config" />
-				<child name="dynamic_rom" />
-			</service>
+			<service name="ROM" label="config">
+				<child name="dynamic_rom" label="nano3d.config"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
@@ -121,27 +114,8 @@ append config {
 
 install_config $config
 
-# copy backdrop PNG images to bin directory
-foreach file { genode_logo.png grid.png } {
-	file copy -force [genode_dir]/repos/gems/src/app/backdrop/$file bin/ }
+build { app/nano3d }
 
-#
-# Boot modules
-#
-
-# generic modules
-set boot_modules {
-	core init
-	timer
-	nitpicker dynamic_rom nano3d
-	backdrop
-	ld.lib.so libpng.lib.so libc.lib.so libm.lib.so zlib.lib.so
-	genode_logo.png grid.png
-}
-
-# platform-specific modules
-lappend_if [have_spec linux] boot_modules fb_sdl
-
-build_boot_image $boot_modules
+build_boot_image { nano3d }
 
 run_genode_until forever

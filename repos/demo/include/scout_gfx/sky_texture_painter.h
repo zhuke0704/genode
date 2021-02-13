@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT_GFX__SKY_TEXTURE_PAINTER_H_
@@ -55,6 +55,8 @@ struct Sky_texture_painter
 	{
 		protected:
 
+			virtual ~Sky_texture_base() { }
+
 			static void _brew_texture(short tmp[], short tmp2[], short dst[], int w, int h,
 			                          int lf_start, int lf_end, int lf_incr, int lf_mul,
 			                          int hf_val, int hf_mul);
@@ -85,6 +87,8 @@ struct Sky_texture_painter
 		public:
 
 			Sky_texture(Area size) : _size(size) { }
+
+			virtual ~Sky_texture() { }
 
 			virtual PT    const *fallback()      const = 0;
 			virtual short const *buf(unsigned i) const = 0;
@@ -189,9 +193,9 @@ struct Sky_texture_painter
 				         TW, TH, _coltab);
 			}
 
-			PT const *fallback() const { return _fallback[0]; }
+			PT const *fallback() const override { return _fallback[0]; }
 
-			short const *buf(unsigned i) const
+			short const *buf(unsigned i) const override
 			{
 				if (i >= 3)
 					return 0;
@@ -199,7 +203,7 @@ struct Sky_texture_painter
 				return _bufs[i][0];
 			}
 
-			PT const *coltab() const { return _coltab; }
+			PT const *coltab() const override { return _coltab; }
 	};
 
 

@@ -18,63 +18,63 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__GPIO__CONFIG_H_
 #define _INCLUDE__GPIO__CONFIG_H_
 
+/* Genode includes */
 #include <base/exception.h>
-#include <os/config.h>
 #include <gpio/driver.h>
+#include <util/xml_node.h>
 
 namespace Gpio {
 
-	class Invalid_gpio_number : Genode::Exception {};
-	class Invalid_mode        : Genode::Exception {};
+	class Invalid_mode : Genode::Exception {};
 
-	static void process_config(Gpio::Driver &driver);
+	static void process_config(Genode::Xml_node const &config, Gpio::Driver &driver);
 }
 
 
-void Gpio::process_config(Gpio::Driver &driver)
+void Gpio::process_config(Genode::Xml_node const &config, Gpio::Driver &driver)
 {
-	try {
-		Genode::Xml_node gpio_node = Genode::config()->xml_node().sub_node("gpio");
+	if (!config.has_sub_node("gpio"))
+		Genode::warning("no GPIO config");
 
-		for (;; gpio_node = gpio_node.next("gpio")) {
-			unsigned num     = 0;
-			char     mode[2] = {0};
-			unsigned value   = 0;
+	config.for_each_sub_node("gpio", [&] (Genode::Xml_node const &gpio_node) {
 
-			try {
-				gpio_node.attribute("num").value(&num);
-				if (!driver.gpio_valid(num)) throw Invalid_gpio_number();
-				gpio_node.attribute("mode").value(mode, sizeof(mode));
-				if (mode[0] == 'O' || mode[0] == 'o') {
-					gpio_node.attribute("value").value(&value);
-					driver.write(num, value);
-					driver.direction(num, false);
-				} else if (mode[0] == 'I' || mode[0] == 'i') {
-					driver.direction(num, true);
-				} else throw Invalid_mode();
+		unsigned const num = gpio_node.attribute_value("num", 0U);
+		Pin gpio { num };
 
-				PINF("gpio %d mode %s value=%d", num, mode, value);
-
-			} catch(Genode::Xml_node::Nonexistent_attribute) {
-				PWRN("Missing attribute. Ignore node.");
-			} catch(Gpio::Invalid_gpio_number) {
-				PWRN("Invalid GPIO number %d. Ignore node", num);
-			}
-			if (gpio_node.last("gpio")) break;
+		if (!driver.gpio_valid(gpio)) {
+			Genode::warning("invalid GPIO number ", num, ", ignore node");
+			return;
 		}
-	}
-	catch (Genode::Xml_node::Nonexistent_sub_node) {
-		PWRN("No GPIO config");
-	}
+
+		typedef Genode::String<2> Mode;
+		Mode const mode = gpio_node.attribute_value("mode", Mode());
+
+		unsigned value = 0;
+
+		if (mode == "O" || mode == "o") {
+			value = gpio_node.attribute_value("value", value);
+			driver.write(gpio, value);
+			driver.direction(Pin {num}, false);
+		}
+		else if (mode == "I" || mode == "i") {
+			driver.direction(Pin {num}, true);
+		}
+		else {
+			Genode::error("gpio ", num, " has invalid mode, must be I or O");
+			throw Invalid_mode();
+		}
+
+		Genode::log("gpio ", num, " mode ", mode, " value=", value);
+	});
 }
 
 #endif /* _INCLUDE__GPIO__CONFIG_H_ */

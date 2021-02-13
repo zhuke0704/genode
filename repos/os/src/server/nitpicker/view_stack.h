@@ -5,30 +5,39 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _VIEW_STACK_H_
 #define _VIEW_STACK_H_
 
 #include "view.h"
+#include "gui_session.h"
 #include "canvas.h"
 
-class Session;
+namespace Nitpicker { class View_stack; }
 
 
-class View_stack
+class Nitpicker::View_stack
 {
+	public:
+
+		struct Damage : Interface, Noncopyable
+		{
+			virtual void mark_as_damaged(Rect) = 0;
+		};
+
 	private:
 
-		Area                           _size;
-		Mode                          &_mode;
-		Genode::List<View_stack_elem>  _views;
-		View                          *_default_background = nullptr;
-		Dirty_rect mutable             _dirty_rect;
+		Area                   _size { };
+		Focus                 &_focus;
+		Font            const &_font;
+		List<View_stack_elem>  _views { };
+		View                  *_default_background = nullptr;
+		Damage                &_damage;
 
 		/**
 		 * Return outline geometry of a view
@@ -42,9 +51,15 @@ class View_stack
 		/**
 		 * Return top-most view of the view stack
 		 */
-		View const *_first_view_const() const { return static_cast<View const *>(_views.first()); }
+		View const *_first_view() const
+		{
+			return static_cast<View const *>(_views.first());
+		}
 
-		View *_first_view() { return static_cast<View *>(_views.first()); }
+		View *_first_view()
+		{
+			return static_cast<View *>(_views.first()); 
+		}
 
 		/**
 		 * Find position in view stack for inserting a view
@@ -54,7 +69,8 @@ class View_stack
 		/**
 		 * Find best visible label position
 		 */
-		void _optimize_label_rec(View const *cv, View const *lv, Rect rect, Rect *optimal);
+		void _optimize_label_rec(View const *cv, View const *lv,
+		                         Rect rect, Rect *optimal);
 
 		/**
 		 * Position labels that are affected by specified area
@@ -70,25 +86,15 @@ class View_stack
 		template <typename VIEW>
 		VIEW *_next_view(VIEW &view) const;
 
-		/**
-		 * Schedule 'rect' to be redrawn
-		 */
-		void _mark_view_as_dirty(View &view, Rect rect)
-		{
-			_dirty_rect.mark_as_dirty(rect);
-
-			view.mark_as_dirty(rect);
-		}
-
 	public:
 
 		/**
 		 * Constructor
 		 */
-		View_stack(Area size, Mode &mode) : _size(size), _mode(mode)
-		{
-			_dirty_rect.mark_as_dirty(Rect(Point(0, 0), _size));
-		}
+		View_stack(Focus &focus, Font const &font, Damage &damage)
+		:
+			_focus(focus), _font(font), _damage(damage)
+		{ }
 
 		/**
 		 * Return size
@@ -107,19 +113,14 @@ class View_stack
 		 *
 		 * \param view  current view in view stack
 		 */
-		void draw_rec(Canvas_base &, View const *view, Rect) const;
+		void draw_rec(Canvas_base &, Font const &, View const *, Rect) const;
 
 		/**
-		 * Draw dirty areas
+		 * Draw specified area
 		 */
-		Dirty_rect draw(Canvas_base &canvas) const
+		void draw(Canvas_base &canvas, Rect rect) const
 		{
-			Dirty_rect result = _dirty_rect;
-
-			_dirty_rect.flush([&] (Rect const &rect) {
-				draw_rec(canvas, _first_view_const(), rect); });
-
-			return result;
+			draw_rec(canvas, _font, _first_view(), rect);
 		}
 
 		/**
@@ -130,20 +131,7 @@ class View_stack
 			Rect const whole_screen(Point(), _size);
 
 			_place_labels(whole_screen);
-			_dirty_rect.mark_as_dirty(whole_screen);
-
-			for (View *view = _first_view(); view; view = view->view_stack_next())
-				view->mark_as_dirty(_outline(*view));
-
-		}
-
-		/**
-		 * mark all view-local dirty rectangles a clean
-		 */
-		void mark_all_views_as_clean()
-		{
-			for (View *view = _first_view(); view; view = view->view_stack_next())
-				view->mark_as_clean();
+			_damage.mark_as_damaged(whole_screen);
 		}
 
 		/**
@@ -152,11 +140,11 @@ class View_stack
 		 * \param Session  Session that created the view
 		 * \param Rect     Buffer area to update
 		 */
-		void mark_session_views_as_dirty(Session const &session, Rect rect)
+		void mark_session_views_as_dirty(Gui_session const &session, Rect rect)
 		{
 			for (View *view = _first_view(); view; view = view->view_stack_next()) {
 
-				if (!view->belongs_to(session))
+				if (!view->owned_by(session))
 					continue;
 
 				/*
@@ -214,7 +202,8 @@ class View_stack
 		 * bottom of the view stack, specify neighbor = 0 and
 		 * behind = false.
 		 */
-		void stack(View &view, View const *neighbor = 0, bool behind = true);
+		void stack(View &view, View const *neighbor = 0,
+		           bool behind = true);
 
 		/**
 		 * Set view title
@@ -239,7 +228,10 @@ class View_stack
 		/**
 		 * Return true if view is the default background
 		 */
-		bool is_default_background(View const &view) const { return &view == _default_background; }
+		bool is_default_background(View const &view) const
+		{
+			return &view == _default_background;
+		}
 
 		void apply_origin_policy(View &pointer_origin)
 		{
@@ -250,58 +242,9 @@ class View_stack
 		void sort_views_by_layer();
 
 		/**
-		 * Set visibility of views that match the specified label selector
-		 */
-		void visible(char const *selector, bool visible)
-		{
-			for (View *v = _first_view(); v; v = v->view_stack_next()) {
-
-				if (!v->session().matches_session_label(selector))
-					continue;
-
-				/* mark view geometry as to be redrawn */
-				refresh(_outline(*v));
-
-				/* let the view stack omit the views of the session */
-				v->session().visible(visible);
-			}
-		}
-
-		/**
 		 * Bring views that match the specified label selector to the front
 		 */
-		void to_front(char const *selector)
-		{
-			/*
-			 * Move all views that match the selector to the front while
-			 * maintaining their ordering.
-			 */
-			View *at = nullptr;
-			for (View *v = _first_view(); v; v = v->view_stack_next()) {
-
-				if (!v->session().matches_session_label(selector))
-					continue;
-
-				if (v->background())
-					continue;
-
-				/*
-				 * Move view to behind the previous view that we moved to
-				 * front. If 'v' is the first view that matches the selector,
-				 * move it to the front ('at' argument of 'insert' is 0).
-				 */
-				_views.remove(v);
-				_views.insert(v, at);
-
-				at = v;
-
-				/* mark view geometry as to be redrawn */
-				refresh(_outline(*v));
-			}
-
-			/* reestablish domain layering */
-			sort_views_by_layer();
-		}
+		void to_front(char const *selector);
 };
 
-#endif
+#endif /* _VIEW_STACK_H_ */

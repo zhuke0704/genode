@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014-2015 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <base/log.h>
@@ -25,14 +25,14 @@ enum {
 #define DUMMY(retval, name) \
 DUMMY name(void) { \
 	if (SHOW_DUMMY) \
-		Genode::log( #name " called (from ", __builtin_return_address(0), ") not implemented"); \
+		Genode::warning( #name " called (from ", __builtin_return_address(0), ") not implemented"); \
 	return retval; \
 }
 
 #define DUMMY_SKIP(retval, name) \
 DUMMY name(void) { \
 	if (SHOW_SKIP) \
-		Genode::log( #name " called (from ", __builtin_return_address(0), ") skipped"); \
+		Genode::warning( #name " called (from ", __builtin_return_address(0), ") skipped"); \
 	return retval; \
 }
 
@@ -58,10 +58,8 @@ DUMMY(0, pci_set_powerstate)
 DUMMY(0, psignal)
 DUMMY(0, selrecord)
 DUMMY(0, selwakeup)
-DUMMY(0, timeout_add_msec)
-DUMMY(0, timeout_del)
-DUMMY(0, timeout_set)
 DUMMY(0, tsleep)
+DUMMY(0, tsleep_nsec)
 DUMMY(0, vdevgone)
 DUMMY(0, device_unref)
 

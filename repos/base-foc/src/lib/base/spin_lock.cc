@@ -7,23 +7,23 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-/* Genode includes */
-#include <base/cap_map.h>
-
 /* base-internal includes */
+#include <base/internal/cap_map.h>
 #include <base/internal/spin_lock.h>
 
-
-Genode::Spin_lock::Spin_lock() : _spinlock(SPINLOCK_UNLOCKED) {}
-
-
-void Genode::Spin_lock::lock()   { spinlock_lock(&_spinlock);   }
+using namespace Genode;
 
 
-void Genode::Spin_lock::unlock() { spinlock_unlock(&_spinlock); }
+Spin_lock::Spin_lock() : _spinlock(SPINLOCK_UNLOCKED) {}
+
+
+void Spin_lock::lock()   { spinlock_lock(&_spinlock);   }
+
+
+void Spin_lock::unlock() { spinlock_unlock(&_spinlock); }

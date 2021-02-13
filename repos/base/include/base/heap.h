@@ -5,24 +5,24 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__HEAP_H_
 #define _INCLUDE__BASE__HEAP_H_
 
 #include <util/list.h>
-#include <util/volatile_object.h>
-#include <ram_session/ram_session.h>
+#include <util/reconstructible.h>
+#include <base/ram_allocator.h>
 #include <region_map/region_map.h>
 #include <base/allocator_avl.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 
 namespace Genode {
-	
+
 	class Heap;
 	class Sliced_heap;
 }
@@ -32,7 +32,8 @@ namespace Genode {
  * Heap that uses dataspaces as backing store
  *
  * The heap class provides an allocator that uses a list of dataspaces of a RAM
- * session as backing store. One dataspace may be used for holding multiple blocks.
+ * allocator as backing store. One dataspace may be used for holding multiple
+ * blocks.
  */
 class Genode::Heap : public Allocator
 {
@@ -40,6 +41,14 @@ class Genode::Heap : public Allocator
 
 		class Dataspace : public List<Dataspace>::Element
 		{
+			private:
+
+				/*
+				 * Noncopyable
+				 */
+				Dataspace(Dataspace const &);
+				Dataspace &operator = (Dataspace const &);
+
 			public:
 
 				Ram_dataspace_capability cap;
@@ -54,26 +63,38 @@ class Genode::Heap : public Allocator
 		 * This structure exists only to make sure that the dataspaces are
 		 * destroyed after the AVL allocator.
 		 */
-		struct Dataspace_pool : public List<Dataspace>
+		class Dataspace_pool : public List<Dataspace>
 		{
-			Ram_session *ram_session; /* RAM session for backing store */
-			Region_map  *region_map;
+			private:
 
-			Dataspace_pool(Ram_session *ram, Region_map *rm)
-			: ram_session(ram), region_map(rm) { }
+				/*
+				 * Noncopyable
+				 */
+				Dataspace_pool(Dataspace_pool const &);
+				Dataspace_pool &operator = (Dataspace_pool const &);
 
-			~Dataspace_pool();
+			public:
 
-			void reassign_resources(Ram_session *ram, Region_map *rm) {
-				ram_session = ram, region_map = rm; }
+				Ram_allocator *ram_alloc; /* backing store */
+				Region_map    *region_map;
+
+				Dataspace_pool(Ram_allocator *ram, Region_map *rm)
+				: ram_alloc(ram), region_map(rm) { }
+
+				~Dataspace_pool();
+
+				void remove_and_free(Dataspace &);
+
+				void reassign_resources(Ram_allocator *ram, Region_map *rm) {
+					ram_alloc = ram, region_map = rm; }
 		};
 
-		Lock                           _lock;
-		Volatile_object<Allocator_avl> _alloc;        /* local allocator    */
+		Mutex                  mutable _mutex { };
+		Reconstructible<Allocator_avl> _alloc;        /* local allocator    */
 		Dataspace_pool                 _ds_pool;      /* list of dataspaces */
-		size_t                         _quota_limit;
-		size_t                         _quota_used;
-		size_t                         _chunk_size;
+		size_t                         _quota_limit { 0 };
+		size_t                         _quota_used  { 0 };
+		size_t                         _chunk_size  { 0 };
 
 		/**
 		 * Allocate a new dataspace of the specified size
@@ -106,13 +127,13 @@ class Genode::Heap : public Allocator
 
 		enum { UNLIMITED = ~0 };
 
-		Heap(Ram_session *ram_session,
-		     Region_map  *region_map,
-		     size_t       quota_limit = UNLIMITED,
-		     void        *static_addr = 0,
-		     size_t       static_size = 0);
+		Heap(Ram_allocator *ram_allocator,
+		     Region_map    *region_map,
+		     size_t         quota_limit = UNLIMITED,
+		     void          *static_addr = 0,
+		     size_t         static_size = 0);
 
-		Heap(Ram_session &ram, Region_map &rm) : Heap(&ram, &rm) { }
+		Heap(Ram_allocator &ram, Region_map &rm) : Heap(&ram, &rm) { }
 
 		~Heap();
 
@@ -125,10 +146,21 @@ class Genode::Heap : public Allocator
 		int quota_limit(size_t new_quota_limit);
 
 		/**
-		 * Re-assign RAM and RM sessions
+		 * Re-assign RAM allocator and region map
 		 */
-		void reassign_resources(Ram_session *ram, Region_map *rm) {
+		void reassign_resources(Ram_allocator *ram, Region_map *rm) {
 			_ds_pool.reassign_resources(ram, rm); }
+
+		/**
+		 * Call 'fn' with the start and size of each backing-store region
+		 */
+		template <typename FN>
+		void for_each_region(FN const &fn) const
+		{
+			Mutex::Guard guard(_mutex);
+			for (Dataspace const *ds = _ds_pool.first(); ds; ds = ds->next())
+				fn(ds->local_addr, ds->size);
+		}
 
 
 		/*************************
@@ -162,11 +194,11 @@ class Genode::Sliced_heap : public Allocator
 			{ }
 		};
 
-		Ram_session    &_ram_session;  /* RAM session for backing store   */
-		Region_map     &_region_map;   /* region map of the address space */
-		size_t          _consumed;     /* number of allocated bytes       */
-		List<Block>     _blocks;       /* list of allocated blocks        */
-		Lock            _lock;         /* serialize allocations           */
+		Ram_allocator  &_ram_alloc;     /* RAM allocator for backing store */
+		Region_map     &_region_map;    /* region map of the address space */
+		size_t          _consumed = 0;  /* number of allocated bytes       */
+		List<Block>     _blocks { };    /* list of allocated blocks        */
+		Mutex           _mutex  { };    /* serialize allocations           */
 
 	public:
 
@@ -177,17 +209,8 @@ class Genode::Sliced_heap : public Allocator
 
 		/**
 		 * Constructor
-		 *
-		 * \deprecated  Use the other constructor that takes reference
-		 *              arguments
 		 */
-		Sliced_heap(Ram_session *ram_session, Region_map *region_map)
-		: Sliced_heap(*ram_session, *region_map) { }
-
-		/**
-		 * Constructor
-		 */
-		Sliced_heap(Ram_session &ram_session, Region_map &region_map);
+		Sliced_heap(Ram_allocator &ram_alloc, Region_map &region_map);
 
 		/**
 		 * Destructor
@@ -199,11 +222,11 @@ class Genode::Sliced_heap : public Allocator
 		 ** Allocator interface **
 		 *************************/
 
-		bool   alloc(size_t, void **);
-		void   free(void *, size_t);
-		size_t consumed() const { return _consumed; }
-		size_t overhead(size_t size) const;
-		bool   need_size_for_free() const override { return false; }
+		bool   alloc(size_t, void **)      override;
+		void   free(void *, size_t)        override;
+		size_t consumed()            const override { return _consumed; }
+		size_t overhead(size_t size) const override;
+		bool   need_size_for_free()  const override { return false; }
 };
 
 #endif /* _INCLUDE__BASE__HEAP_H_ */

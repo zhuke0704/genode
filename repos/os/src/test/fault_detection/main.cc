@@ -5,110 +5,89 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
-#include <base/env.h>
-#include <base/sleep.h>
+#include <base/log.h>
+#include <base/component.h>
 #include <base/child.h>
-#include <ram_session/connection.h>
 #include <rom_session/connection.h>
-#include <cpu_session/connection.h>
-#include <cap_session/connection.h>
-#include <pd_session/connection.h>
+#include <log_session/log_session.h>
 #include <loader_session/connection.h>
 #include <region_map/client.h>
 
+using namespace Genode;
 
-/***************
- ** Utilities **
- ***************/
 
-static void wait_for_signal_for_context(Genode::Signal_receiver &sig_rec,
-                                        Genode::Signal_context const &sig_ctx)
+template <typename TEST>
+class Iterative_test
 {
-	Genode::Signal s = sig_rec.wait_for_signal();
+	private:
 
-	if (s.num() && s.context() == &sig_ctx) {
-		PLOG("got exception for child");
-	} else {
-		PERR("got unexpected signal while waiting for child");
-		class Unexpected_signal { };
-		throw Unexpected_signal();
-	}
-}
+		Env                      &_env;
+		Signal_context_capability _finished_sigh;
+		unsigned            const _cnt_max = 5;
+		unsigned                  _cnt     = 0;
+
+		Signal_handler<Iterative_test> _fault_handler {
+			_env.ep(), *this, &Iterative_test::_handle_fault };
+
+		TEST _test { };
+
+		void _handle_fault()
+		{
+			if (_cnt++ >= _cnt_max) {
+				Signal_transmitter(_finished_sigh).submit();
+				log("-- finished ", _test.name(), " --");
+				return;
+			}
+			_test.start_iteration(_env, _fault_handler);
+		}
+
+	public:
+
+		Iterative_test(Env &env, Signal_context_capability finished_sigh)
+		:
+			_env(env), _finished_sigh(finished_sigh)
+		{
+			log("-- exercise ", _test.name(), " --");
+			_test.start_iteration(_env, _fault_handler);
+		}
+};
 
 
-/******************************************************************
- ** Test for detecting the failure of an immediate child process **
- ******************************************************************/
+/********************************************************************
+ ** Test for detecting the failure of an immediate child component **
+ ********************************************************************/
 
 class Test_child : public Genode::Child_policy
 {
 	private:
 
-		struct Resources
-		{
-			Genode::Pd_connection  pd;
-			Genode::Ram_connection ram;
-			Genode::Cpu_connection cpu;
-
-			Resources(Genode::Signal_context_capability sigh, char const *label)
-			: pd(label)
-			{
-				using namespace Genode;
-
-				/* transfer some of our own ram quota to the new child */
-				enum { CHILD_QUOTA = 1*1024*1024 };
-				ram.ref_account(env()->ram_session_cap());
-				env()->ram_session()->transfer_quota(ram.cap(), CHILD_QUOTA);
-
-				/* register default exception handler */
-				cpu.exception_sigh(sigh);
-
-				/* register handler for unresolvable page faults */
-				Region_map_client address_space(pd.address_space());
-				address_space.fault_handler(sigh);
-			}
-		} _resources;
-
-		Genode::Child::Initial_thread _initial_thread;
-
-		/*
-		 * The order of the following members is important. The services must
-		 * appear before the child to ensure the correct order of destruction.
-		 * I.e., the services must remain alive until the child has stopped
-		 * executing. Otherwise, the child may hand out already destructed
-		 * local services when dispatching an incoming session call.
-		 */
-		Genode::Rom_connection    _elf;
-		Genode::Parent_service    _log_service;
-		Genode::Parent_service    _rm_service;
-		Genode::Region_map_client _address_space { _resources.pd.address_space() };
-		Genode::Child             _child;
+		Env                      &_env;
+		Cap_quota           const _cap_quota { 50 };
+		Ram_quota           const _ram_quota { 1024*1024 };
+		Binary_name         const _binary_name;
+		Signal_context_capability _sigh;
+		Parent_service            _cpu_service { _env, Cpu_session::service_name() };
+		Parent_service            _pd_service  { _env,  Pd_session::service_name() };
+		Parent_service            _log_service { _env, Log_session::service_name() };
+		Parent_service            _rom_service { _env, Rom_session::service_name() };
+		Child                     _child;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Test_child(Genode::Rpc_entrypoint           &ep,
-		           char const                       *elf_name,
+		Test_child(Env &env, Name const &binary_name,
 		           Genode::Signal_context_capability sigh)
 		:
-			_resources(sigh, elf_name),
-			_initial_thread(_resources.cpu, _resources.pd, elf_name),
-			_elf(elf_name),
-			_log_service("LOG"), _rm_service("RM"),
-			_child(_elf.dataspace(), Genode::Dataspace_capability(),
-			       _resources.pd,  _resources.pd,
-			       _resources.ram, _resources.ram,
-			       _resources.cpu, _initial_thread,
-			       *Genode::env()->rm_session(), _address_space, ep, *this)
+			_env(env), _binary_name(binary_name), _sigh(sigh),
+			_child(_env.rm(), _env.ep().rpc_ep(), *this)
 		{ }
 
 
@@ -116,195 +95,180 @@ class Test_child : public Genode::Child_policy
 		 ** Child-policy interface **
 		 ****************************/
 
-		const char *name() const { return "child"; }
+		Name name() const override { return "child"; }
 
-		Genode::Service *resolve_session_request(const char *service, const char *)
+		Binary_name binary_name() const override { return _binary_name; }
+
+		Pd_session           &ref_pd()           override { return _env.pd(); }
+		Pd_session_capability ref_pd_cap() const override { return _env.pd_session_cap(); }
+
+		void init(Cpu_session &cpu, Cpu_session_capability) override
 		{
-			/* forward white-listed session requests to our parent */
-			return !Genode::strcmp(service, "LOG") ? &_log_service
-			     : !Genode::strcmp(service, "RM")  ? &_rm_service
-			     : 0;
+			/* register default exception handler */
+			cpu.exception_sigh(_sigh);
 		}
 
-		void filter_session_args(const char *service,
-		                         char *args, Genode::size_t args_len)
+		void init(Pd_session &pd, Pd_session_capability pd_cap) override
 		{
-			/* define session label for sessions forwarded to our parent */
-			Genode::Arg_string::set_arg_string(args, args_len, "label", "child");
+			pd.ref_account(ref_pd_cap());
+			ref_pd().transfer_quota(pd_cap, _cap_quota);
+			ref_pd().transfer_quota(pd_cap, _ram_quota);
+
+			/* register handler for unresolvable page faults */
+			Region_map_client address_space(pd.address_space());
+			address_space.fault_handler(_sigh);
+		}
+
+		Route resolve_session_request(Service::Name const &service,
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
+		{
+			auto route = [&] (Service &service) {
+				return Route { .service = service,
+				               .label   = label,
+				               .diag    = diag }; };
+
+			if (service == Cpu_session::service_name()) return route(_cpu_service);
+			if (service ==  Pd_session::service_name()) return route( _pd_service);
+			if (service == Log_session::service_name()) return route(_log_service);
+			if (service == Rom_session::service_name()) return route(_rom_service);
+
+			throw Service_denied();
 		}
 };
 
 
-void faulting_child_test()
+struct Faulting_child_test
 {
-	using namespace Genode;
+	static char const *name() { return "failure detection in immediate child"; }
 
-	printf("-- exercise failure detection of immediate child --\n");
+	Constructible<Test_child> _child;
 
-	/*
-	 * Entry point used for serving the parent interface
-	 */
-	enum { STACK_SIZE = 8*1024 };
-	Cap_connection cap;
-	Rpc_entrypoint ep(&cap, STACK_SIZE, "child");
-
-	/*
-	 * Signal receiver and signal context for signals originating from the
-	 * children's CPU-session and RM session.
-	 */
-	Signal_receiver sig_rec;
-	Signal_context  sig_ctx;
-
-	/*
-	 * Iteratively start a faulting program and detect the faults
-	 */
-	for (int i = 0; i < 5; i++) {
-
-		PLOG("create child %d", i);
-
-		/* create and start child process */
-		Test_child child(ep, "test-segfault", sig_rec.manage(&sig_ctx));
-
-		PLOG("wait_for_signal");
-
-
-		wait_for_signal_for_context(sig_rec, sig_ctx);
-
-		sig_rec.dissolve(&sig_ctx);
-
-		/*
-		 * When finishing the loop iteration, the local variables including
-		 * 'child' will get destructed. A new child will be created at the
-		 * beginning of the next iteration.
-		 */
+	void start_iteration(Env &env, Signal_context_capability fault_sigh)
+	{
+		_child.construct(env, "test-segfault", fault_sigh);
 	}
-
-	printf("\n");
-}
+};
 
 
 /******************************************************************
  ** Test for detecting failures in a child started by the loader **
  ******************************************************************/
 
-void faulting_loader_child_test()
+struct Faulting_loader_child_test
 {
-	using namespace Genode;
+	static char const *name() { return "failure detection in loaded child"; }
 
-	printf("-- exercise failure detection of loaded child --\n");
+	Constructible<Loader::Connection> loader;
 
-	/*
-	 * Signal receiver and signal context for receiving faults originating from
-	 * the loader subsystem.
-	 */
-	static Signal_receiver sig_rec;
-	Signal_context sig_ctx;
-
-	for (int i = 0; i < 5; i++) {
-
-		PLOG("create loader session %d", i);
-
-		Loader::Connection loader(1024*1024);
+	void start_iteration(Env &env, Signal_context_capability fault_sigh)
+	{
+		loader.construct(env, Ram_quota{1024*1024}, Cap_quota{100});
 
 		/* register fault handler at loader session */
-		loader.fault_sigh(sig_rec.manage(&sig_ctx));
+		loader->fault_sigh(fault_sigh);
 
 		/* start subsystem */
-		loader.start("test-segfault");
-
-		wait_for_signal_for_context(sig_rec, sig_ctx);
-
-		sig_rec.dissolve(&sig_ctx);
+		loader->start("test-segfault");
 	}
-
-	printf("\n");
-}
+};
 
 
 /***********************************************************************
  ** Test for detecting failures in a grandchild started by the loader **
  ***********************************************************************/
 
-void faulting_loader_grand_child_test()
+struct Faulting_loader_grand_child_test
 {
-	using namespace Genode;
+	static char const *name() { return "failure detection of loaded grand child"; }
 
-	printf("-- exercise failure detection of loaded grand child --\n");
-
-	/*
-	 * Signal receiver and signal context for receiving faults originating from
-	 * the loader subsystem.
-	 */
-	static Signal_receiver sig_rec;
-	Signal_context sig_ctx;
-
-	for (int i = 0; i < 5; i++) {
-
-		PLOG("create loader session %d", i);
-
-		Loader::Connection loader(2024*1024);
-
-		/*
-		 * Install init config for subsystem into the loader session
-		 */
-		char const *config =
+	static char const *config()
+	{
+		return
 			"<config>\n"
 			"  <parent-provides>\n"
 			"    <service name=\"ROM\"/>\n"
-			"    <service name=\"RM\"/>\n"
+			"    <service name=\"RAM\"/>\n"
+			"    <service name=\"CPU\"/>\n"
+			"    <service name=\"PD\"/>\n"
 			"    <service name=\"LOG\"/>\n"
 			"  </parent-provides>\n"
 			"  <default-route>\n"
 			"    <any-service> <parent/> <any-child/> </any-service>\n"
 			"  </default-route>\n"
-			"  <start name=\"test-segfault\">\n"
-			"    <resource name=\"RAM\" quantum=\"10M\"/>\n"
+			"  <start name=\"test-segfault\" caps=\"50\">\n"
+			"    <resource name=\"RAM\" quantum=\"2M\"/>\n"
 			"  </start>\n"
 			"</config>";
-
-		size_t config_size = strlen(config);
-
-		Dataspace_capability config_ds =
-			loader.alloc_rom_module("config", config_size);
-
-		char *config_ds_addr = env()->rm_session()->attach(config_ds);
-		memcpy(config_ds_addr, config, config_size);
-		env()->rm_session()->detach(config_ds_addr);
-
-		loader.commit_rom_module("config");
-
-		/* register fault handler at loader session */
-		loader.fault_sigh(sig_rec.manage(&sig_ctx));
-
-		/* start subsystem */
-		loader.start("init", "init");
-
-		wait_for_signal_for_context(sig_rec, sig_ctx);
-
-		sig_rec.dissolve(&sig_ctx);
 	}
 
-	printf("\n");
-}
+	static size_t config_size() { return strlen(config()); }
+
+	Constructible<Loader::Connection> loader;
+
+	void start_iteration(Env &env, Signal_context_capability fault_sigh)
+	{
+		loader.construct(env, Ram_quota{4*1024*1024}, Cap_quota{120});
+
+		/* import config into loader session */
+		{
+			Attached_dataspace ds(env.rm(),
+			                      loader->alloc_rom_module("config", config_size()));
+			memcpy(ds.local_addr<char>(), config(), config_size());
+			loader->commit_rom_module("config");
+		}
+
+		/* register fault handler at loader session */
+		loader->fault_sigh(fault_sigh);
+
+		/* start subsystem */
+		loader->start("init", "init");
+	}
+};
 
 
-/******************
- ** Main program **
- ******************/
-
-int main(int argc, char **argv)
+struct Main
 {
-	using namespace Genode;
+	Env &_env;
 
-	printf("--- fault_detection test started ---\n");
+	Constructible<Iterative_test<Faulting_child_test> >              _test_1 { };
+	Constructible<Iterative_test<Faulting_loader_child_test> >       _test_2 { };
+	Constructible<Iterative_test<Faulting_loader_grand_child_test> > _test_3 { };
 
-	faulting_child_test();
+	Signal_handler<Main> _test_1_finished_handler {
+		_env.ep(), *this, &Main::_handle_test_1_finished };
 
-	faulting_loader_child_test();
+	Signal_handler<Main> _test_2_finished_handler {
+		_env.ep(), *this, &Main::_handle_test_2_finished };
 
-	faulting_loader_grand_child_test();
+	Signal_handler<Main> _test_3_finished_handler {
+		_env.ep(), *this, &Main::_handle_test_3_finished };
 
-	printf("--- finished fault_detection test ---\n");
-	return 0;
-}
+	void _handle_test_1_finished()
+	{
+		_test_1.destruct();
+		_test_2.construct(_env, _test_2_finished_handler);
+	}
+
+	void _handle_test_2_finished()
+	{
+		_test_2.destruct();
+		_test_3.construct(_env, _test_3_finished_handler);
+	}
+
+	void _handle_test_3_finished()
+	{
+		_test_3.destruct();
+		log("--- finished fault_detection test ---");
+		_env.parent().exit(0);
+	}
+
+	Main(Env &env) : _env(env)
+	{
+		_test_1.construct(_env, _test_1_finished_handler);
+	}
+};
+
+
+void Component::construct(Env &env) { static Main main(env); }
 

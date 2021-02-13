@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _PD_SESSION_COMPONENT_H_
@@ -22,8 +22,10 @@
 #include "region_map_component.h"
 
 namespace Gdb_monitor {
-	class Pd_session_component;
 	using namespace Genode;
+
+	class Pd_session_component;
+	typedef Local_service<Pd_session_component> Pd_service;
 }
 
 class Gdb_monitor::Pd_session_component : public Rpc_object<Pd_session>
@@ -31,6 +33,7 @@ class Gdb_monitor::Pd_session_component : public Rpc_object<Pd_session>
 	private:
 
 		Rpc_entrypoint &_ep;
+		Allocator      &_alloc;
 
 		Pd_connection _pd;
 
@@ -43,13 +46,18 @@ class Gdb_monitor::Pd_session_component : public Rpc_object<Pd_session>
 		/**
 		 * Constructor
 		 */
-		Pd_session_component(char const *binary_name, Rpc_entrypoint &ep,
+		Pd_session_component(Rpc_entrypoint &ep,
+		                     Env            &env,
+		                     Allocator      &alloc,
+		                     char const     *binary_name,
 		                     Dataspace_pool &managed_ds_map)
 		:
-			_ep(ep), _pd(binary_name),
-			_address_space(_ep, managed_ds_map, _pd, _pd.address_space()),
-			_stack_area   (_ep, managed_ds_map, _pd, _pd.stack_area()),
-			_linker_area  (_ep, managed_ds_map, _pd, _pd.linker_area())
+			_ep(ep),
+			_alloc(alloc),
+			_pd(env, binary_name),
+			_address_space(_ep, _alloc, managed_ds_map, _pd.rpc_cap(), _pd.address_space()),
+			_stack_area   (_ep, _alloc, managed_ds_map, _pd.rpc_cap(), _pd.stack_area()),
+			_linker_area  (_ep, _alloc, managed_ds_map, _pd.rpc_cap(), _pd.linker_area())
 		{
 			_ep.manage(this);
 		}
@@ -76,6 +84,9 @@ class Gdb_monitor::Pd_session_component : public Rpc_object<Pd_session>
 
 		bool assign_pci(addr_t addr, uint16_t bdf) override {
 			return _pd.assign_pci(addr, bdf); }
+
+		void map(addr_t virt, addr_t size) override {
+			return _pd.map(virt, size); }
 
 		Signal_source_capability alloc_signal_source() override {
 			return _pd.alloc_signal_source(); }
@@ -108,8 +119,35 @@ class Gdb_monitor::Pd_session_component : public Rpc_object<Pd_session>
 		Capability<Region_map> linker_area() override {
 			return _linker_area.Rpc_object<Region_map>::cap(); }
 
+		void ref_account(Capability<Pd_session> pd) override {
+			_pd.ref_account(pd); }
+
+		void transfer_quota(Capability<Pd_session> pd, Cap_quota amount) override {
+			warning("Pd_session::transfer_quota not implemented"); }
+
+		Cap_quota cap_quota() const override { return _pd.cap_quota(); }
+		Cap_quota used_caps() const override { return _pd.used_caps(); }
+
+		Ram_dataspace_capability alloc(size_t amount, Cache_attribute cached) override {
+			return _pd.alloc(amount, cached); }
+
+		void free(Ram_dataspace_capability ds) override { _pd.free(ds); }
+
+		size_t dataspace_size(Ram_dataspace_capability ds) const override {
+			return _pd.dataspace_size(ds); }
+
+		void transfer_quota(Pd_session_capability pd, Ram_quota amount) override {
+			_pd.transfer_quota(pd, amount); }
+
+		Ram_quota ram_quota() const override { return _pd.ram_quota(); }
+		Ram_quota used_ram()  const override { return _pd.used_ram(); }
+
 		Capability<Native_pd> native_pd() override {
 			return _pd.native_pd(); }
+
+		Managing_system_state
+		managing_system(Managing_system_state const & state) override {
+			return _pd.managing_system(state); }
 };
 
 #endif /* _PD_SESSION_COMPONENT_H_ */

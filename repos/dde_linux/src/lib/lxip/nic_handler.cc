@@ -1,25 +1,28 @@
-/**
+/*
  * \brief  Linux emulation code
  * \author Sebastian Sumpf
  * \author Josef Soentgen
+ * \author Emery Hemingway
  * \date   2013-08-28
  */
 
 /*
- * Copyright (C) 2013-2016 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <nic/packet_allocator.h>
 #include <nic_session/connection.h>
 
 /* local includes */
 #include <lx.h>
 #include <nic.h>
+
+bool ic_link_state = false;
 
 
 class Nic_client
@@ -34,16 +37,35 @@ class Nic_client
 		Nic::Packet_allocator _tx_block_alloc;
 		Nic::Connection       _nic;
 
-		Genode::Signal_dispatcher<Nic_client> _sink_ack;
-		Genode::Signal_dispatcher<Nic_client> _sink_submit;
-		Genode::Signal_dispatcher<Nic_client> _source_ack;
-		Genode::Signal_dispatcher<Nic_client> _source_submit;
+		Genode::Io_signal_handler<Nic_client> _sink_ack;
+		Genode::Io_signal_handler<Nic_client> _sink_submit;
+		Genode::Io_signal_handler<Nic_client> _source_ack;
+		Genode::Io_signal_handler<Nic_client> _link_state_change;
+
+		void (*_tick)();
+
+		void _link_state()
+		{
+			bool const link_state = _nic.link_state();
+			ic_link_state = link_state;
+
+			if (link_state == false || lxip_do_dhcp() == false)
+				return;
+
+			Lx::timer_update_jiffies();
+
+			/* reconnect dhcp client */
+			lxip_configure_dhcp();
+		}
 
 		/**
 		 * submit queue not empty anymore
 		 */
-		void _packet_avail(unsigned)
+		void _packet_avail()
 		{
+			Lx::timer_update_jiffies();
+
+			/* process a batch of only MAX_PACKETS in one run */
 			enum { MAX_PACKETS = 20 };
 
 			int count = 0;
@@ -52,27 +74,32 @@ class Nic_client
 			       count++ < MAX_PACKETS)
 			{
 				Nic::Packet_descriptor p = _nic.rx()->get_packet();
-				net_driver_rx(_nic.rx()->packet_content(p), p.size());
-
+				try { net_driver_rx(_nic.rx()->packet_content(p), p.size()); }
+				catch (Genode::Packet_descriptor::Invalid_packet) {
+					Genode::error("received invalid Nic packet"); }
 				_nic.rx()->acknowledge_packet(p);
 			}
 
+			/* schedule next batch if there are still packets available */
 			if (_nic.rx()->packet_avail())
 				Genode::Signal_transmitter(_sink_submit).submit();
+
+			/* tick the higher layer of the component */
+			_tick();
 		}
 
 		/**
 		 * acknoledgement queue not full anymore
 		 */
-		void _ready_to_ack(unsigned num)
+		void _ready_to_ack()
 		{
-			_packet_avail(num);
+			_packet_avail();
 		}
 
 		/**
 		 * acknoledgement queue not empty anymore
 		 */
-		void _ack_avail(unsigned)
+		void _ack_avail()
 		{
 			while (_nic.tx()->ack_avail()) {
 				Nic::Packet_descriptor p = _nic.tx()->get_acked_packet();
@@ -80,29 +107,28 @@ class Nic_client
 			}
 		}
 
-		/**
-		 * submit queue not full anymore
-		 *
-		 * TODO: by now, we just drop packets that cannot be transferred
-		 *       to the other side, that's why we ignore this signal.
-		 */
-		void _ready_to_submit(unsigned) { }
 
 	public:
 
-		Nic_client(Genode::Signal_receiver &sig_rec)
+		Nic_client(Genode::Env &env,
+		           Genode::Allocator &alloc,
+		           void (*ticker)())
 		:
-			_tx_block_alloc(Genode::env()->heap()),
-			_nic(&_tx_block_alloc, BUF_SIZE, BUF_SIZE),
-			_sink_ack(sig_rec, *this, &Nic_client::_ready_to_ack),
-			_sink_submit(sig_rec, *this, &Nic_client::_packet_avail),
-			_source_ack(sig_rec, *this, &Nic_client::_ack_avail),
-			_source_submit(sig_rec, *this, &Nic_client::_ready_to_submit)
+			_tx_block_alloc(&alloc),
+			_nic(env, &_tx_block_alloc, BUF_SIZE, BUF_SIZE),
+			_sink_ack(env.ep(), *this, &Nic_client::_packet_avail),
+			_sink_submit(env.ep(), *this, &Nic_client::_ready_to_ack),
+			_source_ack(env.ep(), *this, &Nic_client::_ack_avail),
+			_link_state_change(env.ep(), *this, &Nic_client::_link_state),
+			_tick(ticker)
 		{
+			ic_link_state = _nic.link_state();
+
 			_nic.rx_channel()->sigh_ready_to_ack(_sink_ack);
 			_nic.rx_channel()->sigh_packet_avail(_sink_submit);
 			_nic.tx_channel()->sigh_ack_avail(_source_ack);
-			_nic.tx_channel()->sigh_ready_to_submit(_source_submit);
+			_nic.link_state_sigh(_link_state_change);
+			/* ready_to_submit not handled */
 		}
 
 		Nic::Connection *nic() { return &_nic; }
@@ -112,9 +138,11 @@ class Nic_client
 static Nic_client *_nic_client;
 
 
-void Lx::nic_client_init(Genode::Signal_receiver &sig_rec)
+void Lx::nic_client_init(Genode::Env &env,
+	                       Genode::Allocator &alloc,
+	                       void (*ticker)())
 {
-	static Nic_client _inst(sig_rec);
+	static Nic_client _inst(env, alloc, ticker);
 	_nic_client = &_inst;
 }
 
@@ -126,7 +154,7 @@ void net_mac(void* mac, unsigned long size)
 {
 	enum { MAC_LEN = 17, ETH_ALEN = 6, };
 
-	unsigned char str[MAC_LEN + 1];
+	char str[MAC_LEN + 1];
 	using namespace Genode;
 
 	Nic::Mac_address m = _nic_client->nic()->mac_address();
@@ -140,7 +168,7 @@ void net_mac(void* mac, unsigned long size)
 	}
 	str[MAC_LEN] = 0;
 
-	PINF("Received mac: %s", str);
+	Genode::log("Received mac: ", Cstring(str));
 }
 
 

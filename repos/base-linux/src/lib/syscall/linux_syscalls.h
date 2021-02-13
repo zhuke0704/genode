@@ -1,6 +1,7 @@
 /*
  * \brief  Linux system-call bindings
  * \author Norman Feske
+ * \author Stefan Thöni
  * \date   2008-10-22
  *
  * This file is meant to be internally used by the framework. It is not public
@@ -19,10 +20,11 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
+ * Copyright (C) 2019 gapfruit AG
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _LIB__SYSCALL__LINUX_SYSCALLS_H_
@@ -32,18 +34,34 @@
 #define _GNU_SOURCE 1 /* needed to enable the definition of 'stat64' */
 #endif
 
+/* Genode includes */
+#include <util/string.h>
+#include <base/snprintf.h>
+#include <base/log.h>
+#include <base/sleep.h>
+
+
+/*
+ * Resolve ambiguity between 'Genode::size_t' and the host's header's 'size_t'.
+ */
+#define size_t __SIZE_TYPE__
+
 /* Linux includes */
+#include <sys/cdefs.h>   /* include first to avoid double definition of '__always_inline' */
 #include <linux/futex.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sched.h>
 #include <sys/syscall.h>
+#include <sys/un.h>
+#include <sys/socket.h>
+#include <sys/poll.h>
+#include <sys/epoll.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
-/* Genode includes */
-#include <util/string.h>
-#include <base/printf.h>
-#include <base/snprintf.h>
-#include <base/log.h>
+
+#undef size_t
 
 
 /***********************************
@@ -57,7 +75,7 @@ extern "C" void wait_for_continue(void);
 		char str[128];                                             \
 		Genode::snprintf(str, sizeof(str),                         \
 		                 ESC_ERR fmt ESC_END "\n", ##__VA_ARGS__); \
-		Genode::raw(str);                                          \
+		Genode::raw(Genode::Cstring(str));                         \
 	} while (0)
 
 
@@ -74,6 +92,12 @@ extern "C" int  lx_clone(int (*fn)(void *), void *child_stack,
  ** General syscalls used by base-linux **
  *****************************************/
 
+
+inline pid_t lx_getpid() { return lx_syscall(SYS_getpid); }
+inline pid_t lx_gettid() { return lx_syscall(SYS_gettid); }
+inline uid_t lx_getuid() { return lx_syscall(SYS_getuid); }
+
+
 inline int lx_write(int fd, const void *buf, Genode::size_t count)
 {
 	return lx_syscall(SYS_write, fd, buf, count);
@@ -83,6 +107,12 @@ inline int lx_write(int fd, const void *buf, Genode::size_t count)
 inline int lx_close(int fd)
 {
 	return lx_syscall(SYS_close, fd);
+}
+
+
+inline int lx_dup(int fd)
+{
+	return lx_syscall(SYS_dup, fd);
 }
 
 
@@ -97,6 +127,39 @@ inline int lx_dup2(int fd, int to)
  *****************************************/
 
 #include <linux/net.h>
+
+struct Lx_sd
+{
+	int value;
+
+	bool valid() const { return value >= 0; }
+
+	static Lx_sd invalid() { return Lx_sd{-1}; }
+
+	uint64_t inode() const
+	{
+#ifdef __NR_fstat64
+		struct stat64 statbuf { };
+		(void)lx_syscall(SYS_fstat64, value, &statbuf);
+#else
+		struct stat statbuf { };
+		(void)lx_syscall(SYS_fstat, value, &statbuf);
+#endif /* __NR_fstat64 */
+		return statbuf.st_ino;
+	}
+
+	void print(Genode::Output &out) const
+	{
+		Genode::print(out, "socket=", value);
+
+		if (value >= 0)
+			Genode::print(out, ",inode=", inode());
+	}
+};
+
+
+struct Lx_epoll_sd { int value; };
+
 
 #ifdef SYS_socketcall
 
@@ -113,24 +176,17 @@ inline int lx_socketpair(int domain, int type, int protocol, int sd[2])
 }
 
 
-inline int lx_sendmsg(int sockfd, const struct msghdr *msg, int flags)
+inline int lx_sendmsg(Lx_sd sockfd, const struct msghdr *msg, int flags)
 {
-	long args[3] = { sockfd, (long)msg, flags };
+	long args[3] = { sockfd.value, (long)msg, flags };
 	return lx_socketcall(SYS_SENDMSG, args);
 }
 
 
-inline int lx_recvmsg(int sockfd, struct msghdr *msg, int flags)
+inline int lx_recvmsg(Lx_sd sockfd, struct msghdr *msg, int flags)
 {
-	long args[3] = { sockfd, (long)msg, flags };
+	long args[3] = { sockfd.value, (long)msg, flags };
 	return lx_socketcall(SYS_RECVMSG, args);
-}
-
-
-inline int lx_getpeername(int sockfd, struct sockaddr *name, socklen_t *namelen)
-{
-	long args[3] = { sockfd, (long)name, (long)namelen };
-	return lx_socketcall(SYS_GETPEERNAME, args);
 }
 
 #else
@@ -141,26 +197,70 @@ inline int lx_socketpair(int domain, int type, int protocol, int sd[2])
 }
 
 
-inline int lx_sendmsg(int sockfd, const struct msghdr *msg, int flags)
+inline int lx_sendmsg(Lx_sd sockfd, const struct msghdr *msg, int flags)
 {
-	return lx_syscall(SYS_sendmsg, sockfd, msg, flags);
+	return lx_syscall(SYS_sendmsg, sockfd.value, msg, flags);
 }
 
 
-inline int lx_recvmsg(int sockfd, struct msghdr *msg, int flags)
+inline int lx_recvmsg(Lx_sd sockfd, struct msghdr *msg, int flags)
 {
-	return lx_syscall(SYS_recvmsg, sockfd, msg, flags);
-}
-
-
-inline int lx_getpeername(int sockfd, struct sockaddr *name, socklen_t *namelen)
-{
-	return lx_syscall(SYS_getpeername, sockfd, name, namelen);
+	return lx_syscall(SYS_recvmsg, sockfd.value, msg, flags);
 }
 
 /* TODO add missing socket system calls */
 
 #endif /* SYS_socketcall */
+
+
+struct Lx_socketpair
+{
+	Lx_sd local  { -1 };
+	Lx_sd remote { -1 };
+
+	Lx_socketpair()
+	{
+		int sd[2];
+		sd[0] = -1; sd[1] = -1;
+
+		int const ret = lx_socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sd);
+		if (ret < 0) {
+			Genode::raw(lx_getpid(), ":", lx_gettid(), " lx_socketpair failed with ", ret);
+			Genode::sleep_forever();
+		}
+
+		local  = Lx_sd { sd[0] };
+		remote = Lx_sd { sd[1] };
+	}
+};
+
+
+inline Lx_epoll_sd lx_epoll_create()
+{
+	int const ret = lx_syscall(SYS_epoll_create, 1);
+	if (ret < 0) {
+		/*
+		 * No recovery possible, just leave a diagnostic message and block
+		 * forever.
+		 */
+		Genode::raw(lx_getpid(), ":", lx_gettid(), " lx_epoll_create failed with ", ret);
+		Genode::sleep_forever();
+	}
+	return Lx_epoll_sd { ret };
+}
+
+
+inline int lx_epoll_ctl(Lx_epoll_sd epoll, int op, Lx_sd fd, epoll_event *event)
+{
+	return lx_syscall(SYS_epoll_ctl, epoll.value, op, fd.value, event);
+}
+
+
+inline int lx_epoll_wait(Lx_epoll_sd epoll, struct epoll_event *events,
+                         int maxevents, int timeout)
+{
+	return lx_syscall(SYS_epoll_wait, epoll.value, events, maxevents, timeout);
+}
 
 
 /*******************************************
@@ -197,7 +297,7 @@ inline void *lx_mmap(void *start, Genode::size_t length, int prot, int flags,
 }
 
 
-inline int lx_munmap(void *addr, size_t length)
+inline int lx_munmap(void *addr, Genode::size_t length)
 {
 	return lx_syscall(SYS_munmap, addr, length);
 }
@@ -217,6 +317,7 @@ enum {
 	LX_SIGCHLD   = 17,  /* child process changed state, i.e., terminated */
 	LX_SIGCANCEL = 32,  /* accoring to glibc, this equals SIGRTMIN,
 	                       used for killing threads */
+	LX_NSIG      = 64,  /* number of different signals supported */
 };
 
 
@@ -242,13 +343,19 @@ inline int lx_sigemptyset(sigset_t *set)
 extern "C" void lx_restore_rt (void);
 #endif
 
+
 /**
  * Simplified binding for sigaction system call
  */
-inline int lx_sigaction(int signum, void (*handler)(int))
+inline int lx_sigaction(int signum, void (*handler)(int), bool altstack)
 {
 	struct kernel_sigaction act;
 	act.handler = handler;
+
+	/*
+	 * System calls should be restarted on signal occurrence and not return
+	 * with EINTR. We therefore set the SA_RESTART flag in signal handlers.
+	 */
 
 #ifdef _LP64
 	/*
@@ -258,15 +365,19 @@ inline int lx_sigaction(int signum, void (*handler)(int))
 	 * when leaving the signal handler and it should call the rt_sigreturn syscall.
 	 */
 	enum { SA_RESTORER = 0x04000000 };
-	act.flags    = SA_RESTORER | SA_ONSTACK;
+	act.flags    = SA_RESTORER | SA_RESTART;
 	act.restorer = lx_restore_rt;
 #else
-	act.flags    = SA_ONSTACK;
+	act.flags    = SA_RESTART;
 	act.restorer = 0;
 #endif
+
+	/* use alternate signal stack if requested */
+	act.flags |= altstack ? SA_ONSTACK : 0;
+
 	lx_sigemptyset(&act.mask);
 
-	return lx_syscall(SYS_rt_sigaction, signum, &act, 0UL, _NSIG/8);
+	return lx_syscall(SYS_rt_sigaction, signum, &act, 0UL, LX_NSIG/8);
 }
 
 
@@ -308,11 +419,6 @@ inline int lx_create_thread(void (*entry)(), void *stack, void *arg)
 }
 
 
-inline pid_t lx_getpid() { return lx_syscall(SYS_getpid); }
-inline pid_t lx_gettid() { return lx_syscall(SYS_gettid); }
-inline uid_t lx_getuid() { return lx_syscall(SYS_getuid); }
-
-
 /************************************
  ** Functions used by lock library **
  ************************************/
@@ -323,6 +429,7 @@ inline int lx_nanosleep(const struct timespec *req, struct timespec *rem)
 {
 	return lx_syscall(SYS_nanosleep, req, rem);
 }
+
 
 enum {
 	LX_FUTEX_WAIT = FUTEX_WAIT,
@@ -340,37 +447,54 @@ inline int lx_futex(const int *uaddr, int op, int val)
  */
 class Lx_sigset
 {
-	unsigned long int _value[_SIGSET_NWORDS];
+	private:
+
+		enum {
+			BITS_PER_LONG = 8 * sizeof(unsigned long),
+			SIGSET_SIZE   = LX_NSIG / BITS_PER_LONG
+		};
+
+		unsigned long _value[SIGSET_SIZE];
+
+		/*
+		 * Both '__sigword' and '__sigmask' were macros defined in the glibc
+		 * header file 'bits/sigset.h'. The macros were moved in later versions
+		 * and, therefore, we implement them explicitly.
+		 */
+
+		/* return mask that includes the bit for 'signum' only (was __sigmask) */
+		unsigned long _mask(int signum)
+		{
+			return (1UL) << ((signum - 1) % BITS_PER_LONG);
+		}
+
+		/* return word index for 'signum' (was __sigword)  */
+		unsigned _word(int signum)
+		{
+			return (signum - 1) / BITS_PER_LONG;
+		}
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Lx_sigset() { }
+		Lx_sigset() { Genode::memset(_value, 0, sizeof(_value)); }
 
 		/**
 		 * Constructor
 		 *
 		 * \param signum  set specified entry of sigset
 		 */
-		Lx_sigset(int signum)
+		Lx_sigset(int signum) : Lx_sigset()
 		{
-
-			for (unsigned i = 0; i < _SIGSET_NWORDS; i++)
-				_value[i] = 0;
-
-			/*
-			 * Both '__sigword' and '__sigmask' are macros, defined in the
-			 * glibc header file 'bits/sigset.h' and not external functions.
-			 * Therefore we can use them here without getting into conflicts
-			 * with the linkage of another libc.
-			 */
-			_value[__sigword(signum)] = __sigmask(signum);
+			_value[_word(signum)] = _mask(signum);
 		}
 
-		bool is_set(int signum) {
-			return _value[__sigword(signum)] && __sigmask(signum); }
+		bool is_set(int signum)
+		{
+			return _value[_word(signum)] && _mask(signum);
+		}
 };
 
 
@@ -382,7 +506,7 @@ class Lx_sigset
 inline bool lx_sigpending(int signum)
 {
 	Lx_sigset sigset;
-	lx_syscall(SYS_rt_sigpending, &sigset, _NSIG/8);
+	lx_syscall(SYS_rt_sigpending, &sigset, sizeof(sigset));
 	return sigset.is_set(signum);
 }
 
@@ -398,9 +522,21 @@ inline bool lx_sigpending(int signum)
 inline bool lx_sigsetmask(int signum, bool state)
 {
 	Lx_sigset old_sigmask, sigset(signum);
-	lx_syscall(SYS_rt_sigprocmask, state ? SIG_UNBLOCK : SIG_BLOCK, &sigset, &old_sigmask, _NSIG/8);
+	lx_syscall(SYS_rt_sigprocmask, state ? SIG_UNBLOCK : SIG_BLOCK, &sigset, &old_sigmask, sizeof(sigset));
 	return old_sigmask.is_set(signum);
 }
 
+
+inline int lx_prctl(int option, unsigned long arg2, unsigned long arg3,
+                                unsigned long arg4, unsigned long arg5)
+{
+	return lx_syscall(SYS_prctl, option, arg2, arg3, arg4, arg5);
+}
+
+
+inline int lx_seccomp(int option, int flag, void* program)
+{
+	return lx_syscall(SYS_seccomp, option, flag, program);
+}
 
 #endif /* _LIB__SYSCALL__LINUX_SYSCALLS_H_ */

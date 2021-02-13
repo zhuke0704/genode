@@ -4,6 +4,1112 @@
                                ===========
 
 
+Road Map for 2021 | 2021-01-15
+##############################
+
+| In 2021, we plan to bring Genode to the Pinephone, advance the framework's
+| GPU support, and focus on development workflows.
+
+During the annual road-map discussion on Genode's public
+[https://genode.org/community/mailing-lists - mailing list],
+the following hot topics for this year emerged.
+
+First and most inspiring for many Genode developers, we aspire to have
+Genode running on the Pinephone with basic feature-phone functionality by the
+end of the year. Since this will involve substantial device-driver-related
+developments, the team will take this line of work as an opportunity to
+advance the tooling and workflows for carrying out such tasks. This, in turn,
+will hopefully ease the on-boarding of new driver developers in the future.
+
+Closely related to the Pinephone scenario, the project will make optimizations
+a top priority this year. The opportunities are plenty, ranging from
+micro-optimizations, over API refinements, to architectural changes if
+needed.
+
+Another recurring topic is the request for GPU support, which is required
+by many modern workloads such as video conferencing or streaming on mobile
+device. Therefore, we will revamp our past developments of GPU multiplexing
+on Intel hardware while also starting the investigation of GPUs on ARM-based
+devices.
+
+More information about our review of the past year, this year's focus, and a
+rough schedule are presented at our official
+[https:/about/road-map - road-map page].
+
+
+Genode OS Framework release 20.11 | 2020-11-27
+##############################################
+
+| Genode 20.11 brings Sculpt OS to 64-bit ARM hardware, introduces dynamic
+| CPU-load balancing, and enables multicore virtualization on ARM. Driver-wise,
+| the release improves audio on PC hardware, and adds VirtIO networking support.
+
+ARM 64-bit has been a recurring theme of the Genode releases this year and the
+just released version 20.11 is no exception. We are proud to announce that our
+Genode-based custom general-purpose OS called Sculpt has come to life on
+64-bit ARM hardware, namely the NXP i.MX8 EVK board. This is the result of
+intensive work on the framework's driver architecture for ARM and several
+SoC-specific device drivers. Closely related to this line of work is the new
+ability to run multicore virtual machines on ARM.
+
+Another highlight of version 20.11 is a new CPU balancing mechanism, which
+automates the dynamic assignment of threads to CPU cores for complex
+workloads. With traditional operating systems, such policies are normally part
+of the OS kernel. Thanks to Genode's component architecture, we are able to
+implement such potentially complex policies in the form of an optional
+component, which offers ultimate flexibility while keeping the kernel
+untainted by complex heuristics.
+
+Further topics of the current release are improved power management and audio
+support on PC hardware, a new OSS API emulation that allows for the
+reuse of popular audio applications on Genode, and new support for VirtIO
+networking. The full picture is given by the
+[https:/documentation/release-notes/20.11 - release documentation of version 20.11...]
+
+
+Sculpt OS release 20.08 | 2020-09-17
+####################################
+
+| Version 20.08 of the Sculpt operating system refines the user experience
+| and becomes able to host the Chromium-based Falkon web browser.
+
+The new version of Sculpt OS is based on the latest Genode release
+[https://genode.org/documentation/release-notes/20.08 - 20.08].
+In particular, it incorporates the
+[https://genode.org/documentation/release-notes/20.08#The_GUI_stack__restacked - redesigned GUI stack]
+to the benefit of quicker boot times, improved interactive responsiveness, and
+better pixel output quality.
+It also removes the last traces of the
+[https://genode.org/documentation/release-notes/20.05#Retired_Noux_runtime_environment - noux runtime].
+Fortunately, these massive under-the-hood changes do not disrupt the
+user-visible surface of Sculpt. Most users will feel right at home.
+
+Upon closer inspection, there are couple of new features to appreciate. The
+CPU-affinity of each component can now be restricted interactively by the user,
+components can be easily restarted via a click on a button, font-size changes
+have an immediate effect now, and the VESA driver (used when running Sculpt in
+a virtual machine) can dynamically change the screen resolution.
+
+Thanks to our continuous efforts of strengthening of the base system, Sculpt
+OS has become able to host a first version of the Chromium-based Falkon web
+browser from an installable package. Even though this version is still rough
+around the edges and unoptimized, it already enables Sculpt users to casually
+browse the modern web without the need for a virtual machine.
+
+The updated [https://genode.org/documentation/articles/sculpt-20-08 - manual]
+goes into detail about the use of the new system.
+
+The ready-to-use system image for version 20.08 is available at the
+[https://genode.org/download/sculpt - Sculpt download page].
+
+
+Genode OS Framework release 20.08 | 2020-08-28
+##############################################
+
+| With Genode 20.08, the low-level GUI stack underwent a profound redesign,
+| the Chromium web engine comes to life, the i.MX8 support covers clock and
+| power management, and the CBE block encrypter becomes highly modular.
+
+The most stunning feature of Genode 20.08 is most certainly the new ability
+to host the Chromium web engine as native component in the form of the Falkon
+web browser. This long-time project involved overcoming countless road
+blocks along the way to the great benefit of Genode's users at large: building
+bridges between 3rd-party build systems and Genode, covering seemingly obscure
+corner cases of POSIX, solving instruction-cache invalidation issues on ARM -
+just to name a few.
+
+Under the hood, we took the release cycle as opportunity to tackle a major
+surgery of the low-level GUI stack that we planned for more than two years.
+The architectural change lays the groundwork for swapping out graphics and
+input drivers on the fly without reboot. It also paves the ground for features
+like screen capturing and remote desktop scenarios in a privacy-protecting
+way.
+
+On our mission of bringing the driver support for the 64-bit ARM-based i.MX8
+SoC on par with our driver coverage on Intel PCs, the release introduces a
+platform driver specifically for this SoC that covers clock and power
+management. One step closer to using Sculpt OS on the MNT Reform laptop.
+
+Furthermore, Genode's custom block encrypter called CBE received continuous
+development. In particular, the cryptographic algorithm and trust anchor
+have become pluggable modules. This will allow for tailoring the CBE to
+custom products - like hardware trust anchors - without changing its
+implementation.
+
+These and many more improvements are covered in detail in the
+[https:/documentation/release-notes/20.08 - release documentation of version 20.08...]
+
+
+Genode OS Framework release 20.05 | 2020-05-28
+##############################################
+
+| Version 20.05 wraps up the consolidation of Noux with the C runtime,
+| advances the device-driver infrastructure and virtualization support on ARM,
+| reaches feature-completion of our block encryptor, and leverages seccomp for
+| sandboxing components on top of Linux.
+
+It has become almost a tradition to dedicate the spring release to topics
+under the hood of the Genode OS framework, taking the time for careful
+consolidation, and architectural improvements.
+
+On the latter account, the Linux version gained an architectural revamp of its
+inter-component communication model, leveraging the combination of the
+seccomp and epoll kernel mechanisms to enable Genode's capability-based
+security concept on this kernel. The new version applies strict sandboxing
+to each component individually. In particular, the host file system is
+shielded from Genode components and Genode's least-privilege access-control
+scheme comes into effect.
+
+As the second prominent architectural topic, the release features new
+device-driver infrastructure for the ARM universe along with a unified
+version of the formerly distinct virtual machine monitors for ARMv7 and
+ARMv8. These are important steps to bring Genode on ARM to parity with the
+x86 version.
+
+Further highlights of the release are the first feature-complete version
+of our custom block-encryption component, the improved management of CPU
+affinities on x86, and new tracing utilities. Last but not least, the
+release is accompanied with an updated version of the Genode Foundations
+book, reflecting the changes of the framework since one year ago.
+
+Read the details of the new release in the
+[https:/documentation/release-notes/20.05 - release documentation of version 20.05...]
+
+
+Sculpt OS release 20.02 | 2020-03-10
+####################################
+
+| Version 20.02 of the Sculpt operating system revisits the administrative
+| user interface for a more intuitive and logical user experience.
+
+With the release of Sculpt version 20.02, we follow our
+[https://genode.org/about/road-map - roadmap's] mission to make Sculpt OS
+easier to approach. In particular, we
+[https://genodians.org/nfeske/2020-01-06-pending-sculpt-ui - identified] the
+reliance on a command-line interface as a potential barrier of entry. As
+Sculpt OS is not a Unix-like system, it should not require any Unix know-how
+from the user. To relieve users from this burden, Sculpt 20.02 introduces
+a custom graphical file browser and editor that can be used for interactively
+inspecting and tweaking the state of the system. The traditional command-line
+interface is still present as a fallback for advanced tasks though.
+The updated [https://genode.org/documentation/articles/sculpt-20-02 - manual]
+goes into detail about the use of the new system.
+
+Thanks to the work of seasoned Genode developers, many software packages are
+already available for the new version. These include virtual machine monitors
+like VirtualBox, performance-monitoring tools, GUI components, Genode's custom
+Unix runtime, and several applications and games. In particular, the software
+depots offered by alex-ab, cnuke, skalk are worth exploring.
+The ready-to-use system image for version 20.02 can be obtained from the
+[https://genode.org/download/sculpt - Sculpt download page] and is
+accompanied by matching
+[https://genode.org/documentation/articles/sculpt-20-02 - documentation].
+
+
+Genode OS Framework release 20.02 | 2020-02-28
+##############################################
+
+| With version 20.02, Genode makes Sculpt OS fit for running on i.MX 64-bit
+| ARM hardware, optimizes the performance throughout the entire software stack,
+| and takes the next evolutionary step of the user-facing side of Sculpt OS.
+
+Without any doubt, Sculpt OS has been the driving motivation behind most
+working topics featured by the new release. One particularly exciting line
+of work is the enabling of Sculpt on i.MX-based 64-bit ARM hardware, which
+touched the framework on all levels, from the boot loader, over the kernel,
+device drivers, libraries, system management, up to the application level.
+The work goes as far as supporting Sculpt OS as a hypervisor platform for
+hosting Linux in a virtual machine.
+
+As a second Sculpt-related development, we strive to make the user-visible
+side of the operating system better approachable and more logical. With this
+background, the current release comes with a profound redesign of the
+administrative user interface of Sculpt OS. An updated downloadable system
+image will follow soon.
+
+Also related to Sculpt are an updated audio driver based on OpenBSD 6.6,
+the support of virtual desktops, and performance optimization of the
+Seoul virtual machine monitor on x86 hardware.
+
+Regarding the framework API, the release introduces a new library for
+building multi-component applications. It aims to bring the benefits of
+Genode's unique security architecture from the operating-system level to the
+application level.
+
+These topics are only the tip of the iceberg. For the complete picture,
+please consult the
+[https:/documentation/release-notes/20.02 - release documentation of version 20.02...]
+
+
+Road Map for 2020 | 2020-01-20
+##############################
+
+| In 2020, we will be concerned about dwarfing the barrier of entry into
+| the Genode world.
+
+Following the last year's leitmotif of "bridging worlds", we turn our
+attention to the removal of the hurdles faced by aspiring developers and
+users. During the annual road-map
+[https://lists.genode.org/pipermail/users/2019-December/006987.html - discussion]
+on our mailing list, we identified four tangible approaches towards that
+goal. First, making Sculpt OS more user friendly. Second, reinforcing trust in
+Genode by fostering the framework's high quality. Third, making the tooling
+around Genode a joy to use. And finally, the illustration of Genode's
+versatility in the form practical use cases.
+
+Besides this overall theme, we plan to continue our commitment to the
+NXP i.MX SoC family, revisit Genode's low-latency audio support, and
+extend the cultivation of Ada/SPARK within (and on top of) Genode.
+
+More background information about the new road map and a rough schedule are
+presented at our official [https:/about/road-map - road-map page].
+
+
+Genode OS Framework release 19.11 | 2019-11-28
+##############################################
+
+| Following this year's theme of "bridging worlds", Genode 19.11 adds the
+| ability to use popular build tools like CMake for application development,
+| introduces a new virtual-machine monitor for 64-bit ARM, and enhances
+| POSIX compatibility. As another highlight, it features the first version
+| of our custom block-device encrypter.
+
+Block-device encryption is a feature often requested by users of our Sculpt OS.
+Until now, we deliberately left this topic unaddressed because we felt that a
+profound answer was beyond our expertise. However, during the past year, we
+dived deep into it. The result is the prototype for a new block encrypter that
+encrypts data but also protects integrity and freshness. For us, the
+implementation of the encrypter is especially intriguing because - with about
+7000 lines of code - it is Genode's first non-trivial component written in the
+[https://en.wikipedia.org/wiki/SPARK_(programming_language) - SPARK]
+programming language.
+
+The second major addition is a new virtual machine monitor (VMM) for 64-bit
+ARM platforms such as the NXP i.MX8. It leverages the
+[https://genode.org/documentation/articles/arm_virtualization - proof of concept]
+we developed in 2015 for ARMv7, which we pursued as a technology exploration.
+In contrast, our aspiration with the new VMM is a product-quality solution.
+
+In our [https://genode.org/about/road-map - road map] for 2019, we stated
+the "bridging of worlds" as our overall theme for this year. On that account,
+the current release moves the project forward on two levels. First, by
+successively increasing the scope of POSIX compatibility, we reduce the
+friction when porting existing application software to Genode. We managed
+to bridge several gaps in our POSIX support that we considered as impossible
+to cover some years ago. In particular, we identified ways to emulate certain
+POSIX signals, ioctl calls, and fork/execve semantics. This way, popular
+software such as bash, coreutils, or Vim can now be executed as regular
+Genode components with no additional runtime environment (like Noux or a VMM)
+required.
+
+At a higher level, the current release introduces new tooling especially
+geared at the development and porting of application software. Compared to
+Genode's regular development tools, which were designed for whole-system
+development, the new tool called Goa relieves the developer from the
+complexity of Genode's custom build system and instead promotes the use of
+popular commodity solutions like CMake.
+
+These and more topics are described in the
+[https:/documentation/release-notes/19.11 - release documentation of version 19.11...]
+
+
+Genode OS Framework release 19.08 | 2019-08-28
+##############################################
+
+| Genode 19.08 puts emphasis on practical concerns ranging from
+| keyboard layouts, over system-time management, to remote system
+| administration. It also continues our commitment to the 64-bit ARM
+| i.MX8 SoC, comes with Qt5 version 5.13, and improves POSIX compatibility.
+
+The summer release of Genode addresses a variety of topics when using Genode
+and Sculpt OS in practice. The confrontation with the real world prompted us
+to develop new concepts for managing system time, keyboards layouts, and
+copy-and-paste. For using Sculpt OS on the road, a new application VM for
+accessing captive portals smoothes the experience of connecting to public WiFi
+networks.
+
+Besides the practical focus, the new release continues our commitment to the
+64-bit ARM i.MX8 platform through new kernel support, device drivers, and test
+coverage. Further topics include SMBIOS support for commodity PC hardware, a
+new tracing tool, enhanced POSIX compatibility, and a major update of Qt5 to
+version 5.13.
+
+The complete picture is presented in the
+[https:/documentation/release-notes/19.08 - release documentation of version 19.08...]
+
+
+Sculpt OS release 19.07 | 2019-07-09
+####################################
+
+| Version 19.07 of the Sculpt operating system improves overall performance
+| and introduces copy and paste between terminals, virtual machines, and
+| graphical applications.
+
+The most prominent user-visible feature of Sculpt OS 19.07 is the ability
+of copy and paste text between terminals, graphical applications, and
+virtual machines. Our unique take on this feature is described in
+a [https://genodians.org/nfeske/2019-07-03-copy-paste - dedicated article].
+
+Under the hood, Sculpt 19.07 benefits from the massive infrastructure
+improvements that came with
+[https://genode.org/documentation/release-notes/19.05 - Genode 19.05],
+yielding a smoother user experience compared to earlier versions.
+
+The new release can be obtained from the
+[https://genode.org/download/sculpt - Sculpt download page] and is
+accompanied by updated
+[https://genode.org/documentation/articles/sculpt-19-07 - documentation].
+
+
+Genode OS Framework release 19.05 | 2019-05-29
+##############################################
+
+| The highlights of version 19.05 are a new kernel-agnostic virtualization
+| interface, initial support for the 64-bit ARM architecture, the use of
+| C++17 by default, a new tool chain based on GCC 8.3, updated C and SPARK
+| runtimes, and the consolidation of build directories across boards.
+
+We dedicated the release cycle of Genode 19.05 to platform topics at various
+levels. The flagship feature is certainly the introduction of our
+kernel-agnostic virtualization interface. It has been in the works for more
+than a half year and gives us the prospect of running virtual machine monitors
+like Seoul and VirtualBox seamlessly across Genode's supported kernels.
+
+The second major theme is the extension of Genode's CPU-architecture support
+to 64-bit ARM (AARCH64). This step motivated the update of many parts of the
+framework's fundamental infrastructure, ranging from the tool chain (updated
+to GCC 8.3), over the C runtime (updated to FreeBSD 12 libc), to the dynamic
+linker. The new tool chain, in turn, paved the ground for enabling C++17 by
+default.
+
+With the diversity of kernels, CPU architectures, and boards growing, we are
+constantly striving to remove friction and redundancies between Genode's
+underlying platforms. The current release eventually consolidates the build
+directories not only across kernels but also across all boards of a given
+CPU architecture. This vastly increases the velocity of Genode-based system
+scenarios when targeting multiple boards or emulators at the same time.
+
+Further details about these and many more improvements are given in the
+[https:/documentation/release-notes/19.05 - release documentation of version 19.05...]
+
+
+Sculpt as a Community Experience | 2019-03-19
+#############################################
+
+| The fourth stage of Sculpt OS introduces a new federated software
+| provisioning model while giving the user full control over the
+| component deployment via a novel graphical user interface.
+
+With Sculpt CE, we enter the final stage of the evolution of Sculpt OS as
+envisioned roughly one year ago. Initially geared towards die-hard enthusiasts
+only, each revision became more and more user friendly. The previous version
+Sculpt VC already offered a glimpse of Sculpt's unique user interface in the
+form of an interactive component graph.
+
+The just released Sculpt OS "as a community experience" (CE) combines this
+tangible notion of component compositions with a completely federated software
+provisioning model that cuts out middlemen like an app store or a
+distribution. With Sculpt CE, components can be offered by a federation of
+independent software providers selectable by the user. The software
+installation is sandboxed and protected via digital signatures. The
+integration of components with the rest of the system is completely under
+control by the user. With the principle of least privilege at the heart
+of Sculpt's architecture, you - the user - can fearlessly install and run
+software without the need to ultimately trust the software providers.
+
+Sculpt CE is intended to work in tandem with the new community blog
+[https://genodians.org - Genodians.org] where developers and users exchange
+experiences and announce new software. The best way to watch how the
+Sculpt story continues is the RSS feed of Genodians.org.
+
+To dive into the new world of Sculpt CE,
+[https://genode.org/download/sculpt - download Sculpt OS...]
+
+
+Genodians.org | 2019-03-08
+##########################
+
+| Genodians.org is the new place to be for getting the latest news and stories
+| around Genode. It is a federated blog by and for developers and users
+| alike.
+
+With [https://genodians.org - Genodians.org], the Genode community has gained
+a new place for exchanging ideas, announcing current developments, giving
+tutorials, and sharing experience stories. In contrast to the formal character
+of Genode's regular release notes, the articles at Genodians.org are raw and
+personal, authored by individuals with no editorial process. For feedback
+about the articles, readers are invited to the new
+[https://reddit.com/r/genode - /r/genode] subreddit.
+
+As written in the
+[https://genodians.org/nfeske/2019-01-07-welcome - initial posting],
+Genode users and developers are warmly invited to join the authors at
+Genodians.org!
+
+As a side note, the blogging platform is based on the Genode OS framework and
+is of course open source
+([https://github.com/genodelabs/genodians.org - GitHub repository]).
+
+[https://genodians.org - Visit Genodians.org...]
+
+
+Genode OS Framework release 19.02 | 2019-02-28
+##############################################
+
+| Version 19.02 enhances Sculpt OS with a federated software provisioning
+| model, showcases the use of Java for an IoT network appliance and the
+| creation of a component-based web service, improves the runtime support
+| for Ada and SPARK, and adds board support for i.MX6 Quad Sabrelite and
+| Nitrogen6 SoloX.
+
+Our first release of 2019 pays tribute to this year's
+[https://genode.org/about/road-map - road map] topic
+of making Genode relevant and attractive for a broader community.
+
+First, it enhances Sculpt OS with an easy-to-use way to discover, install,
+and integrate software originating from different providers into a running
+Sculpt system. Conversely, software providers get a distribution channel
+directly to the user, secured by cryptographic signatures. Unlike commodity
+OSes that rely on app stores or distributions, there is no middleman between
+software providers and users in Sculpt OS.
+
+Second, it makes the world's most popular programming language - Java -
+available. Our port of OpenJDK facilitates just-in-time compilation on both
+32-bit ARM and 64-bit x86 architectures. The use of Java within a Genode
+system is nicely showcased by an exemplary IoT network appliance.
+
+Third, to foster a strong sense of community, the release introduces a
+Genode-based federated blogging platform, which enables users and
+developers alike to share ideas, practical tips and tricks, and announcements.
+[https://genodians.org - Genodians.org] is open for everyone to participate.
+
+Other highlights of Genode 19.02 are the improved runtimes for the
+Ada/SPARK and OCaml programming languages, and the added support for the i.MX6
+Quad Sabrelite and Nitrogen6 SoloX boards.
+For more details, please refer to the
+[https:/documentation/release-notes/19.02 - release documentation of version 19.02...]
+
+
+Road Map for 2019 | 2019-01-15
+##############################
+
+| In 2019, we will focus on practical use cases, on interoperability, and
+| on harmonizing Genode with existing applications and programming languages.
+
+The past Year of Sculpt was dedicated to bringing Genode to the desktop on
+commodity PC hardware. Now is a good time to focus on making the Sculpt OS
+relevant and appealing for a broader community. The road map for 2019 features
+three major ambitions towards that goal. First, making Genode easier
+approachable and usable by presenting practical use cases while fostering a
+stronger sense of community among users and developers. Second, simplifying
+the use of existing applications and programming languages in Genode-based
+systems. And third, improving the interoperability of Genode with existing
+protocols and systems.
+
+The complete story behind the new road map is presented at the
+[https:/about/road-map - road-map page].
+
+
+Genode OS Framework release 18.11 | 2018-11-29
+##############################################
+
+| Genode 18.11 is focused on improving quality assurance on various fronts,
+| including static code analysis, on-target test orchestration, and
+| code-coverage measurements. Furthermore, it introduces support for Mirage-OS
+| unikernels, a new health-monitoring mechanism, a Genode SDK, an SSH server,
+| and a new window layouter.
+
+On our road map for 2018, we identified software quality and resilience
+as one of the major topics for this year. With the current release, we fulfil
+this promise on various levels, ranging from static code analysis, over
+the gathering of test-coverage metrics, a new Genode-based test-automation
+framework, over to the health monitoring of components at runtime.
+
+The second theme of the current release is the use of Genode for network
+appliances and server applications. On that account, the new ability of
+hosting Mirage-OS unikernels directly on top of Genode as well as a new SSH
+server component clear the way to entirely new application areas.
+
+Further highlights of the current release are the enhanced flexibility of the
+GUI stack of Sculpt OS, the increased network performance on Xilinx Zynq, the
+initial version of a Genode SDK, performance improvements of the base-hw
+kernel on NXP i.MX platforms, and the updated language support for Ada and
+Java.
+
+These and many more topics of the new version are covered by the
+[https:/documentation/release-notes/18.11 - release documentation of version 18.11...]
+
+
+Dual licensing of 3rd-party Genode components | 2018-11-16
+##########################################################
+
+| To nurture a sustainable ecosystem around the Genode OS framework, we
+| introduce a new approach for conducting dual-licensing businesses enabled
+| by Genode.
+
+Since founded ten years ago, Genode Labs pursues the Genode project based on a
+dual-licensing business model, which allows us to fund the development of
+Genode as an independent team. The licensing business is enabled by the
+combination of the AGPLv3 as a strong copyleft license with the library-like
+nature of Genode. Until today, this model is applicable to our framework but
+impractical for 3rd-party component developers. To foster a sustainable
+ecosystem around Genode, we wish to enable others to pursue a similar business
+model while maintaining the spirit of open collaboration and free software.
+
+We eventually crafted a new license called "Genode Component Public License"
+(Genode CPL) specifically for components developed by 3rd parties, outside of
+Genode Labs. The article
+[https://genode.org/documentation/articles/component_public_license - Dual licensing of 3rd-party Genode components]
+provides the rationale, license text, and FAQ of this software license.
+
+
+Sculpt with Visual Composition | 2018-09-21
+###########################################
+
+| The third version of Sculpt OS introduces an interactive runtime view for
+| managing components.
+
+Sculpt with Visual Composition (VC) is the third stage of the evolution of our
+Genode-based general-purpose OS. With the new version, we pursue the gradual
+transition from a text-based user interface to a graphical user interface for
+most administrative tasks while preserving the text-based interface for
+full flexibility. The central element of the new user interface is a live view
+of the current system composition and the relationships between components.
+The live view is accompanied with a convenient graphical user interface for
+adding and removing components.
+
+The new version is available as a ready-to-use disk image. The updated
+documentation covers everything from a quick-start guide, over a high-level
+description of the architecture, to advanced topics like Sculpt's manifold
+customization opportunities.
+
+[https://genode.org/download/sculpt - Download Sculpt OS...]
+
+
+Genode OS Framework release 18.08 | 2018-08-30
+##############################################
+
+| Genode 18.08 advances the framework's device drivers to accommodate modern
+| PC hardware, introduces a new microcode-update mechanism for Intel CPUs, and
+| enhances the networking and VFS infrastructure. With the new version,
+| Sculpt OS enters the next stage by moving towards an interactive graphical
+| user interface.
+
+With Genode 18.08, we enter the third episode of our story of developing the
+Sculpt general-purpose OS. The release addresses four crucial concerns of
+general-purpose computing, namely the support of modern hardware, the
+ability to timely respond to the discovery of new CPU-level vulnerabilities
+by the means of applying microcode updates, the scalability of application
+workloads, and the interactive usability of the system. The latter is
+particularly exciting as Genode allows us to explore new user-interface
+paradigms to lay the power of capability-based security into the hands of
+the user.
+
+The most prominent aspect of the current release is the framework's
+device-driver support, which includes the update of all Linux-based drivers
+to kernel version 4.16.3, a largely reworked wifi stack, the split of the
+USB driver into multiple components, and improved hardware compatibility of
+the PS/2 and network drivers. The release also introduces an experimental
+runtime for hosting drivers of Google's Fuchsia OS as Genode components.
+
+Among the many further improvements are an extended Ada language runtime,
+added multi-processor support for our custom base-hw microkernel on x86,
+the ability to route network traffic between an arbitrary number of
+physical NICs, and a new way to select the networking stack of a
+component between lwIP and the Linux TCP/IP by a mere configuration change.
+
+All improvements are covered in detail by the
+[https:/documentation/release-notes/18.08 - release documentation of version 18.08...]
+
+
+Sculpt for The Curious | 2018-06-13
+###################################
+
+| The second incarnation of Sculpt OS comes in the form of a ready-to-use
+| disk image.
+
+Sculpt for The Curious is the second development stage of the Genode-based
+general-purpose OS used at Genode Labs. Compared to the initial version, which
+was targeted at early adopters only, the new version invites a broader user
+base to explore the system. It comes in the form of a ready-to-use disk image
+for a bootable USB thumb drive. Immediately after booting the Sculpt base
+system, a graphical user interface enables the user to access and manage
+storage devices, and to configure network connectivity. The actual "sculpting"
+of the system is performed using a text-based interface, which is described in
+the accompanied documentation. It covers everything from the configuration of
+the base system up to the installation and deployment of software.
+
+[https://genode.org/download/sculpt - Download Sculpt OS...]
+
+
+Genode OS Framework release 18.05 | 2018-05-31
+##############################################
+
+| With Genode 18.05, we have reached the second stage of Sculpt OS,
+| empowering the user with the automation of fundamental work flows and
+| a new user interface for storage management and network access.
+| Further highlights include the added support for Java, a new NVMe device
+| driver, enhanced VFS infrastructure, and an updated revision of the Genode
+| Foundations book.
+
+Our [https://genode.org/about/road-map - Year of Sculpt] continues at a
+rapid pace. The just released version 18.05 of the Genode OS Framework
+features the second incarnation of the Sculpt general-purpose OS, targeting
+the group of people who follow our project with curiosity. Sculpt for The
+Curios (TC) introduces an interactive user interface for fundamental tasks
+like selecting and managing storage options, or connecting to a network.
+It completely streamlines the installation and deployment of additional
+software by leveraging Genode's custom package-management system. The result
+is an operating system with a flexibility and fun factor that strikes even us
+with surprise.
+
+The current release contains countless side products of this line work,
+including the resolution-independent display of text, the dynamic adjustment
+of user-level network routing, the flexible detection and management of
+partitions and file systems, and the support of USB storage devices from
+diverse vendors.
+
+Beyond the immediate scope of Sculpt, the new version features the initial
+support for the Java language, improves the Ada language support, enhances the
+VFS infrastructure with new copy-on-write and audit plugins, and improves
+the support for the NXP i.MX SoCs.
+
+The entire picture is presented in detail by the
+[https:/documentation/release-notes/18.05 - release documentation of version 18.05...]
+
+
+Sculpt for Early Adopters | 2018-03-02
+######################################
+
+| A detailed step-by-step guide for installing and using the Genode-based
+| Sculpt OS is available now.
+
+Sculpt for Early Adopters (EA) is the first revision of our Genode-based
+general-purpose OS. This version is targeted at enthusiasts who are already
+familiar with Genode. The documentation covers everything needed to get
+it running on a real machine. This includes disk preparation, input handling,
+wireless networking, storage, software installation and deployment, and
+virtualization.
+
+*Printable version (pdf)* [https:/documentation/sculpt-ea.pdf]
+
+*Online version* [https:/documentation/articles/sculpt-ea]
+
+
+Genode OS Framework release 18.02 | 2018-02-28
+##############################################
+
+| Genode version 18.02 kicks off the Year of Sculpt by featuring the
+| first revision of the Sculpt operating system for general-purpose
+| computing. Further highlights of the new release range from
+| network-stack improvements, over a new tracing utility, to the
+| experimental use of the Nim programming language.
+
+Since we announced the Year of Sculpt on our
+[https://genode.org/about/road-map - roadmap], our team anticipated the
+release of version 18.02 with excitement. The current release officially
+presents the first revision of the Sculpt operating system, which is targeted
+at the use of Genode as day-to-day OS. In fact, the system has been in
+use internally at Genode Labs for several months. We feel confident in
+sharing it with a broader community now.
+
+Driven by the demands of Sculpt, the most prominent topics of this release
+are Genode's new mechanisms for installing, updating, and deploying software
+from within a running Genode system. Further highlights are the experimental
+use of the Nim programming language for the implementation of Genode servers,
+a new tracing utility that makes Genode's existing tracing infrastructure much
+easier to use, improvements across the entire user-level networking stack, and
+updates of many 3rd-party software packages.
+
+These and many more topics are covered in detail by the
+[https:/documentation/release-notes/18.02 - release documentation of version 18.02...]
+
+
+Road Map for 2018 | 2018-01-17
+##############################
+
+| 2018 will be the year of Sculpt.
+
+In autumn last year, a new Genode system scenario called "Sculpt" emerged.
+By the end of 2017, all members of the Genode-Labs team switched to this
+operating system on their laptops. The planning of 2018 revolves around the
+ambition to expand the user base of Sculpt in several steps. Additionally,
+the year will be focused on software quality, device-driver support for
+popular ARM boards, Genode's custom kernel, and seL4.
+
+The new road map is available at the [https:/about/road-map - road-map page].
+
+
+Genode at FOSDEM 2018 | 2018-01-16
+##################################
+
+| Genode will participate in the microkernel developer room at FOSDEM with
+| three presentations, covering our recent work on GPUs, user-level networking,
+| and the dynamic sculpting of a Genode-based system.
+
+The microkernel developer room at FOSDEM is the melting pot of the open-source
+microkernel world where projects and users meet to present their work and
+experience with microkernel-based operating systems. Like every year, we will
+take the chance to present the recent developments of Genode to the audience.
+If you are curious about the technology, or interested in meeting the people
+behind the projects, please do not hesitate to join us at FOSDEM, which will
+be held on 3rd - 4th of February in Brussels:
+
+FOSDEM 2018: [https://fosdem.org/2018/]
+
+This year, the following Genode-related topics will be presented:
+
+Saturday 11:05 *GPU resource multiplexing in component based systems*
+_Microkernel devroom (AW1.126)_
+[https://fosdem.org/2018/schedule/event/microkernel_genode_gpu_multiplexing/ - abstract...]
+
+Saturday 12:25 *Live sculpting a Genode-based operating system*
+_Microkernel devroom (AW1.126)_
+[https://fosdem.org/2018/schedule/event/microkernel_genode_live_sculpting/ - abstract...]
+
+Saturday 17:30 *User-level networking on Genode*
+_Microkernel devroom (AW1.126)_
+[https://fosdem.org/2018/schedule/event/microkernel_genode_user_level_networking/ - abstract...]
+
+The complete schedule of the developer room is available at
+[https://fosdem.org/2018/schedule/track/microkernels/].
+
+
+Genode OS Framework release 17.11 | 2017-11-30
+##############################################
+
+| Most of the many improvements of version 17.11 are geared towards the
+| practical use of Genode as day-to-day OS. They include a reworked GUI
+| stack, new user-input features, and the packaging of many components.
+| The new version also revises the boot concept on x86, updates the seL4
+| kernel, and enhances Genode's user-level networking facilities.
+
+Whereas each Genode release is usually focused on one or two flagship
+features, version 17.11 accumulated countless improvements made during the
+practical use of Genode on a day-to-day basis. The topics range from
+convenience features like scroll-wheel emulation for Lenovo trackpoints, over
+the proper handling of keyboard modes (numlock and capslock), to a reworked
+GUI stack that takes new usage patterns into account. Since the forthcoming
+general-purpose scenario is entirely based on Genode's recently introduced
+custom package-management concept, it prompted us to package all ingredients
+of the scenario.
+
+On the platform level, the new version streamlines the boot concept on x86
+among all supported kernels. All x86 microkernels consistently use GRUB2 now.
+Modern kernels like seL4, NOVA, or our custom kernel are able to boot via UEFI
+and legacy boot. Speaking of our custom kernel, the current release wraps up a
+long-term internal redesign that simplifies the kernel while improving its
+performance.
+
+Feature-wise, the new release further cultivates the use of the Nim
+programming language for native Genode components, includes a port of
+libretro-based emulators for game consoles, and enables the resizing of
+libSDL-based applications like avplay.
+
+The complete picture is presented in the official
+[https:/documentation/release-notes/17.11 - release documentation of version 17.11...]
+
+
+Genode OS Framework release 17.08 | 2017-08-30
+##############################################
+
+| Version 17.08 enables hardware-accelerated graphics on Intel-Gen8 GPUs
+| and expands Genode's seL4-kernel support to the ARM and 64-bit x86
+| architectures. Further topics are UEFI boot, VFS enhancements such as a
+| new FatFS plugin, and the use of Genode as Xen DomU.
+
+The new release bears the fruit of our long-term investigation of
+hardware-accelerated graphics on modern Intel platforms that we conducted over
+the past year. The result is a brand new low-complexity GPU multiplexer that
+is designed after microkernel principles. With far less than 10K lines of
+code, it paves the ground for leveraging the power of GPUs at an extremely
+tiny footprint on the trusted computing base. The GPU multiplexer is
+accompanied with the matching application-side library infrastructure such as
+Mesa, libdrm, Qt5 bindings, SDL bindings. This allows Genode components to use
+the GPU with standard APIs like OpenGL.
+
+The seL4 microkernel is becoming more and more popular. Since about one year,
+most Genode scenarios are able to use this kernel on the 32-bit x86
+architecture. The growing interest in the combination of seL4 with Genode
+prompted us to expand the architecture support to ARM and 64-bit x86 now.
+Additionally, we enabled SMP on x86, priority support, and Genode's CPU-time
+monitoring facility on this kernel.
+
+Speaking of Genode's underlying kernels, the current release equips NOVA,
+seL4, and our custom base-hw kernel with UEFI-boot support. It updates the
+Muen separation kernel to a current version, and adds the ability to run
+Genode as Xen DomU domains.
+
+These and the many more topics of the new version are covered by the
+[https:/documentation/release-notes/17.08 - release documentation of version 17.08...]
+
+
+Genode OS Framework release 17.05 | 2017-05-31
+##############################################
+
+| With a profoundly updated framework infrastructure such as GCC 6.3,
+| Qt 5.8, and VirtualBox 5.1.22 for NOVA, the just released version 17.05
+| promises to be a suitable basis for longer-term maintenance and is
+| accompanied with a new edition of the "Genode Foundations" book.
+
+With the mid-year release of Genode, we hope to provide a solid basis for
+long-living projects built on top of the framework. For this reason, we
+updated the official tool chain as well as our ports of Qt and VirtualBox
+to current versions, which are there to stay in the foreseeable future.
+We also finalized the series of architectural and API-related changes that
+we started one year ago. The release is accompanied with a new edition of
+the "Genode Foundations" book that reflects the current state of the framework.
+
+Feature-wise, the most visible improvement is a new approach and the
+corresponding tooling for package management. While still officially declared
+as experimental, it already becomes apparent that it will bring Genode to a
+new level of scalability. Among the many further improvements are the support
+for the Ada and Nim programming languages, a new timing API, and new tools for
+monitoring network traffic and CPU load. All changes are covered in full
+detail in the
+[https:/documentation/release-notes/17.05 - release documentation of version 17.05...]
+
+
+Google Summer of Code | 2017-03-01
+##################################
+
+| Genode will participate under the umbrella of the FOSDEM microkernel
+| devroom as mentoring organization in this year's Google Summer of Code
+| program.
+
+Thanks to the initiative of Jakub Jermar and Martin Decky of the
+HelenOS project, multiple prominent open-source microkernel projects submitted
+a joint application to this year's Google Summer of Code (GSoC) program under
+the umbrella of FOSDEM microkernel devroom.
+
+As announced on the umbrella's [http://gsoc.microkernel.info - official GSoC page],
+the involved projects are HelenOS, Redox, MINIX 3, and Genode. In anticipation
+of the application, we have largely revisited our list of future technical
+challenges:
+
+*Genode-related topics:* [https://genode.org/about/challenges]
+
+Those topics are meant as inspiration. It goes without saying that we
+welcome other suggestions. If you are interested to participate in this
+year's GSoC with a Genode-related topic, the following steps are best way
+to get started:
+
+Learn the basics about Genode by skimming through the
+[https://genode.org/documentation/genode-foundations-16-05.pdf - Genode Foundations book],
+downloading the code, and experimenting with a few simple example scenarios.
+You will find the steps described in the book.
+
+If this experience leaves a good impression on you, please continue with
+making yourself known at the
+[https://genode.org/community/mailing-lists - Genode mailing list] by posting
+a short introduction of yourself, your primary interests, and possibly a topic
+that you'd like to engage in. Please don't hesitate to consult the list with
+any technical questions you might have. Note that the mailing list will be the
+tool of choice for mentoring you during GSoC. Hence, you should be comfortable
+in using it. Please keep in mind that friendly and concise written
+communication is crucial for our project, and will thereby be an important
+criterion for considering your application.
+
+We thank Google for accepting the microkernel devroom as a mentoring
+organization this year and look forward to GSoC students engaging with us!
+
+
+Genode OS Framework release 17.02 | 2017-02-28
+##############################################
+
+| By introducing application binary interfaces, version 17.02 cultivates
+| the cross-kernel binary compatibility of components. Furthermore, the
+| new version comes with a vastly improved VFS infrastructure, new input-event
+| processing capabilities, and a dynamic component-composition engine.
+
+On the long road towards binary compatibility of Genode components across OS
+kernels as different as L4, NOVA, seL4, or Linux, we reached a breakthrough by
+mid of 2016. It took us another six months to fully cultivate this unique
+feature and to integrate it seamlessly into our development work flows. With
+the current version, we have ultimately reached the point where one can move
+entire system scenarios from one kernel to another in just a few seconds.
+
+With the improved virtual file-system (VFS) infrastructure that comes with the
+new version, such system scenarios can become more and more sophisticated.
+Genode takes the meaning of _virtual_ file systems to an entirely new level.
+Not only does Genode virtualize the physical location of files but each
+component can have its own VFS whereby the supported file-system types are
+provided by VFS plugins. Those plugins can go as far as providing a TCP/IP
+stack as showcased by Genode's use of the Linux TCP/IP stack as VFS plugin.
+
+The composition of subsystems out of Genode components is another highlight of
+the current release. In each Genode-based system, the init component already
+plays a central role as it bootstraps the initial system components. Thanks to
+Genode's recursive system structure, init can easily be nested. With the
+improvements of the new version, such a nested init becomes a dynamic
+system-composition engine that responds to configuration updates and applies
+changes to its subsystem in a differential way.
+
+These and many more improvements are covered in full detail in the
+[https:/documentation/release-notes/17.02 - release documentation of version 17.02...]
+
+
+Open-source license update | 2017-02-21
+#######################################
+
+| With the upcoming version 17.02, Genode will adopt the GNU Affero General
+| Public License (AGPLv3) as its regular open-source license.
+
+Since our first release in 2008, Genode has been available under two flavors
+of licenses addressing different user bases. With Genode's regular open-source
+license, we address the Free-Software community, researchers, and technology
+enthusiasts. With the commercial license, Genode Labs enables product vendors
+to leverage Genode's technology for their businesses.
+
+For our open-source license, we originally picked the time-tested GNU General
+Public License version 2 (GPLv2). However, the time did not stand still. After
+9 years, it is time to update the license to a more recent version. After
+careful review of the open-source licensing landscape, we settled on the GNU
+Affero General Public License (AGPLv3), which is based on the GNU GPLv3 and
+thereby rectifies several shortcomings of the GPLv2. Furthermore, it closes
+loopholes of the GPLv3 license with respect to web applications. Unlike 2008
+when most applications were programs executed directly on the end user's
+computer, web applications have become predominant by now.
+
+To address possible concerns about the interoperability of the AGPLv3 with
+other open-source licenses, Genode's license will be accompanied with a
+linking-exception clause that clarifies our consent to link Genode with all
+commonly established open-source licenses.
+
+In December, we presented our plan of the license change to the subscribers of
+Genode's mailing list. The following constructive
+[https://sourceforge.net/p/genode/mailman/genode-main/thread/585116C8.2020607%40genode-labs.com/#msg35550569 - discussion]
+within the community helped us to refine our linking clause and to create a
+common understanding of the rationale behind our licensing choice. Thanks to
+everyone who participated in this discussion!
+
+
+Road Map for 2017 | 2017-01-17
+##############################
+
+| The year 2017 will be overall focused on stressing the scalability and
+| stability of the framework.
+
+After wrapping up the revision of Genode's architectural underpinnings and its
+API in 2016, it is time to push the scalability of the framework further.
+Over the course of 2017, we plan to greatly ease the creation of Genode
+systems out of packages, enable automated system updates, move our regular
+work flows from GNU/Linux to the Genode world, and extend the application
+scope of Genode systems to cloud-based appliances.
+
+The new road map is available at the [https:/about/road-map - road-map page].
+
+
+Genode at FOSDEM 2017 | 2017-01-11
+##################################
+
+| The microkernel developer room at this year's FOSDEM will host four
+| Genode-related talks, ranging from our custom kernel, over
+| kernel-independent binaries, execution replay, to Genode's VFS
+| infrastructure.
+
+To us, the microkernel developer room at FOSDEM in Brussels has become
+the most anticipated joint event of the open-source microkernel world.
+The developer room is part of FOSDEM, which is the world's largest
+event of the Free-Software and Open-Source community. The upcoming
+FOSDEM will be held on 4th - 5th of February in Brussels:
+
+FOSDEM 2017: [https://fosdem.org/2017/]
+
+Originally initiated by our friends of the HelenOS project, the micro-kernel
+developer room is shepherded by a different project each year. In 2017, it's
+our turn to host the event. The developer room is open for all open-source
+projects that are related to microkernels or component-based operating
+systems. It features a mix of project introductions, experience stories,
+progress reports, discussions, and demos. This year, the following
+Genode-related topics will be presented:
+
+Saturday 10:45 *A kernel in a library Genode's custom kernel approach*
+_Microkernel devroom (AW1.125)_
+[https://fosdem.org/2017/schedule/event/microkernel_kernel_library/ - abstract...]
+
+Saturday 12:45 *Deterministic replay support for Genode components*
+_Microkernel devroom (AW1.125)_
+[https://fosdem.org/2017/schedule/event/microkernel_replay_support/ - abstract...]
+
+Saturday 14:24 *Introducing kernel-agnostic Genode executables*
+_Microkernel devroom (AW1.125)_
+[https://fosdem.org/2017/schedule/event/microkernel_kernel_agnostic_genode_executables/ - abstract...]
+
+Saturday 17:10 *The VFS paradigm from the perspective of a component OS*
+_Microkernel devroom (AW1.125)_
+[https://fosdem.org/2017/schedule/event/microkernel_vfs_component_os/ - abstract...]
+
+The complete schedule of the developer room is available at
+[https://fosdem.org/2017/schedule/track/microkernels_and_component_based_os/].
+
+
+Genode OS Framework release 16.11 | 2016-11-30
+##############################################
+
+| Version 16.11 revisits the most fundamental low-level protocols of the
+| framework to further improve its scalability, refines the
+| virtual networking facilities, adds support for smart cards, and
+| improves the NOVA kernel.
+
+The fundamental mechanism of Genode is the interplay between parent and
+child components. This interplay remained unchanged since the very first
+version more than ten years ago. With the current release, we ultimately
+took the chance to revisit those low-level aspects of the framework in the
+light of the design of modern components. Specifically, we replaced the
+former fully synchronous model of interaction with asynchronous communication.
+Even though this change is barely visible at the API level of the framework,
+it greatly eases the validation of the framework's most crucial components and
+facilitates the scaling-up of Genode-based systems.
+
+As the second prominent improvement, we refined the design and configuration
+interface of the recently introduced network routing facilities. Whereas
+the initial version was primarily concerned with the details of network
+packet processing, the new version is tailored to the most prominent use cases
+and towards the ease of use.
+
+Further highlights of the current release are the added support for using
+smart cards, kernel improvements of the NOVA hypervisor, updated VirtualBox
+versions, and a virtual file system for generating time-based passwords.
+
+The topics are covered in more detail by the
+[https:/documentation/release-notes/16.11 - release documentation of version 16.11...]
+
+
+Genode OS Framework release 16.08 | 2016-08-31
+##############################################
+
+| Genode 16.08 makes the entirety of the framework's drivers, protocol stacks,
+| and libraries available on the seL4 kernel, brings VirtualBox 4 to the Muen
+| separation kernel, and hosts VirtualBox 5 on top of the NOVA kernel. Further
+| highlights are virtual networking and TOR, profound Zynq board support, and
+| tools for statistical profiling.
+
+With the current release, the interoperability of Genode with different
+OS kernels comes to a great effect. By completing the implementation of
+the framework's base mechanisms for seL4, literally hundreds of existing Genode
+components become suddenly available to the seL4 community. In a different
+arena, Genode serves as enabler to run commodity OSes like Windows via
+VirtualBox on top of the Muen separation kernel.
+
+The cross-kernel portability of components is certainly a key feature of the
+framework and version 16.08 pushes this idea even further by attaining binary
+compatibility across the various supported kernels. In fact, compiled once,
+the same component can be executed on kernels as different as seL4 and Linux.
+
+Speaking of components, the current release extends the framework's library
+of ready-to-use building blocks in several areas. Most prominently, there
+are new network-related components for routing traffic, using TOR, and for
+distributing Genode over the network. Other added components are concerned
+with improving the use of Genode as a general-purpose OS, or to aid the
+optimization of components by the means of statistical profiling.
+Version 16.08 is further complemented with added board support for devices
+based on Xilinx Zynq, including drivers for GPIO, video DMA, SD cards, and I2C.
+
+These and many more topics are covered in detail by the
+[https:/documentation/release-notes/16.08 - release documentation of version 16.08...]
+
+
 Genode OS Framework release 16.05 | 2016-05-27
 ##############################################
 
@@ -35,7 +1141,7 @@ features accessible, and allows the use of the GNU debugger with the
 64-bit version of the NOVA hypervisor.
 
 The complete story behind these and many more changes is covered by the
-[http:/documentation/release-notes/16.05 - release documentation of version 16.05...]
+[https:/documentation/release-notes/16.05 - release documentation of version 16.05...]
 
 
 How Genode came to RISC-V | 2016-03-22
@@ -45,9 +1151,9 @@ How Genode came to RISC-V | 2016-03-22
 | the RISC-V hardware architecture.
 
 The experience report
-[http:/documentation/articles/riscv - How Genode came to RISC-V] complements
+[https:/documentation/articles/riscv - How Genode came to RISC-V] complements
 our recent
-[http:/documentation/release-notes/16.02#New_support_for_the_RISC-V_CPU_architecture - announcement]
+[https:/documentation/release-notes/16.02#New_support_for_the_RISC-V_CPU_architecture - announcement]
 about Genode's added RISC-V support with in-depth technical information.
 It briefly introduces the parts of the instruction set architecture (ISA) that
 were most relevant for the porting work, presents various challenges we
@@ -56,7 +1162,7 @@ encountered, and explains how we overcame them.
 The article is written with two target audiences in mind: People interested in
 practical experiences with RISC-V, and developers who aspire to port Genode
 to new CPU architectures.
-[http:/documentation/articles/riscv - Read the article...]
+[https:/documentation/articles/riscv - Read the article...]
 
 
 Genode OS Framework release 16.02 | 2016-02-26
@@ -84,7 +1190,7 @@ targeted by Genode's automation tools in the same uniform way as all the other
 base platforms.
 
 An in-depth coverage of these and many more improvements is provided by the
-[http:/documentation/release-notes/16.02 - release documentation of version 16.02...]
+[https:/documentation/release-notes/16.02 - release documentation of version 16.02...]
 
 
 Road Map for 2016 | 2016-01-15
@@ -100,7 +1206,7 @@ appealing to two target audiences, namely system builders and a narrow group
 of privacy-considerate end users. Hence, the overall theme of 2016 is to
 help a growing community to leverage the full potential of Genode.
 
-The new road map is available at the [http:/about/road-map - road-map page].
+The new road map is available at the [https:/about/road-map - road-map page].
 
 
 Genode at FOSDEM 2016 | 2016-01-12
@@ -142,7 +1248,7 @@ The story behind Genode's TrustZone demo on the USB Armory | 2015-12-08
 | Our latest article provides a look behind the scenes of the
 | development of Genode's support for the USB Armory platform.
 
-The [http://inversepath.com/usbarmory - USB Armory] is a computer in the form
+The [https://inversepath.com/usbarmory - USB Armory] is a computer in the form
 of a USB stick. It normally runs Linux. But thanks to the ARM TrustZone
 capabilities of the device, it is possible to run Genode behind the back of
 Linux. This is useful for shielding sensitive information like cryptographic
@@ -156,7 +1262,7 @@ was splitting the hardware platform into two worlds while maintaining the
 full functionality of Linux. The article goes on to explain the interplay
 between the secure world (Genode) and the normal world (Linux). Furthermore,
 it provides all the pointers needed to reproduce the scenario.
-[http:/documentation/articles/usb_armory - Read the article...]
+[https://genode.org/documentation/articles/usb_armory - Read the article...]
 
 
 Genode OS Framework release 15.11 | 2015-11-30
@@ -192,7 +1298,7 @@ the USB Armory received a lot of attention, and a new VFS server makes
 Genode's file-system infrastructure much more flexible.
 
 These and many more topics are covered in detail by the
-[http:/documentation/release-notes/15.11 - release documentation of version 15.11...]
+[https:/documentation/release-notes/15.11 - release documentation of version 15.11...]
 
 
 Genode OS Framework release 15.08 | 2015-08-31
@@ -226,7 +1332,7 @@ enforced by Muen represent two lines of defense for protecting
 security-critical system functions from untrusted components.
 
 More details about all the improvements are provided by the
-[http:/documentation/release-notes/15.08 - release documentation of version 15.08...]
+[https:/documentation/release-notes/15.08 - release documentation of version 15.08...]
 
 
 Genode OS Framework release 15.05 | 2015-05-26
@@ -266,7 +1372,7 @@ added platform support for i.MX6, and support for message-signalled interrupts
 on x86-based machines.
 
 A detailed description of all the improvements is provided by the
-[http:/documentation/release-notes/15.05 - release documentation of version 15.05...]
+[https:/documentation/release-notes/15.05 - release documentation of version 15.05...]
 
 
 Genode's core running on the seL4 kernel | 2015-05-18
@@ -282,10 +1388,10 @@ into both seL4 and Genode. Among the many challenges that had to be overcome
 are the management of capabilities and memory, the synchronous RPC
 communication between components, and the handling of page faults. As result,
 simple Genode system scenarios can be readily executed on top of the seL4 kernel.
-[http://genode.org/documentation/articles/sel4_part_3 - Read the article...]
+[https://genode.org/documentation/articles/sel4_part_3 - Read the article...]
 
 All the steps described in the article can be followed in the
-topic branch [http://github.com/nfeske/genode/commits/sel4] of the ongoing
+topic branch [https://github.com/nfeske/genode/commits/sel4] of the ongoing
 development. Furthermore, the principle support for seL4 will be featured
 in the upcoming Genode release 15.05.
 
@@ -298,14 +1404,14 @@ An in-depth look into the ARM virtualization extensions | 2015-03-12
 | a microhypervisor.
 
 With the recently published
-[http:/documentation/release-notes/15.02 - version 15.02], Genode received
+[https:/documentation/release-notes/15.02 - version 15.02], Genode received
 support for ARM's virtualization extensions. While conducting this line
 of work during the year of 2014, we took the chance to thoroughly document
 the experience. The article "An in-depth look into the ARM virtualization
 extensions" presents the overall virtualization architecture and goes into
 detail about the virtualization of memory, CPU, interrupts, and time.
 Furthermore, it covers a series of experiments with I/O protection mechanisms.
-[http:/documentation/articles/arm_virtualization - Read the article...]
+[https:/documentation/articles/arm_virtualization - Read the article...]
 
 
 Exercising the seL4 kernel interface | 2015-03-10
@@ -321,10 +1427,10 @@ It covers synchronous inter-process communication between threads, the
 delegation of capabilities, and the management of virtual memory.
 Apart from presenting hands-on experience with using the kernel, it identifies
 potential challenges for using it as Genode base platform.
-[http://genode.org/documentation/articles/sel4_part_2 - Read the article...]
+[https://genode.org/documentation/articles/sel4_part_2 - Read the article...]
 
 All the steps described in the article can be followed in the
-topic branch [http://github.com/nfeske/genode/commits/sel4] of the ongoing
+topic branch [https://github.com/nfeske/genode/commits/sel4] of the ongoing
 development.
 
 
@@ -340,7 +1446,7 @@ Most of the previous releases were motivated by our desire for features that
 we deemed as fundamentally important to use Genode as a general-purpose
 system. Now that we have reached most of the feature set that we longed after,
 the project adjusts its focus. According to our recently published
-[http://genode.org/about/road-map - roadmap], the underlying theme of the
+[https://genode.org/about/road-map - roadmap], the underlying theme of the
 current development shifted towards the cultivation of the existing feature
 set rather than the introduction of new functionality. The current release
 perfectly reflects this change. It introduces a highly modular tool kit for
@@ -362,7 +1468,7 @@ support, our kernel's scheduler got refined to take IPC relationships into
 account while additionally gaining support for the USB Armory hardware platform.
 
 These and many more improvements are covered in more detail by the
-[http:/documentation/release-notes/15.02 - release documentation of version 15.02...]
+[https:/documentation/release-notes/15.02 - release documentation of version 15.02...]
 
 
 Road Map for 2015 | 2015-01-14
@@ -382,7 +1488,7 @@ the consolidation and cultivation of the existing feature set.
 Still, there will be room for new developments, i.e., the use of
 Genode on the seL4 kernel.
 
-The new road map is available at [http://genode.org/about/road-map].
+The new road map is available at [https://genode.org/about/road-map].
 
 
 Genode at FOSDEM 2015 | 2015-01-14
@@ -435,7 +1541,7 @@ Pi, and new GUI components.
 
 The story behind our work on the WiFi stack as well as detailed information
 about all the other improvements are provided by the
-[http:/documentation/release-notes/14.11 - release documentation of version 14.11...]
+[https:/documentation/release-notes/14.11 - release documentation of version 14.11...]
 
 
 Article about building a simple seL4 root task | 2014-10-30
@@ -461,10 +1567,10 @@ to create a minimalistic root task that runs on the kernel. It is full of
 hands-on information about the methodology of such a porting effort and
 describes the experience with using the kernel from the perspective of
 someone with no prior association with the seL4 project.
-[http://genode.org/documentation/articles/sel4_part_1 - Read the article...]
+[https://genode.org/documentation/articles/sel4_part_1 - Read the article...]
 
 All the steps described in the article can be followed in the
-topic branch [http://github.com/nfeske/genode/commits/sel4] of the current
+topic branch [https://github.com/nfeske/genode/commits/sel4] of the current
 development.
 
 
@@ -495,7 +1601,7 @@ of Genode has been updated to Linux 3.14.5, we improved the integration of
 Qt5, and the performance of our custom kernel for ARM hardware got a boost.
 
 More background information about all the new features and improvements is provided in the
-[http:/documentation/release-notes/14.08 - release documentation of version 14.08...]
+[https:/documentation/release-notes/14.08 - release documentation of version 14.08...]
 
 
 Genode OS Framework release 14.05 | 2014-05-29
@@ -526,7 +1632,7 @@ based on NetBSD's cryptographic device driver and enabled USB 3.0 on
 x86-based platforms.
 
 More information about all the changes is provided in our detailed
-[http:/documentation/release-notes/14.05 - release documentation of version 14.05...]
+[https:/documentation/release-notes/14.05 - release documentation of version 14.05...]
 
 
 
@@ -544,7 +1650,7 @@ experiments with ARM's security extensions. Our line of work ultimately led to
 a demonstrable prototype where Genode is used as secure OS behind the back of
 Android running on a FreeScale i.MX53 SABRE tablet. We share our experience
 (and of course the full source code) in the form of the article
-[http:/documentation/articles/trustzone - An Exploration of ARM TrustZone Technology...]
+[https:/documentation/articles/trustzone - An Exploration of ARM TrustZone Technology...]
 
 
 Genode OS Framework release 14.02 | 2014-02-28
@@ -588,7 +1694,7 @@ over the place, for example unified interfaces for graphics, support for POSIX
 signals in the Noux runtime for Unix programs, and a new pseudo file system
 for the interactive exploration and tracing of Genode's process tree. These
 and more topics are covered by the detailed
-[http:/documentation/release-notes/14.02 - release documentation of version 14.02...]
+[https:/documentation/release-notes/14.02 - release documentation of version 14.02...]
 
 
 Slides and videos of our FOSDEM talks | 2014-02-10
@@ -599,13 +1705,13 @@ Slides and videos of our FOSDEM talks | 2014-02-10
 | overview of the project's efforts towards general-purpose computing.
 
 The slides of both talks are available at the
-[http://genode.org/about/publications - publications section].
+[https://genode.org/about/publications - publications section].
 Both talks feature several live demonstrations. E.g., Stefan presented
 Genode running besides Android on an i.MX tablet. Norman showed off
 VirtualBox on Genode among several other demos.
 
 For the latter talk, there is a
-[http://video.fosdem.org/2014/H2214/Sunday/Genode_as_generalpurpose_OS_progress_report_and_demonstration.webm - video recording]
+[https://video.fosdem.org/2014/H2214/Sunday/Genode_as_generalpurpose_OS_progress_report_and_demonstration.webm - video recording]
 available. A video for Stefan's talk will follow soon. Thanks to the video
 crew at FOSDEM for their great work!
 
@@ -621,7 +1727,7 @@ DosBox as a practical example to motivate the steps needed to port an existing
 application to Genode. Furthermore, it gives valuable insights into
 time-tested methodologies of porting libraries and device drivers.
 
-[http://genode.org/documentation/developer-resources/porting - Genode Porting Guide...]
+[https://genode.org/documentation/developer-resources/porting - Genode Porting Guide...]
 
 
 Road Map 2014 | 2014-01-17
@@ -640,7 +1746,7 @@ various topics include for example virtualization using ARM's virtualization
 extensions, a novel user-interface, storage, VirtualBox on NOVA, and
 3rd-party source-code package management.
 
-[http://genode.org/about/road-map - Please refer to the official road-map for more details...]
+[https://genode.org/about/road-map - Please refer to the official road-map for more details...]
 
 
 FOSDEM 2014 | 2014-01-06
@@ -701,7 +1807,7 @@ Among the many further improvements are the switch to C++11, new protocols
 for enabling dynamic resource balancing, new terminal services, and support
 for ARM TrustZone on i.MX53.
 For the full story, please refer to the detailed
-[http:/documentation/release-notes/13.11 - release documentation of version 13.11...]
+[https:/documentation/release-notes/13.11 - release documentation of version 13.11...]
 
 
 Genode OS Framework release 13.08 | 2013-08-15
@@ -742,7 +1848,7 @@ kernel and L4Linux, and introduces measures for verifying the integrity of
 downloaded 3rd-party source codes.
 
 Those and many more topics are presented in detail in the
-[http:/documentation/release-notes/13.08 - release documentation of version 13.08...]
+[https:/documentation/release-notes/13.08 - release documentation of version 13.08...]
 
 
 Genode OS Framework release 13.05 | 2013-05-30
@@ -774,7 +1880,7 @@ interface for managing Genode subsystems, and the addition of Linux/ARM as
 Genode base platform.
 
 The full story behind these and many more changes is detailed in the
-[http:/documentation/release-notes/13.05 - release notes of version 13.05...]
+[https:/documentation/release-notes/13.05 - release notes of version 13.05...]
 
 
 Genode OS Framework release 13.02 | 2013-02-28
@@ -805,7 +1911,7 @@ completely redesigned audio interface, added file-system notification
 capabilities, and a new fault-detection mechanism.
 
 These and many more improvements are described in elaborative detail in the
-[http:/documentation/release-notes/13.02 - release notes of version 13.02...]
+[https:/documentation/release-notes/13.02 - release notes of version 13.02...]
 
 
 Road Map 2013 | 2013-01-15
@@ -826,7 +1932,7 @@ challenges that lie beyond this immediate goal, in particular multi-processor
 scalability, support for IOMMUs, extended ARM SoC support, and improved
 virtualization on x86.
 
-[http://genode.org/about/road-map - Review our road-map for more details...]
+[https://genode.org/about/road-map - Review our road-map for more details...]
 
 
 Genode OS Framework release 12.11 | 2012-11-29
@@ -859,7 +1965,7 @@ clears the way towards building more sophisticated system scenarios.
 
 To learn more details and background information about the current release,
 please continue with reading the
-[http:/documentation/release-notes/12.11 - release notes of version 12.11...]
+[https:/documentation/release-notes/12.11 - release notes of version 12.11...]
 
 
 How Genode came to the Pandaboard | 2012-11-23
@@ -870,14 +1976,14 @@ How Genode came to the Pandaboard | 2012-11-23
 | a new hardware platform, namely the popular Pandaboard.
 
 The new article
-[http:/documentation/articles/pandaboard - "How Genode came to the Pandaboard"]
+[https:/documentation/articles/pandaboard - "How Genode came to the Pandaboard"]
 describes the steps to bring various peripherals such as HDMI output, networking,
 and SD-cards to live. Additionally, the report takes the reader along the
 long-winding road of performance optimizations. For those who are eager to
 try out running Genode on the Pandaboard, the article presents a example
 scenario that may serve as a good starting point.
 
-Learn more about [http:/documentation/articles/pandaboard - how Genode came to the Pandaboard...]
+Learn more about [https:/documentation/articles/pandaboard - how Genode came to the Pandaboard...]
 
 
 Genode OS Framework release 12.08 | 2012-08-23
@@ -915,7 +2021,7 @@ principal ability for on-target debugging, and a way to host the genode.org
 website on Genode.
 
 These and many more improvements are described in detail in the
-[http:/documentation/release-notes/12.08 - release notes of version 12.08...]
+[https:/documentation/release-notes/12.08 - release notes of version 12.08...]
 
 
 NOVA Hypervisor supported on 64-bit x86 machines | 2012-07-27
@@ -960,9 +2066,9 @@ co-founder of Genode Norman Feske talks about the background and motivation
 behind the project, describes the current structure of the community, and
 outlines his vision of the next generation of operating systems.
 
-[http://www.revista.espiritolivre.org/lancada-edicao-n-36-da-revista-espirito-livre - Issue 36 of the Revista Espírito Livre...]
+[https://www.revista.espiritolivre.org/lancada-edicao-n-36-da-revista-espirito-livre - Issue 36 of the Revista Espírito Livre...]
 
-[http:/about/interview_rel36 - English version of the interview...]
+[https:/about/interview_rel36 - English version of the interview...]
 
 
 Genode OS Framework release 12.05 | 2012-05-30
@@ -989,7 +2095,7 @@ with the framework's architecture.
 
 For the full story behind all the new features and improvements, please
 refer to the
-[http:/documentation/release-notes/12.05 - release notes of version 12.05...]
+[https:/documentation/release-notes/12.05 - release notes of version 12.05...]
 
 
 Genode participation at GSoC 2012 | 2012-04-25
@@ -1081,7 +2187,7 @@ methodologies of long-term systems architects and developers mentoring
 your work.
 
 Learn more about Genode's aspired participation in GSoC 2012
-at our dedicated [http:/community/gsoc_2012 - Google Summer of Code 2012 website...]
+at our dedicated [https:/community/gsoc_2012 - Google Summer of Code 2012 website...]
 
 
 Genode OS Framework release 12.02 | 2012-02-28
@@ -1113,7 +2219,7 @@ Another example is the added API support for the common pattern of reusing
 existing components as sandboxed libraries.
 
 These and many more changes are described in full detail in the
-[http:/documentation/release-notes/12.02 - release notes of version 12.02...]
+[https:/documentation/release-notes/12.02 - release notes of version 12.02...]
 
 
 Slides of our talks at FOSDEM 2012 | 2012-02-14
@@ -1127,15 +2233,15 @@ participation in a panel discussion at the microkernel developer room.
 Norman Feske held an introductory talk, presenting Genode's architecture and
 demonstrating several use case live:
 
-:[http://genode-labs.com/publications/nfeske-genode-fosdem-2012-02.pdf - Introducing Genode]:
+:[https://genode-labs.com/publications/nfeske-genode-fosdem-2012-02.pdf - Introducing Genode]:
 
 Stefan Kalkowski presented his experience with supporting many different
 kernels as base platforms of Genode:
 
-:[http://genode-labs.com/publications/skalkowski-diversity-fosdem-2012-02.pdf - The agony of choice - the diversity of microkernels in Genode]:
+:[https://genode-labs.com/publications/skalkowski-diversity-fosdem-2012-02.pdf - The agony of choice - the diversity of microkernels in Genode]:
 
 The abstracts of both talks are available at the updated
-[http:/about/publications - publications section].
+[https:/about/publications - publications section].
 
 
 Source code moved to GitHub | 2012-01-17
@@ -1163,7 +2269,7 @@ Its content has been moved to the normal documentation section. By using Git
 for the documentation, the process of contributing to the documentation is
 streamlined with the way of how code contributions are handled. The steps
 of this process are described in the updated
-[http:/community/contributions - how-to-contribute] guide.
+[https:/community/contributions - how-to-contribute] guide.
 
 So far, our experience with using GitHub for hosting the Genode development
 has been a smooth and overly enjoyable ride. We hope you will appreciate the
@@ -1178,7 +2284,7 @@ Genode at FOSDEM | 2012-01-04
 FOSDEM is one of the world's largest events of the Free-Software and
 Open-Source-Community.
 
-:[http://fosdem.org/2012 - FOSDEM 2012, 4-5 February, Brussels, Belgium]:
+:[https://fosdem.org/2012 - FOSDEM 2012, 4-5 February, Brussels, Belgium]:
 
 This year, it will feature a dev room specifically dedicated to multi-server
 and microkernel-based operating systems. The list of participating projects
@@ -1249,7 +2355,7 @@ a tiled window manager. Towards the end of the year, we will take the
 opportunity of version 12.11 to optimize the support for our beloved
 Lenovo Thinkpads and bring additional tools such as emacs to the table.
 
-[http://genode.org/about/road-map - Review our road-map for more details...]
+[https://genode.org/about/road-map - Review our road-map for more details...]
 
 
 New issue tracker at Github | 2011-12-20
@@ -1260,7 +2366,7 @@ New issue tracker at Github | 2011-12-20
 
 As promised earlier, Genode has got a new issue tracker at Github:
 
-:[http://github.com/genodelabs/genode/issues]:
+:[https://github.com/genodelabs/genode/issues]:
 
 Please use this tracker to report and discuss Genode-related issues from now
 on. The old public tracker at Sourceforge is still there but all issues have
@@ -1335,7 +2441,7 @@ for our dual-licensing business model. If we made Genode available under the
 BSD license, there would be not point in pursuing this model. However, hiding
 the development process from the public is not only poor-spirited but it
 creates an artificial barrier for people who want to participate. The book
-"Producing Open Source Software" (http://producingoss.com) by Karl Fogel was an
+"Producing Open Source Software" (https://producingoss.com) by Karl Fogel was an
 eye opener to us.
 
 Regarding the efficiency of collaboration, I have to admit that the statement
@@ -1409,7 +2515,7 @@ provides powerful debugging facilities without compromizing the security of the
 system.
 
 To learn more about those and many other improvements, please read on the
-[http:/documentation/release-notes/11.11 - release notes of version 11.11...]
+[https:/documentation/release-notes/11.11 - release notes of version 11.11...]
 
 
 Android on top of Genode | 2011-09-27
@@ -1433,9 +2539,9 @@ new support of L4Android on Genode, Android can be used on Genode on the
 Fiasco.OC kernel on the IA32 architecture. For those of you who are eager to
 experiment with L4Android on Genode, please find further information at the
 top-level
-[http://genode.svn.sourceforge.net/viewvc/genode/trunk/ports-foc/README - README]
+[https://genode.svn.sourceforge.net/viewvc/genode/trunk/ports-foc/README - README]
 file of the 'ports-foc' repository and share your results with us at the
-[http:/community/mailing-lists - Genode mailing list].
+[https:/community/mailing-lists - Genode mailing list].
 
 
 Genode OS Framework release 11.08 | 2011-08-17
@@ -1471,7 +2577,7 @@ VFAT partitions. The ARM support has been extended to cover both L4Linux (on
 Fiasco.OC) and Qt4 (ARMv6, ARMv7). Furthermore, the new version is accompanied
 with a comprehensive documentation update.
 
-Read [http:/documentation/release-notes/11.08 - the full story]
+Read [https:/documentation/release-notes/11.08 - the full story]
 about the various improvements that come with the version 11.08...
 
 
@@ -1508,7 +2614,7 @@ enables the GNU debugger to inspect a user-level Genode process via a remote
 connection.
 
 Read the complete story about these and many more changes in the
-[http:/documentation/release-notes/11.05 - release notes of version 11.05...]
+[https:/documentation/release-notes/11.05 - release notes of version 11.05...]
 
 
 Exciting challenges ahead | 2011-03-24
@@ -1519,7 +2625,7 @@ Exciting challenges ahead | 2011-03-24
 
 With each new Genode release, the scope of feasible use cases for the framework
 grows and motivates us to reach out for new ambitious goals. There is a
-dedicated [http:/community/wiki/Challenges - Wiki page] for collecting those
+dedicated [https:/community/wiki/Challenges - Wiki page] for collecting those
 ideas. After having released the version 11.02 of the framework, we took the
 chance to reiterate the many ideas that popped up recently, ideas ranging from
 the support of diverse potential base platforms, over creative combinations of
@@ -1528,11 +2634,11 @@ Genode with other Open-Source projects, to novel tools and applications.
 So if you are curious about what kinds of projects we have in mind in the mid
 term, have fun browsing through the project proposals. If one of these topics
 catches your interest, we'd be happy about you joining in with the development
-or discussing those ideas at our [http:/community/mailing-lists - mailing list].
+or discussing those ideas at our [https:/community/mailing-lists - mailing list].
 Also, if you have additional ideas, please do not hesitate to tell us more.
 
 Discover the Wiki page about our
-[http:/community/wiki/Challenges - future challenges...]
+[https:/community/wiki/Challenges - future challenges...]
 
 
 Norman Feske introduces Genode on YouTube | 2011-03-10
@@ -1548,17 +2654,17 @@ concepts live. The talk was recorded at the
 Amsterdam. Thanks to Bas the Lange for publishing the material.
 
 : <object height="385" width="480">
-:  <param name="movie" value="http://www.youtube.com/v/Z1IMV3FJO7Q" />
+:  <param name="movie" value="https://www.youtube.com/v/Z1IMV3FJO7Q" />
 :  <param name="allowFullScreen" value="true" />
 :  <param name="allowscriptaccess" value="always" />
 :  <embed width="480" height="385" allowfullscreen="true"
 :         allowscriptaccess="always"
 :         type="application/x-shockwave-flash"
-:         src="http://www.youtube.com/v/Z1IMV3FJO7Q">
+:         src="https://www.youtube.com/v/Z1IMV3FJO7Q">
 :  </embed>
 : </object>
 
-[http://www.youtube.com/watch?v=Z1IMV3FJO7Q - Visit the YouTube page...]
+[https://www.youtube.com/watch?v=Z1IMV3FJO7Q - Visit the YouTube page...]
 
 
 Genode OS Framework release 11.02 | 2011-02-24
@@ -1600,7 +2706,7 @@ coreutils without requiring manual porting work.
 
 Read on about further details regarding the new kernel platforms, the vision
 behind Noux, and many more improvements of the framework in the
-[http:/documentation/release-notes/11.02 - release notes of version 11.02].
+[https:/documentation/release-notes/11.02 - release notes of version 11.02].
 
 
 Genode OS walk-through on YouTube | 2010-12-22
@@ -1615,19 +2721,19 @@ prepared the following screencast with a guided walk-through. Enjoy!
 
 : <object height="385" width="480">
 :  <param name="movie"
-:         value="http://www.youtube.com/v/CJdWOmajo_8?fs=1&amp;hl=en_US" />
+:         value="https://www.youtube.com/v/CJdWOmajo_8?fs=1&amp;hl=en_US" />
 :  <param name="allowFullScreen" value="true" />
 :  <param name="allowscriptaccess" value="always" />
 :  <embed width="480" height="385"
-:         src="http://www.youtube.com/v/CJdWOmajo_8?fs=1&amp;hl=en_US"
+:         src="https://www.youtube.com/v/CJdWOmajo_8?fs=1&amp;hl=en_US"
 :         type="application/x-shockwave-flash" allowscriptaccess="always"
 :         allowfullscreen="true">
 :  </embed>
 : </object>
 
-[http://www.youtube.com/watch?v=CJdWOmajo_8 - Visit the YouTube page...]
+[https://www.youtube.com/watch?v=CJdWOmajo_8 - Visit the YouTube page...]
 
-[http:/download/live-cds - Download the real thing...]
+[https:/download/live-cds - Download the real thing...]
 
 
 Genode OS Framework release 10.11 | 2010-11-30
@@ -1637,7 +2743,7 @@ Genode OS Framework release 10.11 | 2010-11-30
 | project, employ user-level on-demand paging, and use advanced graphics with
 | the nitpicker GUI server.
 
-With the [http:/download/live-cds - recently published Live CD], the Genode
+With the [https:/download/live-cds - recently published Live CD], the Genode
 project has reached a new stage by integrating advanced device drivers, complex
 protocol stacks, and real-world applications into one dynamic setup. The new
 Genode release 10.11 bears fruit of the intensive effort that went into this
@@ -1653,7 +2759,7 @@ Furthermore, the release comes with a number of new components such as a
 virtual network bridge and a http-based block server, which can be combined
 with the existing components to open up new use cases of the framework.
 
-Please enjoy the [http:/documentation/release-notes/10.11 - full description]
+Please enjoy the [https:/documentation/release-notes/10.11 - full description]
 of all the improvements that come with version 10.11.
 
 
@@ -1678,7 +2784,7 @@ You can now test drive the current version of Genode on your PC (or virtual
 machine) to get an idea about where the development of the framework is
 heading.
 
-[http:/download/live-cds - Download the new live CD]
+[https:/download/live-cds - Download the new live CD]
 featuring five setups showcasing our efforts of the past year.
 
 
@@ -1703,7 +2809,7 @@ drivers, there are numerous other improvements such as the upgrade to Qt4.6.3
 and support for dynamic linking on platforms using ARM EABI.
 
 Please find more in-depth information in the detailed
-[http:/documentation/release-notes/10.08 - release notes of version 10.08...].
+[https:/documentation/release-notes/10.08 - release notes of version 10.08...].
 
 
 Genode OS Framework release 10.05 | 2010-05-27
@@ -1726,7 +2832,7 @@ nitpicker GUI. For Genode developers, there is a new build system, which
 significantly improves the build performance on multi-processor systems.
 
 Read on about these and many more improvements detailed in the
-[http:/documentation/release-notes/10.05 - release notes of version 10.05...]
+[https:/documentation/release-notes/10.05 - release notes of version 10.05...]
 
 
 Adaptation to Codezero kernel v0.3 | 2010-04-06
@@ -1745,7 +2851,7 @@ addition to the extended CPU support, the new release adds important
 functionality regarding device I/O, which prompted us to adapt Genode to the
 new version. The adaptation to Codezero version 0.3 is now available at our
 Subversion repository. To facilitate the use of Genode with Codezero, we
-created a dedicated [http:/community/wiki/GenodeOnCodezero - Wiki page],
+created a dedicated [https:/community/wiki/GenodeOnCodezero - Wiki page],
 which provides up-to-date documentation about building and using Genode on this
 kernel.
 
@@ -1753,7 +2859,7 @@ Thanks to the Codezero developers for being extremely responsive to our
 questions and feature requests!
 
 Learn more about
-[http:/community/wiki/GenodeOnCodezero - using Genode with Codezero...]
+[https:/community/wiki/GenodeOnCodezero - using Genode with Codezero...]
 
 
 
@@ -1778,9 +2884,9 @@ the new release, we made the real-time scheduling of OKL4 and L4ka::Pistachio
 available to Genode applications.
 
 Read on the full story about our experiences with the new kernels and the many
-[http:/documentation/release-notes/10.02 - improvements of the release 10.02...]
+[https:/documentation/release-notes/10.02 - improvements of the release 10.02...]
 
-[http:/download/latest-release - Download the latest release...]
+[https:/download/latest-release - Download the latest release...]
 
 
 Road map 2010 | 2010-01-04
@@ -1798,7 +2904,7 @@ environment, networking, USB input and storage, dynamic linking, Qt4 including
 Webkit, and support for a paravirtualized Linux kernel. With this strong
 foundation in place, its time to raise the bar again.
 
-[http:/about/road-map - Please read on about our updated road map for 2010...]
+[https:/about/road-map - Please read on about our updated road map for 2010...]
 
 
 Genode OS Framework release 9.11 | 2009-11-25
@@ -1820,7 +2926,7 @@ Genode. Beside the new functionality, Genode's platform scope was broadened by
 initial support of the ARM architecture.
 
 Read on about these and all additional changes in more detail in the
-[http:/documentation/release-notes/9.11 - release notes for Genode 9.11...].
+[https:/documentation/release-notes/9.11 - release notes for Genode 9.11...].
 
 
 Genode Live Demonstration 2009-09 | 2009-09-02
@@ -1838,7 +2944,7 @@ tested on Qemu/KVM and VirtualBox.
 _Edit: We have further improved the performance of the L4/Fiasco and_
 _L4ka::Pistachio demos, and refined the presentation of the Qt4 demo._
 
-[http:/download/live-cds - Download the updated Live-CD image...]
+[https:/download/live-cds - Download the updated Live-CD image...]
 
 
 Genode OS Framework release 9.08 | 2009-08-19
@@ -1860,7 +2966,7 @@ FreeBSD, the added support for thread-local storage, a much improved timer
 service, and core extensions for running Linux on the OKL4 version of Genode.
 
 Read on about all the changes in the
-[http:/documentation/release-notes/9.08 - release notes for Genode 9.08...]
+[https:/documentation/release-notes/9.08 - release notes for Genode 9.08...]
 
 
 Document about Genode's native Qt4 port available | 2009-07-06
@@ -1888,7 +2994,7 @@ provided by Genode, and the integration of Qt4 with Genode's GUI. In addition
 to the mentioned technical insights, the document evaluates the achieved
 solution with respect to compatibility and maintainability.
 
-[http://www.genode-labs.com/publications/qt4-on-genode-de-2009.pdf - Download the PDF...]
+[https://www.genode-labs.com/publications/qt4-on-genode-de-2009.pdf - Download the PDF...]
 
 
 Genode OS Framework release 9.05 | 2009-05-27
@@ -1913,11 +3019,11 @@ seamlessly integrated the support for the Qt application framework into the
 Genode source tree and bumped the version to 4.5.1.
 
 Read on about the new features described int the
-[http:/documentation/release-notes/9.05 - release notes...]
+[https:/documentation/release-notes/9.05 - release notes...]
 
-[http:/download/latest-release - Download the release 9.05...]
+[https:/download/latest-release - Download the release 9.05...]
 
-[http:/about/road-map - See our updated road map...]
+[https:/about/road-map - See our updated road map...]
 
 
 Bringing Genode to the OKL4 kernel | 2009-05-06
@@ -1943,12 +3049,12 @@ each kernel platform. To ease future ports of the frameworks to other kernels,
 we have documented our work in detail. If you are interested in learning more
 about the OKL4 kernel from our perspective, or if you like to dive right into
 the inner parts of the Genode OS Framework, read on about
-[http:/documentation/articles/genode-on-okl4 - Bringing the Genode OS Framework to the OKL4 kernel...]
+[https:/documentation/articles/genode-on-okl4 - Bringing the Genode OS Framework to the OKL4 kernel...]
 
 The OKL4 version is available at our subversion repository and will be included
 in the upcoming release 9.05. For further information about building and using
 Genode on OKL4, please refer to the new
-[http:/community/wiki/GenodeOnOKL4 - Genode on OKL4 Wiki page...]
+[https:/community/wiki/GenodeOnOKL4 - Genode on OKL4 Wiki page...]
 
 
 Genode on 64-bit Linux kernels | 2009-04-17
@@ -1965,7 +3071,7 @@ support future 64-bit versions of L4 kernels as well. The patch for adding 64
 bit support supplied by Christian Prochaska is now included in the current
 version of the Genode subversion repository.
 
-[http:/download/subversion-repository - Access the Genode subversion repository...]
+[https:/download/subversion-repository - Access the Genode subversion repository...]
 
 
 Christian Prochaska joins our project as regular developer | 2009-04-08
@@ -2006,9 +3112,9 @@ portability, these features become automatically available on all supported
 base platforms.
 
 Read on about the new features described in the
-[http:/documentation/release-notes/9.02 - release notes...]
+[https:/documentation/release-notes/9.02 - release notes...]
 
-[http:/download/latest-release - Download the Genode release 9.02...]
+[https:/download/latest-release - Download the Genode release 9.02...]
 
 
 Port of libSDL to Genode | 2009-01-23
@@ -2024,13 +3130,13 @@ for graphics, input devices, and sound. It is often used as back end for games,
 emulators, and media players. Also the Linux version of Genode relies on the
 hardware abstractions provided by libSDL.
 
-As [http://sourceforge.net/mailarchive/message.php?msg_id=21406424 - announced on the Genode mailing list],
+As [https://sourceforge.net/mailarchive/message.php?msg_id=21406424 - announced on the Genode mailing list],
 libSDL has been ported to Genode. At the current stage, the port supports
 the video subsystem and the input handling for mouse and keyboard. With
 libSDL now becoming available for Genode, it becomes much easier to make the
 wealth of libSDL-based applications available on our platform.
 
-[http://sourceforge.net/mailarchive/message.php?msg_id=21406424 - Read the announcement...]
+[https://sourceforge.net/mailarchive/message.php?msg_id=21406424 - Read the announcement...]
 
 
 Genode on the L4ka::Pistachio kernel | 2008-12-18
@@ -2054,7 +3160,7 @@ part of Genode with the upcoming release as scheduled for February. The
 instructions for building and using Genode with the L4ka::Pistachio kernel are
 provided at our Genode-on-L4ka::Pistachio wiki page.
 
-[http:/community/wiki/GenodeOnL4kaPistachio">Learn more about Genode on L4ka::Pistachio...]
+[https:/community/wiki/GenodeOnL4kaPistachio">Learn more about Genode on L4ka::Pistachio...]
 
 
 Public bug tracker available | 2008-12-12
@@ -2066,7 +3172,7 @@ Public bug tracker available | 2008-12-12
 With the new bug tracker, we want to simplify the sharing and solving of issues
 related to Genode in a coordinated fashion. If you discover things you like to
 see improved in our code or documentation, please do not hesitate to share your
-experiences and ideas by posting a bug. [http:/community - Community resources...]
+experiences and ideas by posting a bug. [https:/community - Community resources...]
 
 
 Genode OS Framework release 8.11 | 2008-11-21
@@ -2085,9 +3191,9 @@ base API by a number of exciting feature such as support for asynchronous
 notifications, capability typification, and managed dataspaces.
 
 Learn more about all the new features and changes described in our comprehensive
-[http:/documentation/release-notes/8.11 - release notes...]
+[https:/documentation/release-notes/8.11 - release notes...]
 
-[http:/download/latest-release - Download the release 8.11 of the Genode OS Framework...]
+[https:/download/latest-release - Download the release 8.11 of the Genode OS Framework...]
 
 
 Ready-to-boot Live-CD image available | 2008-10-21
@@ -2099,7 +3205,7 @@ Ready-to-boot Live-CD image available | 2008-10-21
 The Live CD features a fully graphical demonstration that presents the
 fundamental concepts of the Genode architecture in an interactive fashion. It
 runs directly on PC hardware and has been tested on Qemu and VirtualBox.
-[http:/download/live-cds - Download the Live-CD image...]
+[https:/download/live-cds - Download the Live-CD image...]
 
 
 New and exciting challenges ahead | 2008-09-19
@@ -2111,7 +3217,7 @@ New and exciting challenges ahead | 2008-09-19
 
 The Genode architecture inspires a large number of topics for research,
 experimentation, and development. The
-[http:/community/wiki/Challenges - challenges section of our Wiki] compiles a
+[https:/community/wiki/Challenges - challenges section of our Wiki] compiles a
 number of existing ideas. We have now enhanced this compilation by a number of
 further avenues that we find interesting to explore. For example, exploring
 Linux process containers, running Genode on FPGA platforms, dynamic linking
@@ -2142,7 +3248,7 @@ results presented in the paper reveal a number of interesting issues, for
 example the limited scalability of the current Genode build system with regard
 to parallelism, and the memory consumption of SCons when used for large
 projects.
-[http://www.genode-labs.com/publications/scons-vs-make-2008.pdf - Download the PDF document...]
+[https://www.genode-labs.com/publications/scons-vs-make-2008.pdf - Download the PDF document...]
 
 
 Genode ported to Syllable Server OS | 2008-08-22
@@ -2171,7 +3277,7 @@ year as the major number and the month as minor number. Hence, the release is
 called 8.08. It contains everything needed to execute an interactive graphical
 demonstration scenario on Linux via libSDL or alternatively via L4/Fiasco on
 bare PC hardware.
-[http:/download/latest-release - Download the latest release...]
+[https:/download/latest-release - Download the latest release...]
 
 
 Project website launched | 2008-07-29
@@ -2182,7 +3288,7 @@ Project website launched | 2008-07-29
 | Genode OS framework is scheduled for the 6th of August.
 
 Today, we proudly launched the website of the Genode project
-[http://www.genode.org - http://www.genode.org]. This website is the central
+[https://genode.org - https://genode.org]. This website is the central
 resource for people using or developing the Genode OS framework. It covers
 the latest news about our progress, architectural and technical documentation,
 a community-maintained wiki, mailing lists, information on accessing the
@@ -2191,7 +3297,7 @@ attention of people who want bring forward the project together with us.
 
 We have scheduled the first official release of the Genode OS framework for the
 6th August. Until then, we invite you to test-drive the beta-version of the
-framework as provided at the [http://www.genode.org/download - download].
+framework as provided at the [https://genode.org/download - download].
 
 
 Genode Labs founded | 2008-07-17

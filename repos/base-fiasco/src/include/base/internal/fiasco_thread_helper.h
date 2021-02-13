@@ -5,28 +5,19 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__FIASCO__THREAD_HELPER_H_
 #define _INCLUDE__FIASCO__THREAD_HELPER_H_
 
-#include <base/printf.h>
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 namespace Fiasco {
-#include <l4/sys/types.h>
-
-	inline void print_l4_threadid(l4_threadid_t t)
-	{
-		Genode::printf("THREAD %x.%02x\n", t.id.task, t.id.lthread);
-		Genode::printf("  unsigned version_low:10  = %x\n", t.id.version_low);
-		Genode::printf("  unsigned lthread:7       = %x\n", t.id.lthread);
-		Genode::printf("  unsigned task:11         = %x\n", t.id.task);
-	}
-
 
 	/**
 	 * Sigma0 thread ID

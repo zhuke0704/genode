@@ -8,22 +8,22 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__ROOT__COMPONENT_H_
 #define _INCLUDE__ROOT__COMPONENT_H_
 
 #include <root/root.h>
+#include <base/allocator.h>
 #include <base/rpc_server.h>
-#include <base/heap.h>
 #include <base/entrypoint.h>
-#include <ram_session/ram_session.h>
+#include <base/service.h>
 #include <util/arg_string.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 namespace Genode {
 
@@ -49,7 +49,7 @@ class Genode::Single_client
 		void aquire(const char *)
 		{
 			if (_used)
-				throw Root::Unavailable();
+				throw Service_denied();
 
 			_used = true;
 		}
@@ -96,6 +96,7 @@ struct Genode::Multiple_clients
  */
 template <typename SESSION_TYPE, typename POLICY>
 class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
+                               public Local_service<SESSION_TYPE>::Factory,
                                private POLICY
 {
 	private:
@@ -113,6 +114,100 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 		 * creating a new session.
 		 */
 		Allocator *_md_alloc;
+
+		/*
+		 * Used by both the legacy 'Root::session' and the new 'Factory::create'
+		 */
+		SESSION_TYPE &_create(Session_state::Args const &args, Affinity affinity)
+		{
+			POLICY::aquire(args.string());
+
+			/*
+			 * Guard to ensure that 'release' is called whenever the scope
+			 * is left with an exception.
+			 */
+			struct Guard
+			{
+				bool ack = false;
+				Root_component &root;
+				Guard(Root_component &root) : root(root) { }
+				~Guard() { if (!ack) root.release(); }
+			} aquire_guard { *this };
+
+			/*
+			 * We need to decrease 'ram_quota' by
+			 * the size of the session object.
+			 */
+			Ram_quota const ram_quota = ram_quota_from_args(args.string());
+
+			size_t needed = sizeof(SESSION_TYPE) + md_alloc()->overhead(sizeof(SESSION_TYPE));
+
+			if (needed > ram_quota.value)
+				throw Insufficient_ram_quota();
+
+			Ram_quota const remaining_ram_quota { ram_quota.value - needed };
+
+			/*
+			 * Validate that the client provided the amount of caps as mandated
+			 * for the session interface.
+			 */
+			Cap_quota const cap_quota = cap_quota_from_args(args.string());
+
+			if (cap_quota.value < SESSION_TYPE::CAP_QUOTA)
+				throw Insufficient_cap_quota();
+
+			/*
+			 * Account for the dataspace capability needed for allocating the
+			 * session object from the sliced heap.
+			 */
+			if (cap_quota.value < 1)
+				throw Insufficient_cap_quota();
+
+			Cap_quota const remaining_cap_quota { cap_quota.value - 1 };
+
+			/*
+			 * Deduce ram quota needed for allocating the session object from the
+			 * donated ram quota.
+			 */
+			enum { MAX_ARGS_LEN = 256 };
+			char adjusted_args[MAX_ARGS_LEN];
+			copy_cstring(adjusted_args, args.string(), sizeof(adjusted_args));
+
+			Arg_string::set_arg(adjusted_args, sizeof(adjusted_args),
+			                    "ram_quota", String<64>(remaining_ram_quota).string());
+
+			Arg_string::set_arg(adjusted_args, sizeof(adjusted_args),
+			                    "cap_quota", String<64>(remaining_cap_quota).string());
+
+			SESSION_TYPE *s = 0;
+			try { s = _create_session(adjusted_args, affinity); }
+			catch (Out_of_ram)             { throw Insufficient_ram_quota(); }
+			catch (Out_of_caps)            { throw Insufficient_cap_quota(); }
+			catch (Service_denied)         { throw; }
+			catch (Insufficient_cap_quota) { throw; }
+			catch (Insufficient_ram_quota) { throw; }
+			catch (...) {
+				warning("unexpected exception during ",
+				        SESSION_TYPE::service_name(), "-session creation");
+				throw Service_denied();
+			}
+
+			/*
+			 * Consider that the session-object constructor may already have
+			 * called 'manage'.
+			 */
+			if (!s->cap().valid())
+				_ep->manage(s);
+
+			aquire_guard.ack = true;
+			return *s;
+		}
+
+		/*
+		 * Noncopyable
+		 */
+		Root_component(Root_component const &);
+		Root_component &operator = (Root_component const &);
 
 	protected:
 
@@ -132,10 +227,11 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 		 * affinity, it suffices to override the overload without the
 		 * affinity argument.
 		 *
-		 * \throw Allocator::Out_of_memory  typically caused by the
-		 *                                  meta-data allocator
-		 * \throw Root::Invalid_args        typically caused by the
-		 *                                  session-component constructor
+		 * \throw Out_of_ram 
+		 * \throw Out_of_caps
+		 * \throw Service_denied
+		 * \throw Insufficient_cap_quota
+		 * \throw Insufficient_ram_quota
 		 */
 		virtual SESSION_TYPE *_create_session(const char *args,
 		                                      Affinity const &)
@@ -143,9 +239,9 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 			return _create_session(args);
 		}
 
-		virtual SESSION_TYPE *_create_session(const char *args)
+		virtual SESSION_TYPE *_create_session(const char *)
 		{
-			throw Root::Invalid_args();
+			throw Service_denied();
 		}
 
 		/**
@@ -170,7 +266,7 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 		virtual void _upgrade_session(SESSION_TYPE *, const char *) { }
 
 		virtual void _destroy_session(SESSION_TYPE *session) {
-			destroy(_md_alloc, session); }
+			Genode::destroy(_md_alloc, session); }
 
 		/**
 		 * Return allocator to allocate server object in '_create_session()'
@@ -209,6 +305,31 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 		{ }
 
 
+		/**************************************
+		 ** Local_service::Factory interface **
+		 **************************************/
+
+		SESSION_TYPE &create(Session_state::Args const &args,
+		                     Affinity affinity) override
+		{
+			try { return _create(args, affinity); }
+			catch (Insufficient_ram_quota) { throw; }
+			catch (Insufficient_cap_quota) { throw; }
+			catch (...) { throw Service_denied(); }
+		}
+
+		void upgrade(SESSION_TYPE &session,
+		             Session_state::Args const &args) override
+		{
+			_upgrade_session(&session, args.string());
+		}
+
+		void destroy(SESSION_TYPE &session) override
+		{
+			close(session.cap());
+		}
+
+
 		/********************
 		 ** Root interface **
 		 ********************/
@@ -216,51 +337,14 @@ class Genode::Root_component : public Rpc_object<Typed_root<SESSION_TYPE> >,
 		Session_capability session(Root::Session_args const &args,
 		                           Affinity           const &affinity) override
 		{
-			if (!args.valid_string()) throw Root::Invalid_args();
-
-			POLICY::aquire(args.string());
-
-			/*
-			 * We need to decrease 'ram_quota' by
-			 * the size of the session object.
-			 */
-			size_t ram_quota = Arg_string::find_arg(args.string(), "ram_quota").ulong_value(0);
-			size_t needed = sizeof(SESSION_TYPE) + md_alloc()->overhead(sizeof(SESSION_TYPE));
-
-			if (needed > ram_quota) {
-				PERR("Insufficient ram quota, provided=%zu, required=%zu",
-				     ram_quota, needed);
-				throw Root::Quota_exceeded();
-			}
-
-			size_t const remaining_ram_quota = ram_quota - needed;
-
-			/*
-			 * Deduce ram quota needed for allocating the session object from the
-			 * donated ram quota.
-			 *
-			 * XXX  the size of the 'adjusted_args' buffer should dependent
-			 *      on the message-buffer size and stack size.
-			 */
-			enum { MAX_ARGS_LEN = 256 };
-			char adjusted_args[MAX_ARGS_LEN];
-			strncpy(adjusted_args, args.string(), sizeof(adjusted_args));
-			char ram_quota_buf[64];
-			snprintf(ram_quota_buf, sizeof(ram_quota_buf), "%zu",
-			         remaining_ram_quota);
-			Arg_string::set_arg(adjusted_args, sizeof(adjusted_args),
-			                    "ram_quota", ram_quota_buf);
-
-			SESSION_TYPE *s = 0;
-			try { s = _create_session(adjusted_args, affinity); }
-			catch (Allocator::Out_of_memory) { throw Root::Unavailable(); }
-
-			return _ep->manage(s);
+			if (!args.valid_string()) throw Service_denied();
+			SESSION_TYPE &session = _create(args.string(), affinity);
+			return session.cap();
 		}
 
 		void upgrade(Session_capability session, Root::Upgrade_args const &args) override
 		{
-			if (!args.valid_string()) throw Root::Invalid_args();
+			if (!args.valid_string()) throw Service_denied();
 
 			_ep->apply(session, [&] (SESSION_TYPE *s) {
 				if (!s) return;

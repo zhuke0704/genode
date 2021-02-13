@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 class Ac : Acpica::Callback<Ac> {
@@ -35,35 +35,35 @@ class Ac : Acpica::Callback<Ac> {
 			                                          nullptr, &onoff,
 			                                          ACPI_TYPE_INTEGER);
 			if (ACPI_FAILURE(res)) {
-				PDBG("failed   - res=0x%x _PSR", res);
+				Genode::log("failed   - res=", Genode::Hex(res), " _PSR");
 				return;
 			}
 
 			_ac_state = onoff.object.Integer.Value;
 			_ac_count++;
 
-			PINF("%s - ac (%u)",
-			     _ac_state == 0 ? "offline " :
-			     _ac_state == 1 ? "online  " : "unknown ",
-			     value);
+			Genode::log(_ac_state == 0 ? "offline " :
+			            _ac_state == 1 ? "online  " : "unknown ",
+			            " - ac (", value, ")");
 
 			if (_report)
 				_report->ac_event();
 		}
 
-		static ACPI_STATUS detect(ACPI_HANDLE ac, UINT32, void * report, void **)
+		static ACPI_STATUS detect(ACPI_HANDLE ac, UINT32, void * m, void **)
 		{
-			Ac * obj = new (Genode::env()->heap()) Ac(report);
+			Acpica::Main * main = reinterpret_cast<Acpica::Main *>(m);
+			Ac * obj = new (main->heap) Ac(main->report);
 
 			ACPI_STATUS res = AcpiInstallNotifyHandler (ac, ACPI_DEVICE_NOTIFY,
 			                                            handler, obj);
 			if (ACPI_FAILURE(res)) {
-				PERR("failed   - '%s' res=0x%x", __func__, res);
+				Genode::error("failed   - '", __func__, "' res=", Genode::Hex(res));
 				delete obj;
 				return AE_OK;
 			}
 
-			PINF("detected - ac");
+			Genode::log("detected - ac");
 
 			handler(ac, 0, obj);
 

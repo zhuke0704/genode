@@ -5,85 +5,74 @@
  */
 
 /*
- * Copyright (C) 2014-2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <os/alarm.h>
-#include <base/thread.h>
-#include <timer_session/connection.h>
-
-
-using namespace Genode;
-
-class Alarm_thread : Thread_deprecated<4096>, public Alarm_scheduler
-{
-	private:
-
-		Timer::Connection _timer;
-		Alarm::Time       _curr_time;   /* jiffies value */
-
-		enum { TIMER_GRANULARITY_MSEC = 10 };
-
-		/**
-		 * Thread entry function
-		 */
-		void entry()
-		{
-			while (true) {
-				_timer.msleep(TIMER_GRANULARITY_MSEC);
-				Alarm_scheduler::handle(_curr_time);
-				_curr_time += TIMER_GRANULARITY_MSEC;
-			}
-		}
-
-	public:
-
-		/**
-		 * Constructor
-		 */
-		Alarm_thread(): Thread_deprecated("netperf_alarm"), _curr_time(0) { start(); }
-
-		Alarm::Time curr_time() { return _curr_time; }
-};
-
+#include <pthread.h>
+#include <unistd.h>
+#include <base/log.h>
 
 /* defined in "ports/contrib/netperf/src/netlib.c" */
 extern "C" int times_up;
 
+namespace {
 
-class One_shot : public Alarm
-{
-	private:
+	struct Timer_thread
+	{
+		pthread_t       _pthread { };
+		pthread_attr_t  _attr    { };
+		pthread_mutex_t _mutex   { PTHREAD_MUTEX_INITIALIZER };
 
-		Alarm_scheduler *_scheduler;
+		int _seconds_left = 0;
 
-	public:
-
-		One_shot(Alarm_scheduler *scheduler) : _scheduler(scheduler) { }
-
-		void set_timeout(Time absolute_timeout)
+		void _entry()
 		{
-			_scheduler->schedule_absolute(this, absolute_timeout);
+			for (;;) {
+				sleep(1);
+
+				pthread_mutex_lock(&_mutex);
+				if (_seconds_left) {
+					--_seconds_left;
+					if (_seconds_left == 0) {
+						times_up = true;
+					}
+				}
+				pthread_mutex_unlock(&_mutex);
+			}
 		}
 
-	protected:
-
-		bool on_alarm(unsigned) override
+		static void *_entry(void *arg)
 		{
-			times_up = 1;
-			return false;
+			Timer_thread &myself = *(Timer_thread *)arg;
+			myself._entry();
+
+			return nullptr;
 		}
-};
+
+		Timer_thread()
+		{
+			pthread_mutex_init(&_mutex, nullptr);
+			pthread_create(&_pthread, &_attr, _entry, this);
+		}
+
+		void schedule_timeout(int seconds)
+		{
+			pthread_mutex_lock(&_mutex);
+			times_up      = false;
+			_seconds_left = seconds;
+			pthread_mutex_unlock(&_mutex);
+		}
+	};
+}
 
 
 extern "C" void
 start_timer(int time)
 {
-	static Alarm_thread alarm_thread;
-	static One_shot oneshot(&alarm_thread);
+	static Timer_thread timer_thread { };
 
-	oneshot.set_timeout(alarm_thread.curr_time() + time * 1000);
+	timer_thread.schedule_timeout(time);
 }

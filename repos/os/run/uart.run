@@ -2,10 +2,12 @@
 # Build
 #
 
+assert_spec pbxa9
+
 # generic components
 set build_components {
-	core init
-	drivers/timer drivers/uart
+	core init timer
+	drivers/uart
 	test/uart
 }
 
@@ -21,7 +23,6 @@ set config  {
 	<config>
 		<parent-provides>
 			<service name="ROM"/>
-			<service name="RAM"/>
 			<service name="IRQ"/>
 			<service name="IO_MEM"/>
 			<service name="IO_PORT"/>
@@ -33,22 +34,21 @@ set config  {
 		<default-route>
 			<any-service> <parent/> <any-child/> </any-service>
 		</default-route>
+		<default caps="100"/>
 
 		<start name="timer">
 			<resource name="RAM" quantum="1M"/>
 			<provides><service name="Timer"/></provides>
 		</start>
-		<start name="uart_drv">
+		<start name="pbxa9_uart_drv">
 			<resource name="RAM" quantum="1M"/>
 			<provides>
 				<service name="Uart"/>
 				<service name="Terminal"/>
 			</provides>
 			<config>
-				<policy label="test-uart1" uart="1"/>
-				<policy label="test-uart2" uart="2"/>
-				<policy label="test-uart3" uart="3"/>
-				<policy label="test-uart4" uart="1"/>
+				<policy label_prefix="test-uart1" uart="1"/>
+				<policy label_prefix="test-uart2" uart="1"/>
 			</config>
 		</start>
 		<start name="test-uart1">
@@ -56,14 +56,6 @@ set config  {
 			<resource name="RAM" quantum="1M"/>
 		</start>
 		<start name="test-uart2">
-			<binary name="test-uart"/>
-			<resource name="RAM" quantum="1M"/>
-		</start>
-		<start name="test-uart3">
-			<binary name="test-uart"/>
-			<resource name="RAM" quantum="1M"/>
-		</start>
-		<start name="test-uart4">
 			<binary name="test-uart"/>
 			<resource name="RAM" quantum="1M"/>
 		</start>
@@ -79,12 +71,12 @@ install_config $config
 
 # generic modules
 set boot_modules {
-	core init
-	timer uart_drv test-uart
+	core ld.lib.so init
+	timer pbxa9_uart_drv test-uart
 }
 
 build_boot_image $boot_modules
-append qemu_args " -nographic -serial mon:stdio"
+append qemu_args " -display none -serial stdio"
 append qemu_args " -serial file:/tmp/serial1"
 append qemu_args " -serial file:/tmp/serial2"
 append qemu_args " -serial file:/tmp/serial3"

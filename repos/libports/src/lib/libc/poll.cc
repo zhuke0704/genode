@@ -1,28 +1,27 @@
 /*
  * \brief  poll() implementation
  * \author Josef Soentgen
+ * \author Christian Helmuth
+ * \author Emery Hemingway
  * \date   2012-07-12
- *
- * this 'poll()' implementation is based on OpenSSHp's and
- * uses our 'select()' function internally.
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2019 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
-#include <os/timed_semaphore.h>
-
+/* Libc includes */
 #include <libc-plugin/plugin_registry.h>
 #include <libc-plugin/plugin.h>
-
-#include <sys/select.h>
 #include <sys/poll.h>
-#include <stdlib.h>
+
+/* internal includes */
+#include <internal/errno.h>
+#include <internal/file.h>
+#include <internal/init.h>
 
 using namespace Libc;
 
@@ -57,22 +56,26 @@ poll(struct pollfd fds[], nfds_t nfds, int timeout)
 	for (i = 0; i < nfds; i++) {
 		fd = fds[i].fd;
 		if (fd >= (int)FD_SETSIZE) {
-			/*errno = EINVAL;*/
-			return -1;
+			return Libc::Errno(EINVAL);
 		}
 		maxfd = MAX(maxfd, fd);
 	}
 
 	/* populate event bit vectors for the events we're interested in */
+
+	FD_ZERO(&readfds);
+	FD_ZERO(&writefds);
+	FD_ZERO(&exceptfds);
+
 	for (i = 0; i < nfds; i++) {
 		fd = fds[i].fd;
 		if (fd == -1)
 			continue;
-		if (fds[i].events & POLLIN) {
+		if (fds[i].events & (POLLIN | POLLPRI | POLLRDNORM | POLLRDBAND)) {
 			FD_SET(fd, &readfds);
 			FD_SET(fd, &exceptfds);
 		}
-		if (fds[i].events & POLLOUT) {
+		if (fds[i].events & (POLLOUT | POLLWRNORM | POLLWRBAND)) {
 			FD_SET(fd, &writefds);
 			FD_SET(fd, &exceptfds);
 		}
@@ -85,17 +88,17 @@ poll(struct pollfd fds[], nfds_t nfds, int timeout)
 		tvp = &tv;
 	}
 	ret = select(maxfd + 1, &readfds, &writefds, &exceptfds, tvp);
-	/*saved_errno = errno;*/
+
 	/* scan through select results and set poll() flags */
 	for (i = 0; i < nfds; i++) {
 		fd = fds[i].fd;
 		fds[i].revents = 0;
 		if (fd == -1)
 			continue;
-		if (FD_ISSET(fd, &readfds)) {
+		if ((fds[i].events & POLLIN) && FD_ISSET(fd, &readfds)) {
 			fds[i].revents |= POLLIN;
 		}
-		if (FD_ISSET(fd, &writefds)) {
+		if ((fds[i].events & POLLOUT) && FD_ISSET(fd, &writefds)) {
 			fds[i].revents |= POLLOUT;
 		}
 		if (FD_ISSET(fd, &exceptfds)) {
@@ -103,9 +106,31 @@ poll(struct pollfd fds[], nfds_t nfds, int timeout)
 		}
 	}
 
-	/*
-	if (ret == -1)
-		errno = saved_errno;
-	*/
 	return ret;
 }
+
+
+extern "C" __attribute__((weak, alias("poll")))
+int __sys_poll(struct pollfd fds[], nfds_t nfds, int timeout_ms);
+
+
+extern "C" __attribute__((weak, alias("poll")))
+int _poll(struct pollfd fds[], nfds_t nfds, int timeout_ms);
+
+
+extern "C" __attribute__((weak))
+int ppoll(struct pollfd fds[], nfds_t nfds,
+          const struct timespec *timeout,
+          const sigset_t*)
+{
+	int timeout_ms = timeout ?
+	                 (timeout->tv_sec * 1000 + timeout->tv_nsec / 1000000) :
+	                 -1;
+	return poll(fds, nfds, timeout_ms);
+}
+
+
+extern "C" __attribute__((weak, alias("ppoll")))
+int __sys_ppoll(struct pollfd fds[], nfds_t nfds,
+                const struct timespec *timeout,
+                const sigset_t*);

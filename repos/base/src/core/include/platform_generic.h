@@ -6,17 +6,16 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_GENERIC_H_
 #define _CORE__INCLUDE__PLATFORM_GENERIC_H_
 
 /* Genode includes */
-#include <thread/capability.h>
 #include <base/allocator.h>
 #include <base/affinity.h>
 
@@ -37,32 +36,32 @@ namespace Genode {
 			/**
 			 * Allocator of core-local mapped virtual memory
 			 */
-			virtual Range_allocator *core_mem_alloc() = 0;
+			virtual Range_allocator &core_mem_alloc() = 0;
 
 			/**
 			 * Allocator of physical memory
 			 */
-			virtual Range_allocator *ram_alloc() = 0;
+			virtual Range_allocator &ram_alloc() = 0;
 
 			/**
 			 * Allocator of free address ranges within core
 			 */
-			virtual Range_allocator *region_alloc() = 0;
+			virtual Range_allocator &region_alloc() = 0;
 
 			/**
 			 * I/O memory allocator
 			 */
-			virtual Range_allocator *io_mem_alloc() = 0;
+			virtual Range_allocator &io_mem_alloc() = 0;
 
 			/**
 			 * I/O port allocator
 			 */
-			virtual Range_allocator *io_port_alloc() = 0;
+			virtual Range_allocator &io_port_alloc() = 0;
 
 			/**
 			 * IRQ allocator
 			 */
-			virtual Range_allocator *irq_alloc() = 0;
+			virtual Range_allocator &irq_alloc() = 0;
 
 			/**
 			 * Virtual memory configuration accessors
@@ -73,17 +72,12 @@ namespace Genode {
 			/**
 			 * ROM modules
 			 */
-			virtual Rom_fs *rom_fs() = 0;
+			virtual Rom_fs &rom_fs() = 0;
 
 			/**
 			 * Wait for exit condition
 			 */
 			virtual void wait_for_exit() = 0;
-
-			/**
-			 * Return true if platform supports unmap
-			 */
-			virtual bool supports_unmap() { return true; }
 
 			/**
 			 * Return true if platform supports direct unmap (no mapping db)
@@ -99,13 +93,23 @@ namespace Genode {
 			{
 				return Affinity::Space(1);
 			}
+
+			/**
+			 * Return system-wide maximum number of capabilities
+			 */
+			virtual size_t max_caps() const = 0;
+
+			/**
+			 * Return true if the core component relies on a 'Platform_pd' object
+			 */
+			virtual bool core_needs_platform_pd() const { return true; }
 	};
 
 
 	/**
 	 * Request pointer to static generic platform interface of core
 	 */
-	extern Platform_generic *platform();
+	extern Platform_generic &platform();
 
 	class Platform;
 
@@ -114,7 +118,7 @@ namespace Genode {
 	 *
 	 * This function should only be called from platform-specific code.
 	 */
-	extern Platform *platform_specific();
+	extern Platform &platform_specific();
 }
 
 #endif /* _CORE__INCLUDE__PLATFORM_GENERIC_H_ */

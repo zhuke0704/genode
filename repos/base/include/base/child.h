@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__CHILD_H_
@@ -17,12 +17,15 @@
 #include <base/rpc_server.h>
 #include <base/heap.h>
 #include <base/service.h>
-#include <base/lock.h>
+#include <base/mutex.h>
+#include <base/local_connection.h>
+#include <base/quota_guard.h>
 #include <util/arg_string.h>
-#include <ram_session/capability.h>
 #include <region_map/client.h>
-#include <pd_session/client.h>
-#include <cpu_session/client.h>
+#include <pd_session/connection.h>
+#include <cpu_session/connection.h>
+#include <log_session/connection.h>
+#include <rom_session/connection.h>
 #include <parent/capability.h>
 
 namespace Genode {
@@ -41,44 +44,58 @@ namespace Genode {
  */
 struct Genode::Child_policy
 {
+	typedef String<64> Name;
+	typedef String<64> Binary_name;
+	typedef String<64> Linker_name;
+
 	virtual ~Child_policy() { }
 
 	/**
-	 * Return process name of the child
+	 * Name of the child used as the child's label prefix
 	 */
-	virtual const char *name() const = 0;
+	virtual Name name() const = 0;
 
 	/**
-	 * Determine service to provide a session request
-	 *
-	 * \return  Service to be contacted for the new session, or
-	 *          0 if session request could not be resolved
+	 * ROM module name of the binary to start
 	 */
-	virtual Service *resolve_session_request(const char * /*service_name*/,
-	                                         const char * /*args*/)
-	{ return 0; }
+	virtual Binary_name binary_name() const { return name(); }
+
+	/**
+	 * ROM module name of the dynamic linker
+	 */
+	virtual Linker_name linker_name() const { return "ld.lib.so"; }
+
+	/**
+	 * Routing destination of a session request
+	 */
+	struct Route
+	{
+		Service &service;
+		Session::Label const label;
+		Session::Diag  const diag;
+	};
+
+	/**
+	 * Determine service and server-side label for a given session request
+	 *
+	 * \return  routing and policy-selection information for the session
+	 *
+	 * \throw Service_denied
+	 */
+	virtual Route resolve_session_request(Service::Name const &,
+	                                      Session_label const &,
+	                                      Session::Diag) = 0;
 
 	/**
 	 * Apply transformations to session arguments
 	 */
-	virtual void filter_session_args(const char * /*service*/,
+	virtual void filter_session_args(Service::Name const &,
 	                                 char * /*args*/, size_t /*args_len*/) { }
 
 	/**
 	 * Register a service provided by the child
-	 *
-	 * \param name   service name
-	 * \param root   interface for creating sessions for the service
-	 * \param alloc  allocator to be used for child-specific
-	 *               meta-data allocations
-	 * \return       true if announcement succeeded, or false if
-	 *               child is not permitted to announce service
 	 */
-	virtual bool announce_service(const char            * /*name*/,
-	                              Root_capability         /*root*/,
-	                              Allocator             * /*alloc*/,
-	                              Server                * /*server*/)
-	{ return false; }
+	virtual void announce_service(Service::Name const &) { }
 
 	/**
 	 * Apply session affinity policy
@@ -92,26 +109,21 @@ struct Genode::Child_policy
 	}
 
 	/**
-	 * Unregister services that had been provided by the child
-	 */
-	virtual void unregister_services() { }
-
-	/**
 	 * Exit child
 	 */
 	virtual void exit(int exit_value)
 	{
-		PDBG("child \"%s\" exited with exit value %d", name(), exit_value);
+		log("child \"", name(), "\" exited with exit value ", exit_value);
 	}
 
 	/**
-	 * Reference RAM session
+	 * Reference PD session
 	 *
-	 * The RAM session returned by this method is used for session-quota
-	 * transfers.
+	 * The PD session returned by this method is used for session cap-quota
+	 * and RAM-quota transfers.
 	 */
-	virtual Ram_session *ref_ram_session() { return env()->ram_session(); }
-	virtual Ram_session_capability ref_ram_cap() const { return env()->ram_session_cap(); }
+	virtual Pd_session           &ref_pd() = 0;
+	virtual Pd_session_capability ref_pd_cap() const = 0;
 
 	/**
 	 * Respond to the release of resources by the child
@@ -125,6 +137,78 @@ struct Genode::Child_policy
 	 * Take action on additional resource needs by the child
 	 */
 	virtual void resource_request(Parent::Resource_args const &) { }
+
+	/**
+	 * Initialize the child's CPU session
+	 *
+	 * The function may install an exception signal handler or assign CPU quota
+	 * to the child.
+	 */
+	virtual void init(Cpu_session &, Capability<Cpu_session>) { }
+
+	/**
+	 * Initialize the child's PD session
+	 *
+	 * The function must define the child's reference account and transfer
+	 * the child's initial RAM and capability quotas. It may also install a
+	 * region-map fault handler for the child's address space
+	 * ('Pd_session::address_space');.
+	 */
+	virtual void init(Pd_session &, Capability<Pd_session>) { }
+
+	class Nonexistent_id_space : Exception { };
+
+	/**
+	 * ID space for sessions provided by the child
+	 *
+	 * \throw Nonexistent_id_space
+	 */
+	virtual Id_space<Parent::Server> &server_id_space() { throw Nonexistent_id_space(); }
+
+	/**
+	 * Notification hook invoked each time a session state is modified
+	 */
+	virtual void session_state_changed() { }
+
+	/**
+	 * Granularity of allocating the backing store for session meta data
+	 *
+	 * Session meta data is allocated from 'ref_pd'. The first batch of
+	 * session-state objects is allocated at child-construction time.
+	 */
+	virtual size_t session_alloc_batch_size() const { return 16; }
+
+	/**
+	 * Return true to create the environment sessions at child construction
+	 *
+	 * By returning 'false', it is possible to create 'Child' objects without
+	 * routing of their environment sessions at construction time. Once the
+	 * routing information is available, the child's environment sessions
+	 * must be manually initiated by calling 'Child::initiate_env_sessions()'.
+	 */
+	virtual bool initiate_env_sessions() const { return true; }
+
+	/**
+	 * Return region map for the child's address space
+	 *
+	 * \param pd  the child's PD session capability
+	 *
+	 * By default, the function returns a 'nullptr'. In this case, the 'Child'
+	 * interacts with the address space of the child's PD session via RPC calls
+	 * to the 'Pd_session::address_space'.
+	 *
+	 * By overriding the default, those RPC calls can be omitted, which is
+	 * useful if the child's PD session (including the PD's address space) is
+	 * virtualized by the parent. If the virtual PD session is served by the
+	 * same entrypoint as the child's parent interface, an RPC call to 'pd'
+	 * would otherwise produce a deadlock.
+	 */
+	virtual Region_map *address_space(Pd_session &) { return nullptr; }
+
+	/**
+	 * Return true if ELF loading should be inhibited
+	 */
+	virtual bool forked() const { return false; }
 };
 
 
@@ -150,11 +234,13 @@ struct Genode::Child_policy
  * to our account, and subsequently transfer the same amount from our
  * account to the client.
  */
-class Genode::Child : protected Rpc_object<Parent>
+class Genode::Child : protected Rpc_object<Parent>,
+                      Session_state::Ready_callback,
+                      Session_state::Closed_callback
 {
-	public:
+	private:
 
-		struct Initial_thread_base
+		struct Initial_thread_base : Interface
 		{
 			/**
 			 * Start execution at specified instruction pointer
@@ -164,7 +250,7 @@ class Genode::Child : protected Rpc_object<Parent>
 			/**
 			 * Return capability of the initial thread
 			 */
-			virtual Capability<Cpu_thread> cap() = 0;
+			virtual Capability<Cpu_thread> cap() const = 0;
 		};
 
 		struct Initial_thread : Initial_thread_base
@@ -182,68 +268,71 @@ class Genode::Child : protected Rpc_object<Parent>
 				 * Constructor
 				 *
 				 * \throw Cpu_session::Thread_creation_failed
-				 * \throw Cpu_session::Out_of_metadata
+				 * \throw Out_of_ram
+				 * \throw Out_of_caps
 				 */
 				Initial_thread(Cpu_session &, Pd_session_capability, Name const &);
 				~Initial_thread();
 
 				void start(addr_t) override;
 
-				Capability<Cpu_thread> cap() { return _cap; }
+				Capability<Cpu_thread> cap() const override { return _cap; }
 		};
 
-	private:
-
-		class Session;
-
-		/* PD session representing the protection domain of the child */
-		Pd_session_capability   _pd;
-
-		/* RAM session that contains the quota of the child */
-		Ram_session_capability  _ram;
-
-		/* CPU session that contains the quota of the child */
-		Cpu_session_capability  _cpu;
-
-		/* services where the PD, RAM, and CPU resources come from */
-		Service                &_pd_service;
-		Service                &_ram_service;
-		Service                &_cpu_service;
-
-		/* heap for child-specific allocations using the child's quota */
-		Heap                    _heap;
-
-		Rpc_entrypoint         &_entrypoint;
-		Parent_capability       _parent_cap;
-
 		/* child policy */
-		Child_policy           &_policy;
+		Child_policy &_policy;
 
-		/* sessions opened by the child */
-		Lock                    _lock;   /* protect list manipulation */
-		Object_pool<Session>    _session_pool;
-		List<Session>           _session_list;
+		/* print error message with the child's name prepended */
+		template <typename... ARGS>
+		void _error(ARGS &&... args) { error(_policy.name(), ": ", args...); }
 
-		/* server role */
-		Server                 _server;
+		Region_map &_local_rm;
 
-		/* session-argument buffer */
-		char _args[Parent::Session_args::MAX_SIZE];
+		Capability_guard _parent_cap_guard;
 
 		/* signal handlers registered by the child */
-		Signal_context_capability _resource_avail_sigh;
-		Signal_context_capability _yield_sigh;
+		Signal_context_capability _resource_avail_sigh { };
+		Signal_context_capability _yield_sigh          { };
+		Signal_context_capability _session_sigh        { };
+		Signal_context_capability _heartbeat_sigh      { };
 
 		/* arguments fetched by the child in response to a yield signal */
-		Lock          _yield_request_lock;
-		Resource_args _yield_request_args;
+		Mutex         _yield_request_mutex { };
+		Resource_args _yield_request_args  { };
+
+		/* number of unanswered heartbeat signals */
+		unsigned _outstanding_heartbeats = 0;
+
+		/* sessions opened by the child */
+		Id_space<Client> _id_space { };
+
+		/* allocator used for dynamically created session state objects */
+		Sliced_heap _session_md_alloc { _policy.ref_pd(), _local_rm };
+
+		Session_state::Factory::Batch_size const
+			_session_batch_size { _policy.session_alloc_batch_size() };
+
+		/* factory for dynamically created  session-state objects */
+		Session_state::Factory _session_factory { _session_md_alloc,
+		                                          _session_batch_size };
+
+		typedef Session_state::Args Args;
+
+		/*
+		 * Members that are initialized not before the child's environment is
+		 * complete.
+		 */
+
+		void _try_construct_env_dependent_members();
+
+		Constructible<Initial_thread> _initial_thread { };
 
 		struct Process
 		{
 			class Missing_dynamic_linker : Exception { };
 			class Invalid_executable     : Exception { };
 
-			Initial_thread_base &initial_thread;
+			enum Type { TYPE_LOADED, TYPE_FORKED };
 
 			struct Loaded_executable
 			{
@@ -251,7 +340,7 @@ class Genode::Child : protected Rpc_object<Parent>
 				 * Initial instruction pointer of the new process, as defined
 				 * in the header of the executable.
 				 */
-				addr_t entry;
+				addr_t entry { 0 };
 
 				/**
 				 * Constructor parses the executable and sets up segment
@@ -262,14 +351,16 @@ class Genode::Child : protected Rpc_object<Parent>
 				 *                  the local address space to initialize their
 				 *                  content with the data from the 'elf_ds'
 				 *
-				 * \throw Region_map::Attach_failed
+				 * \throw Region_map::Region_conflict
+				 * \throw Region_map::Invalid_dataspace
 				 * \throw Invalid_executable
 				 * \throw Missing_dynamic_linker
-				 * \throw Ram_session::Alloc_failed
+				 * \throw Out_of_ram
+				 * \throw Out_of_caps
 				 */
-				Loaded_executable(Dataspace_capability elf_ds,
+				Loaded_executable(Type type,
 				                  Dataspace_capability ldso_ds,
-				                  Ram_session &ram,
+				                  Ram_allocator &ram,
 				                  Region_map &local_rm,
 				                  Region_map &remote_rm,
 				                  Parent_capability parent_cap);
@@ -278,139 +369,291 @@ class Genode::Child : protected Rpc_object<Parent>
 			/**
 			 * Constructor
 			 *
-			 * \param ram     RAM session used to allocate the BSS and
-			 *                DATA segments for the new process
-			 * \param parent  parent of the new protection domain
-			 * \param name    name of protection domain
-			 *
 			 * \throw Missing_dynamic_linker
 			 * \throw Invalid_executable
-			 * \throw Region_map::Attach_failed
-			 * \throw Ram_session::Alloc_failed
-			 *
-			 * The other arguments correspond to those of 'Child::Child'.
+			 * \throw Region_map::Region_conflict
+			 * \throw Region_map::Invalid_dataspace
+			 * \throw Out_of_ram
+			 * \throw Out_of_caps
 			 *
 			 * On construction of a protection domain, the initial thread is
 			 * started immediately.
 			 *
-			 * The argument 'elf_ds' may be invalid to create an empty process.
-			 * In this case, all process initialization steps except for the
-			 * creation of the initial thread must be done manually, i.e., as
-			 * done for implementing fork.
+			 * The 'type' 'TYPE_FORKED' creates an empty process. In this case,
+			 * all process initialization steps except for the creation of the
+			 * initial thread must be done manually, i.e., as done for
+			 * implementing fork.
 			 */
-			Process(Dataspace_capability  elf_ds,
-			        Dataspace_capability  ldso_ds,
-			        Pd_session_capability pd_cap,
-			        Pd_session           &pd,
-			        Ram_session          &ram,
-			        Initial_thread_base  &initial_thread,
-			        Region_map           &local_rm,
-			        Region_map           &remote_rm,
-			        Parent_capability     parent);
+			Process(Type                 type,
+			        Dataspace_capability ldso_ds,
+			        Pd_session          &pd,
+			        Initial_thread_base &initial_thread,
+			        Region_map          &local_rm,
+			        Region_map          &remote_rm,
+			        Parent_capability    parent);
 
 			~Process();
 		};
 
-		Process _process;
+		Constructible<Process> _process { };
+
+		/*
+		 * The child's environment sessions
+		 */
+
+		template <typename CONNECTION>
+		struct Env_connection
+		{
+			Child &_child;
+
+			Id_space<Parent::Client>::Id const _client_id;
+
+			typedef String<64> Label;
+
+			Args const _args;
+
+			/*
+			 * The 'Env_service' monitors session responses in order to attempt
+			 * to 'Child::_try_construct_env_dependent_members()' on the
+			 * arrival of environment sessions.
+			 */
+			struct Env_service : Service, Session_state::Ready_callback
+			{
+				Child   &_child;
+				Service &_service;
+
+				Env_service(Child &child, Service &service)
+				:
+					Genode::Service(CONNECTION::service_name()),
+					_child(child), _service(service)
+				{ }
+
+				/*
+				 * The 'Local_connection' may call 'initial_request' multiple
+				 * times. We use 'initial_request' as a hook to transfer the
+				 * session quota to an async service but we want to transfer
+				 * the session quota only once. The '_first_request' allows
+				 * us to distinguish the first from subsequent calls.
+				 */
+				bool _first_request = true;
+
+				void initiate_request(Session_state &session) override
+				{
+					session.ready_callback = this;
+					session.async_client_notify = true;
+
+					_service.initiate_request(session);
+
+					/*
+					 * If the env session is provided by an async service,
+					 * transfer the session resources.
+					 */
+					bool const async_service =
+						session.phase == Session_state::CREATE_REQUESTED;
+
+					if (_first_request && async_service
+					 && _service.name() != Pd_session::service_name()) {
+
+						Ram_quota const ram_quota { CONNECTION::RAM_QUOTA };
+						Cap_quota const cap_quota { CONNECTION::CAP_QUOTA };
+
+						if (cap(ram_quota).valid())
+							_child._policy.ref_pd().transfer_quota(cap(ram_quota), ram_quota);
+
+						if (cap(cap_quota).valid())
+							_child._policy.ref_pd().transfer_quota(cap(cap_quota), cap_quota);
+
+						_first_request = false;
+					}
+
+					if (session.phase == Session_state::SERVICE_DENIED)
+						error(_child._policy.name(), ": environment ",
+						      CONNECTION::service_name(), " session denied "
+						      "(", session.args(), ")");
+
+					/*
+					 * If the env session is provided by an async service,
+					 * we have to wake up the server when closing the env
+					 * session.
+					 */
+					if (session.phase == Session_state::CLOSE_REQUESTED)
+						_service.wakeup();
+				}
+
+				/**
+				 * Session_state::Ready_callback
+				 */
+				void session_ready(Session_state &) override
+				{
+					_child._try_construct_env_dependent_members();
+				}
+
+				/**
+				 * Service (Ram_transfer::Account) interface
+				 */
+				void transfer(Pd_session_capability to, Ram_quota amount) override
+				{
+					Ram_transfer::Account &from = _service;
+					from.transfer(to, amount);
+				}
+
+				/**
+				 * Service (Ram_transfer::Account) interface
+				 */
+				Pd_session_capability cap(Ram_quota) const override
+				{
+					Ram_transfer::Account &to = _service;
+					return to.cap(Ram_quota());
+				}
+
+				/**
+				 * Service (Cap_transfer::Account) interface
+				 */
+				void transfer(Pd_session_capability to, Cap_quota amount) override
+				{
+					Cap_transfer::Account &from = _service;
+					from.transfer(to, amount);
+				}
+
+				/**
+				 * Service (Cap_transfer::Account) interface
+				 */
+				Pd_session_capability cap(Cap_quota) const override
+				{
+					Cap_transfer::Account &to = _service;
+					return to.cap(Cap_quota());
+				}
+
+				void wakeup() override { _service.wakeup(); }
+
+				bool operator == (Service const &other) const override
+				{
+					return _service == other;
+				}
+			};
+
+			Constructible<Env_service> _env_service { };
+
+			Constructible<Local_connection<CONNECTION> > _connection { };
+
+			/**
+			 * Construct session arguments with the child policy applied
+			 */
+			Args _construct_args(Child_policy &policy, Label const &label)
+			{
+				/* copy original arguments into modifiable buffer */
+				char buf[Session_state::Args::capacity()];
+				buf[0] = 0;
+
+				/* supply label as session argument */
+				if (label.valid())
+					Arg_string::set_arg_string(buf, sizeof(buf), "label", label.string());
+
+				/* apply policy to argument buffer */
+				policy.filter_session_args(CONNECTION::service_name(), buf, sizeof(buf));
+
+				return Session_state::Args(Cstring(buf));
+			}
+
+			static char const *_service_name() { return CONNECTION::service_name(); }
+
+			Env_connection(Child &child, Id_space<Parent::Client>::Id id,
+			               Label const &label = Label())
+			:
+				_child(child), _client_id(id),
+				_args(_construct_args(child._policy, label))
+			{ }
+
+			/**
+			 * Initiate routing and creation of the environment session
+			 */
+			void initiate()
+			{
+				/* don't attempt to initiate env session twice */
+				if (_connection.constructed())
+					return;
+
+				try {
+					Child_policy::Route const route =
+						_child._policy.resolve_session_request(_service_name(),
+						                                       label_from_args(_args.string()),
+						                                       session_diag_from_args(_args.string()));
+					_env_service.construct(_child, route.service);
+					_connection.construct(*_env_service, _child._id_space, _client_id,
+					                      _args, _child._policy.filter_session_affinity(Affinity()),
+					                      route.label, route.diag);
+				}
+				catch (Service_denied) {
+					error(_child._policy.name(), ": ", _service_name(), " "
+					      "environment session denied (", _args.string(), ")"); }
+			}
+
+			typedef typename CONNECTION::Session_type SESSION;
+
+			SESSION       &session()       { return _connection->session(); }
+			SESSION const &session() const { return _connection->session(); }
+
+			Capability<SESSION> cap() const {
+				return _connection.constructed() ? _connection->cap()
+				                                 : Capability<SESSION>(); }
+
+			bool closed() const { return !_connection.constructed() || _connection->closed(); }
+
+			void close() { if (_connection.constructed()) _connection->close(); }
+		};
+
+		Env_connection<Pd_connection>  _pd     { *this, Env::pd(),     _policy.name() };
+		Env_connection<Cpu_connection> _cpu    { *this, Env::cpu(),    _policy.name() };
+		Env_connection<Log_connection> _log    { *this, Env::log(),    _policy.name() };
+		Env_connection<Rom_connection> _binary { *this, Env::binary(), _policy.binary_name() };
+
+		Constructible<Env_connection<Rom_connection> > _linker { };
+
+		Dataspace_capability _linker_dataspace()
+		{
+			return _linker.constructed() ? _linker->session().dataspace()
+			                             : Rom_dataspace_capability();
+		}
+
+		void _revert_quota_and_destroy(Session_state &);
+
+		void _discard_env_session(Id_space<Parent::Client>::Id);
+
+		Close_result _close(Session_state &);
 
 		/**
-		 * Attach session information to a child
-		 *
-		 * \throw Ram_session::Quota_exceeded  the child's heap partition cannot
-		 *                                     hold the session meta data
+		 * Session_state::Ready_callback
 		 */
-		void _add_session(const Session &s);
+		void session_ready(Session_state &session) override;
 
 		/**
-		 * Close session and revert quota donation associated with it
+		 * Session_state::Closed_callback
 		 */
-		void _remove_session(Session *s);
+		void session_closed(Session_state &) override;
 
-		void _close(Session *s);
+		template <typename UNIT>
+		static UNIT _effective_quota(UNIT requested_quota, UNIT env_quota)
+		{
+			if (requested_quota.value < env_quota.value)
+				return UNIT { 0 };
 
-		/**
-		 * Return service interface targetting the parent
-		 *
-		 * The service returned by this method is used as default
-		 * provider for the RAM, CPU, and RM resources of the child. It is
-		 * solely used for targeting resource donations during
-		 * 'Parent::upgrade_quota()' calls.
-		 */
-		static Service &_parent_service();
+			return UNIT { requested_quota.value - env_quota.value };
+		}
 
 	public:
 
 		/**
-		 * Exception type
-		 *
-		 * The startup of the physical process of the child may fail if the
-		 * ELF binary is invalid, if the ELF binary is dynamically linked
-		 * but no dynamic linker is provided, if the creation of the initial
-		 * thread failed, or if the RAM session of the child is exhausted.
-		 * Each of those conditions will result in a diagnostic log message.
-		 * But for the error handling, we only distinguish the RAM exhaustion
-		 * from the other conditions and subsume the latter as
-		 * 'Process_startup_failed'.
-		 */
-		class Process_startup_failed : public Exception { };
-
-		/**
 		 * Constructor
 		 *
-		 * \param elf_ds          dataspace that contains the ELF binary
-		 * \param ldso_ds         dataspace that contains the dynamic linker,
-		 *                        started if 'elf_ds' is a dynamically linked
-		 *                        executable
-		 * \param pd_cap          capability of the new protection domain,
-		 *                        used as argument for creating the initial
-		 *                        thread, and handed out to the child as its
-		 *                        environment
-		 * \param pd              PD session used for assigning the parent
-		 *                        capability of the new process
-		 * \param ram_cap         RAM session capability handed out to the
-		 *                        child as its environment
-		 * \param ram             RAM session used to allocate the BSS and
-		 *                        DATA segments and as backing store for the
-		 *                        local heap partition to keep child-specific
-		 *                        meta data
-		 * \param cpu_cap         CPU session capability handed out to the
-		 *                        child as its environment
-		 * \param initial_thread  initial thread of the new protection domain
-		 * \param local_rm        local address space
-		 * \param remote_rm       address space of new protection domain
-		 * \param pd_service      provider of the 'pd' session
-		 * \param ram_service     provider of the 'ram' session
-		 * \param cpu_service     provider of the 'cpu' session
+		 * \param rm          local address space, usually 'env.rm()'
+		 * \param entrypoint  entrypoint used to serve the parent interface of
+		 *                    the child
+		 * \param policy      policy for the child
 		 *
-		 * \throw Ram_session::Alloc_failed
-		 * \throw Process_startup_failed
-		 *
-		 * Usually, the pairs of 'pd' and 'pd_cap', 'initial_thread' and
-		 * 'cpu_cap', 'ram' and 'ram_cap' belong to each other. References to
-		 * the session interfaces are passed as separate arguments in addition
-		 * to the capabilities to allow the creator of a child to operate on
-		 * locally implemented interfaces during the child initialization.
-		 *
-		 * The 'ram_service', 'cpu_service', and 'pd_service' arguments are
-		 * needed to direct quota upgrades referring to the resources of
-		 * the child environment. By default, we expect that these
-		 * resources are provided by the parent.
+		 * \throw Service_denied  the initial sessions for the child's
+		 *                        environment could not be established
 		 */
-		Child(Dataspace_capability    elf_ds,
-		      Dataspace_capability    ldso_ds,
-		      Pd_session_capability   pd_cap,
-		      Pd_session             &pd,
-		      Ram_session_capability  ram_cap,
-		      Ram_session            &ram,
-		      Cpu_session_capability  cpu_cap,
-		      Initial_thread_base    &initial_thread,
-		      Region_map             &local_rm,
-		      Region_map             &remote_rm,
-		      Rpc_entrypoint         &entrypoint,
-		      Child_policy           &policy,
-		      Service                &pd_service  = _parent_service(),
-		      Service                &ram_service = _parent_service(),
-		      Service                &cpu_service = _parent_service());
+		Child(Region_map &rm, Rpc_entrypoint &entrypoint, Child_policy &policy);
 
 		/**
 		 * Destructor
@@ -421,25 +664,107 @@ class Genode::Child : protected Rpc_object<Parent>
 		virtual ~Child();
 
 		/**
-		 * Return heap that uses the child's quota
+		 * Return true if the child has been started
+		 *
+		 * After the child's construction, the child is not always able to run
+		 * immediately. In particular, a session of the child's environment
+		 * may still be pending. This method returns true only if the child's
+		 * environment is completely initialized at the time of calling.
+		 *
+		 * If all environment sessions are immediately available (as is the
+		 * case for local services or parent services), the return value is
+		 * expected to be true. If this is not the case, one of child's
+		 * environment sessions could not be established, e.g., the ROM session
+		 * of the binary could not be obtained.
 		 */
-		Allocator *heap() { return &_heap; }
-
-		Pd_session_capability  pd_session_cap()  const { return _pd; }
-		Ram_session_capability ram_session_cap() const { return _ram; }
-		Cpu_session_capability cpu_session_cap() const { return _cpu; }
-		Parent_capability      parent_cap()      const { return cap(); }
+		bool active() const { return _process.constructed(); }
 
 		/**
-		 * Discard all sessions to specified service
-		 *
-		 * When this method is called, we assume the server protection
-		 * domain to be dead and all that all server quota was already
-		 * transferred back to our own 'env()->ram_session()' account. Note
-		 * that the specified server object may not exist anymore. We do
-		 * not de-reference the server argument in here!
+		 * Initialize the child's PD session
 		 */
-		void revoke_server(const Server *server);
+		void initiate_env_pd_session();
+
+		/**
+		 * Trigger the routing and creation of the child's environment session
+		 *
+		 * See the description of 'Child_policy::initiate_env_sessions'.
+		 */
+		void initiate_env_sessions();
+
+		/**
+		 * Return true if the child is safe to be destroyed
+		 *
+		 * The child must not be destroyed until all environment sessions
+		 * are closed at the respective servers. Otherwise, the session state,
+		 * which is kept as part of the child object may be gone before
+		 * the close request reaches the server.
+		 */
+		bool env_sessions_closed() const
+		{
+			if (_linker.constructed() && !_linker->closed()) return false;
+
+			/*
+			 * Note that the state of the CPU session remains unchecked here
+			 * because the eager CPU-session destruction does not work on all
+			 * kernels (search for KERNEL_SUPPORTS_EAGER_CHILD_DESTRUCTION).
+			 */
+			return _log.closed() && _binary.closed();
+		}
+
+		/**
+		 * Quota unconditionally consumed by the child's environment
+		 */
+		static Ram_quota env_ram_quota()
+		{
+			return { Cpu_connection::RAM_QUOTA + Pd_connection::RAM_QUOTA +
+			         Log_connection::RAM_QUOTA + 2*Rom_connection::RAM_QUOTA };
+		}
+
+		static Cap_quota env_cap_quota()
+		{
+			return { Cpu_connection::CAP_QUOTA + Pd_connection::CAP_QUOTA +
+			         Log_connection::CAP_QUOTA + 2*Rom_connection::CAP_QUOTA +
+			         1 /* parent cap */ };
+		}
+
+		void close_all_sessions();
+
+		template <typename FN>
+		void for_each_session(FN const &fn) const
+		{
+			_id_space.for_each<Session_state const>(fn);
+		}
+
+		/**
+		 * Deduce env session costs from usable RAM quota
+		 */
+		static Ram_quota effective_quota(Ram_quota quota)
+		{
+			return _effective_quota(quota, env_ram_quota());
+		}
+
+		/**
+		 * Deduce env session costs from usable cap quota
+		 */
+		static Cap_quota effective_quota(Cap_quota quota)
+		{
+			return _effective_quota(quota, env_cap_quota());
+		}
+
+		Pd_session_capability pd_session_cap() const { return _pd.cap();  }
+
+		Parent_capability parent_cap() const { return cap(); }
+
+		Ram_allocator       &ram()       { return _pd.session(); }
+		Ram_allocator const &ram() const { return _pd.session(); }
+		Cpu_session         &cpu()       { return _cpu.session(); }
+		Pd_session          &pd()        { return _pd.session(); }
+		Pd_session    const &pd()  const { return _pd.session(); }
+
+		/**
+		 * Request factory for creating session-state objects
+		 */
+		Session_state::Factory &session_factory() { return _session_factory; }
 
 		/**
 		 * Instruct the child to yield resources
@@ -456,23 +781,40 @@ class Genode::Child : protected Rpc_object<Parent>
 		 */
 		void notify_resource_avail() const;
 
+		/**
+		 * Notify the child to give a lifesign
+		 */
+		void heartbeat();
+
+		/**
+		 * Return number of missing heartbeats since the last response from
+		 * the child
+		 */
+		unsigned skipped_heartbeats() const;
+
 
 		/**********************
 		 ** Parent interface **
 		 **********************/
 
-		void announce(Service_name const &, Root_capability) override;
-		Session_capability session(Service_name const &, Session_args const &,
-		                           Affinity const &) override;
-		void upgrade(Session_capability, Upgrade_args const &) override;
-		void close(Session_capability) override;
+		void announce(Service_name const &) override;
+		void session_sigh(Signal_context_capability) override;
+		Session_capability session(Client::Id, Service_name const &,
+		                           Session_args const &, Affinity const &) override;
+		Session_capability session_cap(Client::Id) override;
+		Upgrade_result upgrade(Client::Id, Upgrade_args const &) override;
+		Close_result close(Client::Id) override;
 		void exit(int) override;
+		void session_response(Server::Id, Session_response) override;
+		void deliver_session_cap(Server::Id, Session_capability) override;
 		Thread_capability main_thread_cap() const override;
 		void resource_avail_sigh(Signal_context_capability) override;
 		void resource_request(Resource_args const &) override;
 		void yield_sigh(Signal_context_capability) override;
 		Resource_args yield_request() override;
 		void yield_response() override;
+		void heartbeat_sigh(Signal_context_capability) override;
+		void heartbeat_response() override;
 };
 
 #endif /* _INCLUDE__BASE__CHILD_H_ */

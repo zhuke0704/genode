@@ -9,34 +9,30 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 #define _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 
 /* Genode includes */
-#include <base/native_types.h>
 #include <base/thread.h>
+#include <foc/native_capability.h>
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
 
 /* Fiasco.OC includes */
-namespace Fiasco {
-#include <l4/sys/kdebug.h>
-#include <l4/sys/irq.h>
-#include <l4/sys/thread.h>
-}
+#include <foc/syscall.h>
 
 
 /**
  * Yield CPU time
  */
-static inline void thread_yield() { Fiasco::l4_thread_yield(); }
+static inline void thread_yield() { Foc::l4_thread_yield(); }
 
 
 /**
@@ -50,11 +46,11 @@ static inline void thread_yield() { Fiasco::l4_thread_yield(); }
  */
 static inline bool thread_check_stopped_and_restart(Genode::Thread *thread_base)
 {
-	Fiasco::l4_cap_idx_t tid = thread_base ?
+	Foc::l4_cap_idx_t tid = thread_base ?
 	                           thread_base->native_thread().kcap :
-	                           Fiasco::MAIN_THREAD_CAP;
-	Fiasco::l4_cap_idx_t irq = tid + Fiasco::THREAD_IRQ_CAP;
-	Fiasco::l4_irq_trigger(irq);
+	                           Foc::MAIN_THREAD_CAP;
+	Foc::l4_cap_idx_t irq = tid + Foc::THREAD_IRQ_CAP;
+	Foc::l4_irq_trigger(irq);
 	return true;
 }
 
@@ -64,10 +60,10 @@ static inline bool thread_check_stopped_and_restart(Genode::Thread *thread_base)
  */
 static inline void thread_switch_to(Genode::Thread *thread_base)
 {
-	Fiasco::l4_cap_idx_t tid = thread_base ?
+	Foc::l4_cap_idx_t tid = thread_base ?
 	                           thread_base->native_thread().kcap :
-	                           Fiasco::MAIN_THREAD_CAP;
-	Fiasco::l4_thread_switch(tid);
+	                           Foc::MAIN_THREAD_CAP;
+	Foc::l4_thread_switch(tid);
 }
 
 
@@ -79,15 +75,15 @@ static inline void thread_switch_to(Genode::Thread *thread_base)
 __attribute__((optimize("-fno-omit-frame-pointer")))
 __attribute__((noinline))
 __attribute__((used))
-static void thread_stop_myself()
+static void thread_stop_myself(Genode::Thread *)
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	Genode::Thread *myself = Genode::Thread::myself();
-	Fiasco::l4_cap_idx_t tid = myself ?
+	Foc::l4_cap_idx_t tid = myself ?
 	                           myself->native_thread().kcap :
-	                           Fiasco::MAIN_THREAD_CAP;
-	Fiasco::l4_cap_idx_t irq = tid + THREAD_IRQ_CAP;
+	                           Foc::MAIN_THREAD_CAP;
+	Foc::l4_cap_idx_t irq = tid + THREAD_IRQ_CAP;
 	l4_irq_receive(irq, L4_IPC_NEVER);
 }
 

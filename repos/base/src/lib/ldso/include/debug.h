@@ -5,26 +5,34 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__DEBUG_H_
 #define _INCLUDE__DEBUG_H_
 
-#include <base/printf.h>
+#include <util/string.h>
+#include <base/log.h>
 #include <elf.h>
 
-constexpr bool verbose_link_map = false;
+/* local includes */
+#include <types.h>
+
+constexpr bool verbose_link_map  = false;
+constexpr bool verbose_lookup    = false;
+constexpr bool verbose_exception = false;
+constexpr bool verbose_shared    = false;
+constexpr bool verbose_loading   = false;
 
 namespace Linker {
 	struct Debug;
 	struct Link_map;
 
 	struct Object;
-	void dump_link_map(Object *o);
+	void dump_link_map(Object const &);
 }
 
 /*
@@ -84,9 +92,9 @@ struct Linker::Debug
  */
 struct Linker::Link_map
 {
-	Elf::Addr   addr;    /* base address of library */
-	char const *path;    /* path */
-	void const *dynamic; /* DYNAMIC section */
+	Elf::Addr   addr    { };             /* base address of library */
+	char const *path    { nullptr };     /* path */
+	void const *dynamic { nullptr };     /* DYNAMIC section */
 
 	Link_map   *next = nullptr;
 	Link_map   *prev = nullptr;
@@ -95,6 +103,11 @@ struct Linker::Link_map
 
 	static void add(Link_map *map)
 	{
+		/* prevent duplicates */
+		for (Link_map *m = first; m; m = m->next)
+			if (m == map)
+				return;
+
 		map->next = nullptr;
 		if (!first) {
 			first           = map;
@@ -121,14 +134,29 @@ struct Linker::Link_map
 				first = map->next;
 	}
 
+	static void make_first(Link_map *map)
+	{
+		remove(map);
+
+		if (first) {
+			first->prev = map;
+		}
+
+		map->prev       = nullptr;
+		map->next       = first;
+		first           = map;
+		Debug::d()->map = map;
+	}
+
 	static void dump()
 	{
 		if (!verbose_link_map)
 			return;
 
 		for (Link_map *m = first; m; m = m->next)
-			PINF("MAP: addr: " EFMT " dynamic: %p %s m: %p p: %p n: %p",
-			     m->addr, m->dynamic, m->path, m, m->prev, m->next);
+			log("MAP: addr: ", Hex(m->addr),
+			    " dynamic: ", m->dynamic, " ", Cstring(m->path),
+			    " m: ", m, " p: ", m->prev, " n: ", m->next);
 	}
 };
 

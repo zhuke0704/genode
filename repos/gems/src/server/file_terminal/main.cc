@@ -5,20 +5,19 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/heap.h>
-#include <base/printf.h>
-#include <base/rpc_server.h>
-#include <base/sleep.h>
-#include <cap_session/connection.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/log.h>
+#include <base/attached_ram_dataspace.h>
+#include <base/attached_rom_dataspace.h>
 #include <os/session_policy.h>
+#include <libc/component.h>
 #include <root/component.h>
 #include <terminal_session/terminal_session.h>
 
@@ -28,11 +27,6 @@
 #include <sys/select.h>
 #include <stdio.h>
 #include <fcntl.h>
-
-
-static bool const verbose = false;
-
-#define PDBGV(...) if (verbose) PDBG(__VA_ARGS__)
 
 
 class Open_file
@@ -47,12 +41,12 @@ class Open_file
 		/**
 		 * Signal handler to be informed about the established connection
 		 */
-		Genode::Signal_context_capability _connected_sigh;
+		Genode::Signal_context_capability _connected_sigh { };
 
 		/**
 		 * Signal handler to be informed about data available to read
 		 */
-		Genode::Signal_context_capability _read_avail_sigh;
+		Genode::Signal_context_capability _read_avail_sigh { };
 
 		/**
 		 * Buffer for incoming data
@@ -67,14 +61,13 @@ class Open_file
 		 */
 		enum { READ_BUF_SIZE = 4096 };
 		char           _read_buf[READ_BUF_SIZE];
-		Genode::size_t _read_buf_bytes_used;
+		Genode::size_t _read_buf_bytes_used { };
 
 	public:
 
 		Open_file(const char *filename) : _fd(-1)
 		{
-			PDBGV("open '%s'", filename);
-			_fd = ::open(filename, O_CREAT|O_RDWR);
+			Libc::with_libc([&] () { _fd = ::open(filename, O_CREAT|O_RDWR); });
 			if (_fd == -1)
 				::perror("open");
 		}
@@ -111,9 +104,9 @@ class Open_file
 				Genode::Signal_transmitter(_read_avail_sigh).submit();
 		}
 
-		 /**
-		  * Return true if the file was successfully openend
-		  */
+		/**
+		 * Return true if the file was successfully openend
+		 */
 		bool file_opened() const { return _fd != -1; }
 
 		/**
@@ -122,7 +115,7 @@ class Open_file
 		void fill_read_buffer_and_notify_client()
 		{
 			if (_read_buf_bytes_used) {
-				PWRN("read buffer already in use");
+				Genode::warning("read buffer already in use");
 				return;
 			}
 
@@ -155,7 +148,7 @@ class Open_file
 namespace Terminal {
 
 	class Session_component : public Genode::Rpc_object<Session, Session_component>,
-	                          public Open_file
+	                          private Open_file
 	{
 		private:
 
@@ -163,19 +156,20 @@ namespace Terminal {
 
 		public:
 
-			Session_component(Genode::size_t io_buffer_size, const char *filename)
+			Session_component(Genode::Env &env,
+			                  Genode::size_t io_buffer_size, const char *filename)
 			:
 				Open_file(filename),
-				_io_buffer(Genode::env()->ram_session(), io_buffer_size)
+				_io_buffer(env.ram(), env.rm(), io_buffer_size)
 			{ }
 
 			/********************************
 			 ** Terminal session interface **
 			 ********************************/
 
-			Size size() { return Size(0, 0); }
+			Size size() override { return Size(0, 0); }
 
-			bool avail()
+			bool avail() override
 			{
 				return !read_buffer_empty();
 			}
@@ -189,14 +183,25 @@ namespace Terminal {
 				return num_bytes;
 			}
 
-			void _write(Genode::size_t num_bytes)
+			Genode::size_t _write(Genode::size_t num_bytes)
 			{
 				/* sanitize argument */
 				num_bytes = Genode::min(num_bytes, _io_buffer.size());
 
-				/* write data to descriptor */
-				if (::write(fd(), _io_buffer.local_addr<char>(), num_bytes) < 0)
-					PERR("write error, dropping data");
+				ssize_t written_bytes = 0;
+				Libc::with_libc([&] () {
+					/* write data to descriptor */
+					written_bytes = ::write(fd(),
+					                        _io_buffer.local_addr<char>(),
+					                        num_bytes);
+				});
+
+				if (written_bytes < 0) {
+					Genode::error("write error, dropping data");
+					return 0;
+				}
+
+				return written_bytes;
 			}
 
 			Genode::Dataspace_capability _dataspace()
@@ -204,49 +209,53 @@ namespace Terminal {
 				return _io_buffer.cap();
 			}
 
-			void read_avail_sigh(Genode::Signal_context_capability sigh)
+			void read_avail_sigh(Genode::Signal_context_capability sigh) override
 			{
 				Open_file::read_avail_sigh(sigh);
 			}
 
-			void connected_sigh(Genode::Signal_context_capability sigh)
+			void connected_sigh(Genode::Signal_context_capability sigh) override
 			{
 				Open_file::connected_sigh(sigh);
 			}
 
-			Genode::size_t read(void *buf, Genode::size_t) { return 0; }
-			Genode::size_t write(void const *buf, Genode::size_t) { return 0; }
+			void size_changed_sigh(Genode::Signal_context_capability) override { }
+
+			Genode::size_t read(void *, Genode::size_t) override { return 0; }
+			Genode::size_t write(void const *, Genode::size_t) override { return 0; }
 	};
 
 
 	class Root_component : public Genode::Root_component<Session_component>
 	{
+		private:
+
+			Genode::Env      &_env;
+			Genode::Xml_node  _config;
+
 		protected:
 
-			Session_component *_create_session(const char *args)
+			Session_component *_create_session(const char *args) override
 			{
-				Genode::size_t io_buffer_size = 4096;
+				using namespace Genode;
 
-				try {
-					Genode::Session_label  label(args);
-					Genode::Session_policy policy(label);
+				Session_label  const label = label_from_args(args);
+				Session_policy const policy(label, _config);
 
-					char filename[256];
-					policy.attribute("filename").value(filename, sizeof(filename));
-
-					if (policy.has_attribute("io_buffer_size"))
-						policy.attribute("io_buffer_size").value(&io_buffer_size);
-
-					return new (md_alloc())
-					       Session_component(io_buffer_size, filename);
-
-				} catch (Genode::Xml_node::Nonexistent_attribute) {
-					PERR("Missing \"filename\" attribute in policy definition");
-					throw Genode::Root::Unavailable();
-				} catch (Genode::Session_policy::No_policy_defined) {
-					PERR("Invalid session request, no matching policy");
-					throw Genode::Root::Unavailable();
+				if (!policy.has_attribute("filename")) {
+					error("missing \"filename\" attribute in policy definition");
+					throw Service_denied();
 				}
+
+				typedef String<256> File_name;
+				File_name const file_name =
+					policy.attribute_value("filename", File_name());
+
+				size_t const io_buffer_size =
+					policy.attribute_value("io_buffer_size", 4096UL);
+
+				return new (md_alloc())
+				       Session_component(_env, io_buffer_size, file_name.string());
 			}
 
 		public:
@@ -254,38 +263,40 @@ namespace Terminal {
 			/**
 			 * Constructor
 			 */
-			Root_component(Genode::Rpc_entrypoint *ep,
-			               Genode::Allocator      *md_alloc)
+			Root_component(Genode::Env       &env,
+			               Genode::Xml_node   config,
+			               Genode::Allocator *md_alloc)
 			:
-				Genode::Root_component<Session_component>(ep, md_alloc)
+				Genode::Root_component<Session_component>(&env.ep().rpc_ep(), md_alloc),
+				_env(env), _config(config)
 			{ }
 	};
 }
 
 
-int main()
+struct Main
 {
-	using namespace Genode;
+	Genode::Env &_env;
 
-	Genode::printf("--- file terminal started ---\n");
+	Genode::Attached_rom_dataspace  _config_rom { _env, "config" };
+	Genode::Xml_node                _config     { _config_rom.xml() };
 
-	/**
-	 * The stack needs to be that large because certain functions
-	 * in the libc (e.g. mktime(3)) require a huge stack.
-	 */
-	enum { STACK_SIZE = 16*sizeof(addr_t)*1024 };
-	static Cap_connection cap;
-	static Rpc_entrypoint ep(&cap, STACK_SIZE, "terminal_ep");
-
-	static Sliced_heap sliced_heap(env()->ram_session(), env()->rm_session());
+	Genode::Sliced_heap _sliced_heap { _env.ram(), _env.rm() };
 
 	/* create root interface for service */
-	static Terminal::Root_component root(&ep, &sliced_heap);
+	Terminal::Root_component _root { _env, _config, &_sliced_heap };
 
-	/* announce service at our parent */
-	env()->parent()->announce(ep.manage(&root));
+	Main(Genode::Env &env) : _env(env)
+	{
+		using namespace Genode;
 
-	Genode::sleep_forever();
+		/* announce service at our parent */
+		_env.parent().announce(env.ep().manage(_root));
+	}
+};
 
-	return 0;
+
+void Libc::Component::construct(Libc::Env &env)
+{
+	Libc::with_libc([&] () { static Main main(env); });
 }

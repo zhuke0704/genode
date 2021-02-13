@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2012-2016 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _SCHEDULER_H_
@@ -18,7 +18,6 @@
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/lock.h>
 #include <base/sleep.h>
 
 /* local includes */
@@ -140,7 +139,6 @@ class Bsd::Scheduler
 	private:
 
 		Bsd::List<Bsd::Task> _present_list;
-		Genode::Lock       _present_list_mutex;
 
 		Task *_current = nullptr; /* currently scheduled task */
 

@@ -17,29 +17,26 @@
  */
 
 /*
- * Copyright (C) 2009-2015 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <mixer/channel.h>
-#include <os/config.h>
 #include <os/reporter.h>
-#include <os/server.h>
 #include <root/component.h>
 #include <util/retry.h>
 #include <util/string.h>
 #include <util/xml_node.h>
 #include <audio_out_session/connection.h>
 #include <audio_out_session/rpc_object.h>
-#include <cap_session/connection.h>
 #include <timer_session/connection.h>
-
-
-static bool verbose = false;
-#define PLOGV(...) do { if (verbose) PLOG(__VA_ARGS__); } while (0)
+#include <base/attached_rom_dataspace.h>
+#include <base/heap.h>
+#include <base/component.h>
+#include <base/log.h>
 
 
 typedef Mixer::Channel Channel;
@@ -110,15 +107,20 @@ namespace Audio_out
  * it is also used by the mixer we defined it here.
  */
 struct Audio_out::Session_elem : Audio_out::Session_rpc_object,
-                                 Genode::List<Audio_out::Session_elem>::Element
+                                 private Genode::List<Audio_out::Session_elem>::Element
 {
+	friend class Genode::List<Audio_out::Session_elem>;
+
+	using Genode::List<Session_elem>::Element::next;
+
 	Label           label;
-	Channel::Number number;
+	Channel::Number number { Channel::INVALID };
 	float           volume { 0.f };
 	bool            muted  { true };
 
-	Session_elem(char const *label, Genode::Signal_context_capability data_cap)
-	: Session_rpc_object(data_cap), label(label) { }
+	Session_elem(Genode::Env & env,
+	             char const *label, Genode::Signal_context_capability data_cap)
+	: Session_rpc_object(env, data_cap), label(label) { }
 
 	Packet *get_packet(unsigned offset) {
 		return stream()->get(stream()->pos() + offset); }
@@ -133,16 +135,34 @@ class Audio_out::Mixer
 	private:
 
 		/*
-		 * Signal handler
+		 * Noncopyable
 		 */
-		Genode::Signal_rpc_member<Audio_out::Mixer> _dispatcher;
-		Genode::Signal_rpc_member<Audio_out::Mixer> _dispatcher_config;
+		Mixer(Mixer const &);
+		Mixer &operator = (Mixer const &);
+
+		Genode::Env &env;
+
+		Genode::Attached_rom_dataspace _config_rom { env, "config" };
+
+		struct Verbose
+		{
+			bool const sessions;
+			bool const changes;
+
+			Verbose(Genode::Xml_node config)
+			:
+				sessions(config.attribute_value("verbose_sessions", false)),
+				changes(config.attribute_value("verbose_changes", false))
+			{ }
+		};
+
+		Genode::Reconstructible<Verbose> _verbose { _config_rom.xml() };
 
 		/*
 		 * Mixer output Audio_out connection
 		 */
-		Connection  _left;
-		Connection  _right;
+		Connection  _left  { env, "left",  false, true };
+		Connection  _right { env, "right", false, false };
 		Connection *_out[MAX_CHANNELS];
 		float       _out_volume[MAX_CHANNELS];
 
@@ -187,7 +207,7 @@ class Audio_out::Mixer
 		 *
 		 * Each session in a channel is reported as an input node.
 		 */
-		Genode::Reporter reporter { "channel_list" };
+		Genode::Reporter _reporter { env, "channel_list" };
 
 		/**
 		 * Report available channels
@@ -197,10 +217,8 @@ class Audio_out::Mixer
 		 */
 		void _report_channels()
 		{
-			reporter.enabled(true);
-
 			try {
-				Genode::Reporter::Xml_generator xml(reporter, [&] () {
+				Genode::Reporter::Xml_generator xml(_reporter, [&] () {
 					/* output channels */
 					for_each_index(MAX_CHANNELS, [&] (int const i) {
 						Channel::Number const num = (Channel::Number)i;
@@ -213,7 +231,7 @@ class Audio_out::Mixer
 							xml.attribute("name",   name);
 							xml.attribute("number", (int)num);
 							xml.attribute("volume", (int)vol);
-							xml.attribute("muted",  (long)0);
+							xml.attribute("muted",  false);
 						});
 					});
 
@@ -235,7 +253,7 @@ class Audio_out::Mixer
 						});
 					});
 				});
-			} catch (...) { PWRN("could report current channels"); }
+			} catch (...) { Genode::warning("could report current channels"); }
 		}
 
 		/*
@@ -245,7 +263,7 @@ class Audio_out::Mixer
 		bool _check_active()
 		{
 			bool active = false;
-			_for_each_channel([&] (Channel::Number ch, Session_channel *sc) {
+			_for_each_channel([&] (Channel::Number, Session_channel *sc) {
 				sc->for_each_session([&] (Session_elem const &session) {
 					active |= session.active();
 				});
@@ -341,7 +359,8 @@ class Audio_out::Mixer
 				 */
 				[&] {
 					sc->for_each_session([&] (Session_elem &session) {
-						if (session.stopped() || session.muted) return;
+						if (session.stopped() || session.muted || session.volume < 0.01f)
+							return;
 
 						Packet *in = session.get_packet(offset);
 
@@ -402,7 +421,7 @@ class Audio_out::Mixer
 		 * Handle progress signals from Audio_out session and data available signals
 		 * from each mixer client
 		 */
-		void _handle(unsigned)
+		void _handle()
 		{
 			_advance_position();
 			_mix();
@@ -413,8 +432,10 @@ class Audio_out::Mixer
 		 */
 		void _set_default_config(Genode::Xml_node const &node)
 		{
+			using namespace Genode;
+
 			try {
-				Genode::Xml_node default_node = node.sub_node("default");
+				Xml_node default_node = node.sub_node("default");
 				long v = 0;
 
 				v = default_node.attribute_value<long>("out_volume", 0);
@@ -423,37 +444,36 @@ class Audio_out::Mixer
 				v = default_node.attribute_value<long>("volume", 0);
 				_default_volume = (float)v / MAX_VOLUME;
 
-				v = default_node.attribute_value<long>("muted", 1);
+				v = default_node.attribute_value<bool>("muted", false);
 				_default_muted = v ;
 
-				PLOGV("default settings: out_volume: %d volume: %d muted: %d",
-				      (int)(MAX_VOLUME*_default_out_volume),
-				      (int)(MAX_VOLUME*_default_volume),
-				      _default_muted);
+				if (_verbose->changes) {
+					log("Set default "
+					     "out_volume: ", (int)(MAX_VOLUME*_default_out_volume), " "
+					     "volume: ",     (int)(MAX_VOLUME*_default_volume), " "
+					     "muted: ",      _default_muted);
+				}
 
-			} catch (...) { PWRN("could not read mixer default values"); }
+			} catch (...) { Genode::warning("could not read mixer default values"); }
 		}
 
 		/**
 		 * Handle ROM update signals
 		 */
-		void _handle_config_update(unsigned sig_num)
+		void _handle_config_update()
 		{
 			using namespace Genode;
 
-			config()->reload();
+			_config_rom.update();
 
-			Xml_node config_node = config()->xml_node();
-			verbose = config_node.attribute_value("verbose", verbose);
+			Xml_node config_node = _config_rom.xml();
+			_verbose.construct(config_node);
 
 			_set_default_config(config_node);
 
-			/* set initial out volume */
-			if (sig_num == 0) {
-				for_each_index(MAX_CHANNELS, [&] (int const i) {
-					_out_volume[i] = _default_out_volume;
-				});
-			}
+			/* reset out volume in case there is no 'channel_list' node */
+			_out_volume[LEFT]  = _default_out_volume;
+			_out_volume[RIGHT] = _default_out_volume;
 
 			try {
 				Xml_node channel_list_node = config_node.sub_node("channel_list");
@@ -463,6 +483,7 @@ class Audio_out::Mixer
 
 					if (ch.type == Channel::Type::INPUT) {
 						_for_each_channel([&] (Channel::Number, Session_channel *sc) {
+
 							sc->for_each_session([&] (Session_elem &session) {
 								if (session.number != ch.number) return;
 								if (session.label != ch.label) return;
@@ -470,9 +491,13 @@ class Audio_out::Mixer
 								session.volume = (float)ch.volume / MAX_VOLUME;
 								session.muted  = ch.muted;
 
-								PLOGV("label: '%s' nr: %d vol: %d muted: %d",
-								      ch.label.string(), (int)ch.number,
-								      (int)(MAX_VOLUME*session.volume), ch.muted);
+								if (_verbose->changes) {
+									log("Set label: '", ch.label, "' "
+									    "channel: '",   string_from_number(ch.number), "' "
+									    "nr: ",         (int)ch.number, " "
+									    "volume: ",     (int)(MAX_VOLUME*session.volume), " "
+									    "muted: ",      ch.muted);
+								}
 							});
 						});
 					}
@@ -482,13 +507,19 @@ class Audio_out::Mixer
 
 							_out_volume[i] = (float)ch.volume / MAX_VOLUME;
 
-							PLOGV("label: '%s' nr: %d vol: %d muted: %d",
-							      "master", (int)ch.number,
-							      (int)(MAX_VOLUME*_out_volume[i]), ch.muted);
+							if (_verbose->changes) {
+								log("Set label: 'master' "
+								    "channel: '", string_from_number(ch.number), "' "
+								    "nr: ",       (int)ch.number, " "
+								    "volume: ",   (int)(MAX_VOLUME*_out_volume[i]), " "
+								    "muted: ",    ch.muted);
+							}
 						});
 					}
 				});
-			} catch (...) { PWRN("mixer channel_list was invalid"); }
+			} catch (Xml_node::Nonexistent_sub_node) {
+				Genode::warning("channel_list node missing");
+			}
 
 			/*
 			 * Report back any changes so a front-end can update its state
@@ -502,28 +533,32 @@ class Audio_out::Mixer
 			_mix(true);
 		}
 
+		/*
+		 * Signal handlers
+		 */
+		Genode::Signal_handler<Audio_out::Mixer> _handler
+			{ env.ep(), *this, &Audio_out::Mixer::_handle };
+
+		Genode::Signal_handler<Audio_out::Mixer> _handler_config
+			{ env.ep(), *this, &Audio_out::Mixer::_handle_config_update  };
+
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Mixer(Server::Entrypoint &ep)
-		:
-			_dispatcher(ep, *this, &Audio_out::Mixer::_handle),
-			_dispatcher_config(ep, *this, &Audio_out::Mixer::_handle_config_update),
-			_left("left", false, true),
-			_right("right", false, true)
+		Mixer(Genode::Env &env) : env(env)
 		{
+			_reporter.enabled(true);
+
 			_out[LEFT]  = &_left;
 			_out[RIGHT] = &_right;
 
 			_out_volume[LEFT]  = _default_out_volume;
 			_out_volume[RIGHT] = _default_out_volume;
 
-			Genode::config()->sigh(_dispatcher_config);
-			_handle_config_update(0);
-
-			_report_channels();
+			_config_rom.sigh(_handler_config);
+			_handle_config_update();
 		}
 
 		/**
@@ -531,7 +566,7 @@ class Audio_out::Mixer
 		 */
 		void start()
 		{
-			_out[LEFT]->progress_sigh(_dispatcher);
+			_out[LEFT]->progress_sigh(_handler);
 			for_each_index(MAX_CHANNELS, [&] (int const i) { _out[i]->start(); });
 		}
 
@@ -557,13 +592,16 @@ class Audio_out::Mixer
 			session.volume = _default_volume;
 			session.muted  = _default_muted;
 
-			PLOG("add label: \"%s\" channel: \"%s\" nr: %u volume: %d muted: %d",
-			     session.label.string(), string_from_number(ch), ch,
-			     (int)(MAX_VOLUME*session.volume), session.muted);
-
+			if (_verbose->sessions) {
+				log("Add label: '", session.label, "' "
+				    "channel: '",   string_from_number(ch), "' "
+				    "nr: ",          (int)ch, " "
+				    "volume: ",      (int)(MAX_VOLUME*session.volume), " "
+				    "muted: ",     session.muted);
+			}
 
 			_channels[ch].insert(&session);
-			_report_channels();
+			_handle_config_update();
 		}
 
 		/**
@@ -571,17 +609,20 @@ class Audio_out::Mixer
 		 */
 		void remove_session(Channel::Number ch, Session_elem &session)
 		{
-			PLOG("remove label: \"%s\" channel: \"%s\" nr: %u",
-			     session.label.string(), string_from_number(ch), ch);
+			if (_verbose->sessions) {
+				log("Remove label: '", session.label, "' "
+				    "channel: '", string_from_number(ch), "' "
+				    "nr: ", (int)ch);
+			}
 
 			_channels[ch].remove(&session);
-			_report_channels();
+			_handle_config_update();
 		}
 
 		/**
 		 * Get signal context that handles data avaiable as well as progress signal
 		 */
-		Genode::Signal_context_capability sig_cap() { return _dispatcher; }
+		Genode::Signal_context_capability sig_cap() { return _handler; }
 
 		/**
 		 * Report current channels
@@ -602,10 +643,11 @@ class Audio_out::Session_component : public Audio_out::Session_elem
 
 	public:
 
-		Session_component(char const      *label,
+		Session_component(Genode::Env     &env,
+		                  char const      *label,
 		                  Channel::Number  number,
 		                  Mixer           &mixer)
-		: Session_elem(label, mixer.sig_cap()), _mixer(mixer)
+		: Session_elem(env, label, mixer.sig_cap()), _mixer(mixer)
 		{
 			Session_elem::number = number;
 			_mixer.add_session(Session_elem::number, *this);
@@ -617,14 +659,14 @@ class Audio_out::Session_component : public Audio_out::Session_elem
 			_mixer.remove_session(Session_elem::number, *this);
 		}
 
-		void start()
+		void start() override
 		{
 			Session_rpc_object::start();
 			stream()->pos(_mixer.pos(Session_elem::number));
 			_mixer.report_channels();
 		}
 
-		void stop()
+		void stop() override
 		{
 			Session_rpc_object::stop();
 			_mixer.report_channels();
@@ -641,17 +683,20 @@ class Audio_out::Root : public Audio_out::Root_component
 {
 	private:
 
-		Mixer &_mixer;
-		int    _sessions = { 0 };
+		Genode::Env &_env;
+		Mixer       &_mixer;
+		int          _sessions = { 0 };
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *args) override
 		{
 			using namespace Genode;
 
-			char label[MAX_LABEL_LEN];
-			Arg_string::find_arg(args, "label").string(label,
-			                                           sizeof(label),
-			                                           "<noname>");
+			/*
+			 * We only want to have the last part of the lable,
+			 * e.g. 'client -> ' => 'client'.
+			 */
+			Session_label const session_label = label_from_args(args);
+			Session_label const label         = session_label.prefix();
 
 			char channel_name[MAX_CHANNEL_NAME_LEN];
 			Arg_string::find_arg(args, "channel").string(channel_name,
@@ -665,62 +710,58 @@ class Audio_out::Root : public Audio_out::Root_component
 
 			if ((ram_quota < session_size) ||
 			    (sizeof(Stream) > ram_quota - session_size)) {
-				PERR("insufficient 'ram_quota', got %zu, need %zu",
-				     ram_quota, sizeof(Stream) + session_size);
-				throw Root::Quota_exceeded();
+				Genode::error("insufficient 'ram_quota', got ", ram_quota, ", "
+				              "need ", sizeof(Stream) + session_size);
+				throw Insufficient_ram_quota();
 			}
 
 			Channel::Number ch = number_from_string(channel_name);
 			if (ch == Channel::Number::INVALID)
-				throw Root::Invalid_args();
+				throw Genode::Service_denied();
 
 			Session_component *session = new (md_alloc())
-				Session_component(label, (Channel::Number)ch, _mixer);
+				Session_component(_env, label.string(), (Channel::Number)ch, _mixer);
 
 			if (++_sessions == 1) _mixer.start();
 			return session;
 
 		}
 
-		void _destroy_session(Session_component *session)
+		void _destroy_session(Session_component *session) override
 		{
 			if (--_sessions == 0) _mixer.stop();
-			destroy(md_alloc(), session);
+			Genode::destroy(md_alloc(), session);
 		}
 
 	public:
 
-		Root(Server::Entrypoint &ep,
+		Root(Genode::Env        &env,
 		     Mixer              &mixer,
 		     Genode::Allocator  &md_alloc)
-		: Root_component(&ep.rpc_ep(), &md_alloc), _mixer(mixer) { }
+		: Root_component(env.ep(), md_alloc), _env(env), _mixer(mixer) { }
 };
 
 
-/************
- ** Server **
- ************/
+/***************
+ ** Component **
+ ***************/
 
-namespace Server { struct Main; }
+namespace Mixer { struct Main; }
 
-
-struct Server::Main
+struct Mixer::Main
 {
-	Server::Entrypoint &ep;
+	Genode::Env &env;
 
-	Audio_out::Mixer mixer = { ep };
-	Audio_out::Root  root  = { ep, mixer, *Genode::env()->heap() };
+	Genode::Sliced_heap heap { env.ram(), env.rm() };
 
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Audio_out::Mixer mixer = { env };
+	Audio_out::Root  root  = { env, mixer, heap };
+
+	Main(Genode::Env &env) : env(env)
 	{
-		Genode::env()->parent()->announce(ep.manage(root));
-		PINF("--- Mixer started ---");
+		env.parent().announce(env.ep().manage(root));
 	}
 };
 
 
-namespace Server {
-	char const *name()             { return "mixer_ep";            }
-	size_t      stack_size()       { return 4*1024*sizeof(addr_t); }
-	void construct(Entrypoint &ep) { static Main server(ep);       }
-}
+void Component::construct(Genode::Env &env) { static Mixer::Main inst(env); }

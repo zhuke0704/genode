@@ -5,30 +5,24 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__UTIL_H_
 #define _CORE__INCLUDE__UTIL_H_
 
 /* Genode includes */
-#include <base/native_types.h>
 #include <rm_session/rm_session.h>
 #include <base/stdint.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/touch.h>
 
 /* base-internal includes */
 #include <base/internal/page_size.h>
-
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/types.h>
-#include <l4/kdebug.h>
-} }
+#include <base/internal/okl4.h>
 
 /*
  * The binding for 'L4_KDB_Enter' on ARM takes a 'char *' as argument, which
@@ -45,13 +39,13 @@ namespace Okl4 { extern "C" {
 
 namespace Genode {
 
-	inline void log_event(const char *s) { }
-	inline void log_event(const char *s, unsigned v1, unsigned v2, unsigned v3) { }
+	inline void log_event(const char *) { }
+	inline void log_event(const char *, unsigned, unsigned, unsigned) { }
 
 	inline void panic(const char *s)
 	{
 		using namespace Okl4;
-		PDBG("Panic: %s", s);
+		error("Panic: ", s);
 		ENTER_KDB("> panic <");
 	}
 
@@ -59,12 +53,12 @@ namespace Genode {
 	{
 		using namespace Okl4;
 		if (!val) {
-			PERR("Assertion failed: %s", s);
+			error("assertion failed: ", s);
 			ENTER_KDB("Assertion failed");
 		}
 	}
 
-	constexpr addr_t get_page_mask()      { return ~(get_page_size() - 1); }
+	constexpr addr_t get_page_mask() { return ~(get_page_size() - 1); }
 
 	inline size_t get_super_page_size_log2()
 	{
@@ -114,17 +108,7 @@ namespace Genode {
 		return trunc_page(page + get_page_size() - 1);
 	}
 
-	inline void print_page_fault(const char *msg, addr_t pf_addr, addr_t pf_ip,
-	                             Region_map::State::Fault_type pf_type,
-	                             unsigned long faulter_badge)
-	{
-		printf("%s (%s pf_addr=%p pf_ip=%p from %02lx)\n", msg,
-		       pf_type == Region_map::State::WRITE_FAULT ? "WRITE" : "READ",
-		       (void *)pf_addr, (void *)pf_ip,
-		       faulter_badge);
-	}
-
-	inline addr_t map_src_addr(addr_t core_local, addr_t phys) { return phys; }
+	inline addr_t map_src_addr(addr_t, addr_t phys) { return phys; }
 
 	inline size_t constrain_map_size_log2(size_t size_log2) { return size_log2; }
 }

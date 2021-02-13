@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NIC_SESSION__NIC_SESSION_H_
@@ -20,10 +20,12 @@
 #include <session/session.h>
 #include <packet_stream_tx/packet_stream_tx.h>
 #include <packet_stream_rx/packet_stream_rx.h>
+#include <net/mac_address.h>
 
 namespace Nic {
 
-	struct Mac_address;
+	using Mac_address = Net::Mac_address;
+
 	struct Session;
 
 	using Genode::Packet_stream_sink;
@@ -31,9 +33,6 @@ namespace Nic {
 
 	typedef Genode::Packet_descriptor Packet_descriptor;
 }
-
-
-struct Nic::Mac_address { char addr[6]; };
 
 
 /*
@@ -67,7 +66,18 @@ struct Nic::Session : Genode::Session
 	typedef Packet_stream_tx::Channel<Policy> Tx;
 	typedef Packet_stream_rx::Channel<Policy> Rx;
 
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Nic"; }
+
+	/*
+	 * A NIC session consumes a dataspace capability for the server-side
+	 * session object, a session capability, two packet-stream dataspaces for
+	 * rx and tx, and four signal context capabilities for the data-flow
+	 * signals.
+	 */
+	enum { CAP_QUOTA = 8 };
 
 	virtual ~Session() { }
 

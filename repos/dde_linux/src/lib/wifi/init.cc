@@ -5,15 +5,15 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <os/config.h>
-#include <os/server.h>
+#include <base/env.h>
+#include <base/blockade.h>
 
 /* local includes */
 #include <firmware_list.h>
@@ -21,31 +21,91 @@
 
 #include <lx_emul.h>
 
+#include <lx_kit/malloc.h>
+#include <lx_kit/env.h>
 #include <lx_kit/irq.h>
 #include <lx_kit/work.h>
 #include <lx_kit/timer.h>
+#include <lx_kit/pci.h>
 
+
+/*********************
+ ** RFKILL handling **
+ *********************/
+
+#include <linux/rfkill.h>
+
+extern "C" void rfkill_switch_all(enum rfkill_type type, bool blocked);
+extern "C" bool rfkill_get_any(enum rfkill_type type);
+
+#include <wifi/rfkill.h>
+
+bool wifi_get_rfkill(void)
+{
+	return rfkill_get_any(RFKILL_TYPE_WLAN);
+}
+
+
+static Lx::Task *_lx_task       = nullptr;
+static bool      _lx_init_done  = false;
+static bool      _switch_rfkill = false;
+static bool      _new_blocked   = false;
+static Genode::Signal_context_capability _rfkill_sig_ctx;
+
+
+void wifi_set_rfkill(bool blocked)
+{
+	bool const cur = wifi_get_rfkill();
+
+	_switch_rfkill = blocked != cur;
+	if (_lx_init_done && _switch_rfkill) {
+		_new_blocked = blocked;
+
+		_lx_task->unblock();
+		Lx::scheduler().schedule();
+	}
+}
+
+
+/**************************
+ ** socketcall poll hack **
+ **************************/
+
+void wifi_kick_socketcall()
+{
+	/*
+	 * Kicking is going to unblock the socketcall task that
+	 * probably is waiting in poll_all().
+	 */
+	Lx::socket_kick();
+}
+
+
+/*****************************
+ ** Initialization handling **
+ *****************************/
 
 extern "C" void core_netlink_proto_init(void);
 extern "C" void core_sock_init(void);
 extern "C" void module_packet_init(void);
 extern "C" void subsys_genl_init(void);
 extern "C" void subsys_rfkill_init(void);
-extern "C" void subsys_cfg80211_init(void);
+extern "C" void fs_cfg80211_init(void);
 extern "C" void subsys_ieee80211_init(void);
-extern "C" void module_iwl_drv_init(void);
+extern "C" int module_iwl_drv_init(void);
 extern "C" void subsys_cryptomgr_init(void);
 extern "C" void module_crypto_ccm_module_init(void);
 extern "C" void module_crypto_ctr_module_init(void);
 extern "C" void module_aes_init(void);
 extern "C" void module_arc4_init(void);
-extern "C" void module_chainiv_module_init(void);
+// extern "C" void module_chainiv_module_init(void);
 extern "C" void module_krng_mod_init(void);
+extern "C" void subsys_leds_init(void);
+
+extern "C" unsigned int *module_param_11n_disable;
 
 struct workqueue_struct *system_power_efficient_wq;
 struct workqueue_struct *system_wq;
-
-static bool mac80211_only = false;
 
 struct pernet_operations loopback_net_ops;
 
@@ -53,62 +113,21 @@ struct net init_net;
 LIST_HEAD(net_namespace_list);
 
 
-Firmware_list fw_list[] = {
-	{ "iwlwifi-1000-3.ucode", 335056, nullptr },
-	{ "iwlwifi-1000-5.ucode", 337520, nullptr },
-	{ "iwlwifi-105-6.ucode",  689680, nullptr },
-	{ "iwlwifi-135-6.ucode",  701228, nullptr },
-	{ "iwlwifi-2000-6.ucode", 695876, nullptr },
-	{ "iwlwifi-2030-6.ucode", 707392, nullptr },
-	{ "iwlwifi-3160-7.ucode", 670484, nullptr },
-	{ "iwlwifi-3160-8.ucode", 667284, nullptr },
-	{ "iwlwifi-3160-9.ucode", 666792, nullptr },
-	{ "iwlwifi-3945-2.ucode", 150100, nullptr },
-	{ "iwlwifi-4965-2.ucode", 187972, nullptr },
-	{ "iwlwifi-5000-1.ucode", 345008, nullptr },
-	{ "iwlwifi-5000-2.ucode", 353240, nullptr },
-	{ "iwlwifi-5000-5.ucode", 340696, nullptr },
-	{ "iwlwifi-5150-2.ucode", 337400, nullptr },
-	{ "iwlwifi-6000-4.ucode", 454608, nullptr },
-	/**
-	 * Actually, there is no -6 firmware. The last one is revision 4,
-	 * but certain devices support up to revision 6 and want to use
-	 * this one. To make things simple we refer to the available
-	 * firmware under the requested name.
-	 */
-	{ "iwlwifi-6000-6.ucode",     454608, "iwlwifi-6000-4.ucode" },
-	{ "iwlwifi-6000g2a-5.ucode",  444128, nullptr },
-	{ "iwlwifi-6000g2a-6.ucode",  677296, nullptr },
-	{ "iwlwifi-6000g2b-5.ucode",  460236, nullptr },
-	{ "iwlwifi-6000g2b-6.ucode",  679436, nullptr },
-	{ "iwlwifi-6050-4.ucode",     463692, nullptr },
-	{ "iwlwifi-6050-5.ucode",     469780, nullptr },
-	{ "iwlwifi-7260-16.ucode",   1049284, nullptr },
-	{ "iwlwifi-7260-17.ucode",   1049284, "iwlwifi-7260-16.ucode" },
-	{ "iwlwifi-7265-16.ucode",   1180356, nullptr },
-	{ "iwlwifi-7265D-16.ucode",  1384500, nullptr },
-	{ "iwlwifi-8000C-16.ucode",  2351636, nullptr },
-	{ "iwlwifi-8000C-19.ucode",  2351636, "iwlwifi-8000C-16.ucode" }
-};
+static Genode::Blockade *_wpa_blockade;
 
 
-size_t fw_list_len = sizeof(fw_list) / sizeof(fw_list[0]);
-
-
-static Genode::Lock *_wpa_lock;
-
-
-static void run_linux(void *)
+static void run_linux(void *args)
 {
-	system_power_efficient_wq = alloc_workqueue("system_power_efficient_wq", 0, 0); 
-	system_wq                 = alloc_workqueue("system_wq", 0, 0); 
+	system_power_efficient_wq = alloc_workqueue("system_power_efficient_wq", 0, 0);
+	system_wq                 = alloc_workqueue("system_wq", 0, 0);
 
 	core_sock_init();
 	core_netlink_proto_init();
 	module_packet_init();
 	subsys_genl_init();
 	subsys_rfkill_init();
-	subsys_cfg80211_init();
+	subsys_leds_init();
+	fs_cfg80211_init();
 	subsys_ieee80211_init();
 
 	subsys_cryptomgr_init();
@@ -116,52 +135,100 @@ static void run_linux(void *)
 	module_crypto_ctr_module_init();
 	module_aes_init();
 	module_arc4_init();
-	module_chainiv_module_init();
-	// module_krng_mod_init();
 
-	if (!mac80211_only) {
-		module_iwl_drv_init();
+	try {
+		int const err = module_iwl_drv_init();
+		if (err) { throw -1; }
+	} catch (...) {
+		Genode::Env &env = *(Genode::Env*)args;
+
+		env.parent().exit(1);
+		Genode::sleep_forever();
 	}
 
-	_wpa_lock->unlock();
+	_wpa_blockade->wakeup();
+
+	_lx_init_done = true;
 
 	while (1) {
 		Lx::scheduler().current()->block_and_schedule();
+
+		if (!_switch_rfkill) { continue; }
+
+		Genode::log("RFKILL: ", _new_blocked ? "BLOCKED" : "UNBLOCKED");
+		rfkill_switch_all(RFKILL_TYPE_WLAN, _new_blocked);
+
+		if (!_new_blocked) {
+			try {
+				bool const ok = Lx::open_device();
+				if (!ok) { throw -1; }
+
+			} catch (...) {
+				Genode::Env &env = *(Genode::Env*)args;
+
+				env.parent().exit(1);
+				Genode::sleep_forever();
+			}
+		}
+
+		/* notify front end */
+		Genode::Signal_transmitter(_rfkill_sig_ctx).submit();
 	}
 }
+
 
 unsigned long jiffies;
 
 
-void wifi_init(Server::Entrypoint &ep, Genode::Lock &lock)
+void wifi_init(Genode::Env                       &env,
+               Genode::Blockade                  &blockade,
+               bool                               disable_11n,
+               Genode::Signal_context_capability  rfkill,
+               Genode::Nic_driver_mode            mode)
 {
-	/**
-	 * For testing testing only the wireless stack with wpa_supplicant,
-	 * amongst other on linux, we do not want to load the iwlwifi drivers.
-	 */
-	mac80211_only = Genode::config()->xml_node().attribute_value("mac80211_only", mac80211_only);
-	if (mac80211_only)
-		PINF("Initalizing only mac80211 stack without any driver!");
+	Lx_kit::construct_env(env);
 
-	_wpa_lock = &lock;
+	LX_MUTEX_INIT(crypto_default_rng_lock);
+	LX_MUTEX_INIT(fanout_mutex);
+	LX_MUTEX_INIT(genl_mutex);
+	LX_MUTEX_INIT(proto_list_mutex);
+	LX_MUTEX_INIT(rate_ctrl_mutex);
+	LX_MUTEX_INIT(reg_regdb_apply_mutex);
+	LX_MUTEX_INIT(rfkill_global_mutex);
+	LX_MUTEX_INIT(rtnl_mutex);
+
+	_wpa_blockade = &blockade;
 
 	INIT_LIST_HEAD(&init_net.dev_base_head);
 	/* add init_net namespace to namespace list */
 	list_add_tail_rcu(&init_net.list, &net_namespace_list);
 
-	Lx::scheduler();
+	Lx::scheduler(&env);
 
-	Lx::timer(&ep, &jiffies);
+	Lx::timer(&env, &env.ep(), &Lx_kit::env().heap(), &jiffies);
 
-	Lx::Irq::irq(&ep, Genode::env()->heap());
-	Lx::Work::work_queue(Genode::env()->heap());
+	Lx::Irq::irq(&env.ep(), &Lx_kit::env().heap());
+	Lx::Work::work_queue(&Lx_kit::env().heap());
 
-	Lx::socket_init(ep);
-	Lx::nic_init(ep);
+	Lx::socket_init(env.ep(), Lx_kit::env().heap());
+	Lx::nic_init(env, Lx_kit::env().heap(), mode);
+
+	Lx::pci_init(env, env.ram(), Lx_kit::env().heap());
+	Lx::malloc_init(env, Lx_kit::env().heap());
+
+	/* set IWL_DISABLE_HT_ALL if disable 11n is requested */
+	if (disable_11n) {
+		Genode::log("Disable 11n mode");
+		*module_param_11n_disable = 1;
+	}
+
+	_rfkill_sig_ctx = rfkill;
 
 	/* Linux task (handles the initialization only currently) */
-	static Lx::Task linux(run_linux, nullptr, "linux",
+	static Lx::Task linux(run_linux, &env, "linux",
 	                      Lx::Task::PRIORITY_0, Lx::scheduler());
+	
+	_lx_task = &linux;
 
 	/* give all task a first kick before returning */
 	Lx::scheduler().schedule();

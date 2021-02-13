@@ -5,6 +5,13 @@
  * \date   2013-11-11
  */
 
+/*
+ * Copyright (C) 2013-2017 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #ifndef _FILE_H_
 #define _FILE_H_
 
@@ -13,12 +20,13 @@
 #include <lx_util.h>
 
 
-namespace File_system {
+namespace Lx_fs {
+	using namespace File_system;
 	class File;
 }
 
 
-class File_system::File : public Node
+class Lx_fs::File : public Node
 {
 	private:
 
@@ -95,14 +103,30 @@ class File_system::File : public Node
 			Node::name(basename(path));
 		}
 
-		size_t read(char *dst, size_t len, seek_off_t seek_offset)
+		~File()
+		{
+			close(_fd);
+		}
+
+		void update_modification_time(Timestamp const time) override
+		{
+			struct timespec ts[2] = {
+				{ .tv_sec = (time_t)0,          .tv_nsec = 0 },
+				{ .tv_sec = (time_t)time.value, .tv_nsec = 0 }
+			};
+
+			/* silently ignore errors */
+			futimens(_fd, (const timespec*)&ts);
+		}
+
+		size_t read(char *dst, size_t len, seek_off_t seek_offset) override
 		{
 			int ret = pread(_fd, dst, len, seek_offset);
 
 			return ret == -1 ? 0 : ret;
 		}
 
-		size_t write(char const *src, size_t len, seek_off_t seek_offset)
+		size_t write(char const *src, size_t len, seek_off_t seek_offset) override
 		{
 			/* should we append? */
 			if (seek_offset == ~0ULL) {
@@ -117,19 +141,35 @@ class File_system::File : public Node
 			return ret == -1 ? 0 : ret;
 		}
 
-		file_size_t length() const
+		bool sync() override
 		{
-			struct stat s;
-
-			if (fstat(_fd, &s) < 0)
-				return 0;
-
-			return s.st_size;
+			int ret = fsync(_fd);
+			return ret ? false : true;
 		}
 
-		void truncate(file_size_t size)
+		Status status() override
 		{
-			if (ftruncate(_fd, size)) /* nothing */;
+			struct stat st { };
+
+			if (fstat(_fd, &st) < 0) {
+				st.st_size  = 0;
+				st.st_mtime = 0;
+			}
+
+			return {
+				.size  = (file_size_t)st.st_size,
+				.type  = File_system::Node_type::CONTINUOUS_FILE,
+				.rwx   = { .readable   = (st.st_mode & S_IRUSR),
+				           .writeable  = (st.st_mode & S_IWUSR),
+				           .executable = (st.st_mode & S_IXUSR) },
+				.inode = inode(),
+				.modification_time = { st.st_mtime }
+			};
+		}
+
+		void truncate(file_size_t size) override
+		{
+			if (ftruncate(_fd, size)) /* nothing */ { }
 
 			mark_as_updated();
 		}

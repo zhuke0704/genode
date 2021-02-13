@@ -1,420 +1,110 @@
 /*
- * \brief  Init process
+ * \brief  Init component
  * \author Norman Feske
  * \date   2010-04-27
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <init/child.h>
-#include <base/sleep.h>
-#include <os/config.h>
-
-
-namespace Init { bool config_verbose = false; }
-
-
-/***************
- ** Utilities **
- ***************/
-
-/**
- * Read priority-levels declaration from config
- */
-inline long read_prio_levels()
-{
-	using namespace Genode;
-
-	long prio_levels = 0;
-	try {
-		config()->xml_node().attribute("prio_levels").value(&prio_levels); }
-	catch (...) { }
-
-	if (prio_levels && (prio_levels != (1 << log2(prio_levels)))) {
-		printf("Warning: Priolevels is not power of two, priorities are disabled\n");
-		return 0;
-	}
-	return prio_levels;
-}
-
-
-/**
- * Read affinity-space parameters from config
- *
- * If no affinity space is declared, construct a space with a single element,
- * width and height being 1. If only one of both dimensions is specified, the
- * other dimension is set to 1.
- */
-inline Genode::Affinity::Space read_affinity_space()
-{
-	using namespace Genode;
-	try {
-		Xml_node node = config()->xml_node().sub_node("affinity-space");
-		return Affinity::Space(node.attribute_value<unsigned long>("width",  1),
-		                       node.attribute_value<unsigned long>("height", 1));
-	} catch (...) {
-		return Affinity::Space(1, 1); }
-}
-
-
-/**
- * Read parent-provided services from config
- */
-inline void determine_parent_services(Genode::Service_registry *services)
-{
-	using namespace Genode;
-
-	if (Init::config_verbose)
-		printf("parent provides\n");
-
-	Xml_node node = config()->xml_node().sub_node("parent-provides").sub_node("service");
-	for (; ; node = node.next("service")) {
-
-		char service_name[Genode::Service::MAX_NAME_LEN];
-		node.attribute("name").value(service_name, sizeof(service_name));
-
-		Parent_service *s = new (env()->heap()) Parent_service(service_name);
-		services->insert(s);
-		if (Init::config_verbose)
-			printf("  service \"%s\"\n", service_name);
-
-		if (node.last("service")) break;
-	}
-}
-
-
-/********************
- ** Child registry **
- ********************/
-
-namespace Init { struct Alias; }
-
-
-/**
- * Representation of an alias for a child
- */
-struct Init::Alias : Genode::List<Alias>::Element
-{
-	typedef Genode::String<128> Name;
-	typedef Genode::String<128> Child;
-
-	Name  name;
-	Child child;
-
-	/**
-	 * Exception types
-	 */
-	class Name_is_missing  { };
-	class Child_is_missing { };
-
-	/**
-	 * Utility to read a string attribute from an XML node
-	 *
-	 * \param STR        string type
-	 * \param EXC        exception type raised if attribute is not present
-	 *
-	 * \param node       XML node
-	 * \param attr_name  name of attribute to read
-	 */
-	template <typename STR, typename EXC>
-	static STR _read_string_attr(Genode::Xml_node node, char const *attr_name)
-	{
-		char buf[STR::size()];
-
-		if (!node.has_attribute(attr_name))
-			throw EXC();
-
-		node.attribute(attr_name).value(buf, sizeof(buf));
-
-		return STR(buf);
-	}
-
-	/**
-	 * Constructor
-	 *
-	 * \throw Name_is_missing
-	 * \throw Child_is_missing
-	 */
-	Alias(Genode::Xml_node alias)
-	:
-		name (_read_string_attr<Name, Name_is_missing> (alias, "name")),
-		child(_read_string_attr<Name, Child_is_missing>(alias, "child"))
-	{ }
-};
-
+/* Genode includes */
+#include <base/component.h>
+#include <base/attached_rom_dataspace.h>
+#include <os/sandbox.h>
+#include <os/reporter.h>
 
 namespace Init {
 
-	typedef Genode::List<Genode::List_element<Child> > Child_list;
+	using namespace Genode;
 
-	struct Child_registry;
+	struct Main;
 }
 
 
-class Init::Child_registry : public Name_registry, Child_list
+struct Init::Main : Sandbox::State_handler
 {
-	private:
+	Env &_env;
 
-		List<Alias> _aliases;
+	Sandbox _sandbox { _env, *this };
 
-	public:
+	Attached_rom_dataspace _config { _env, "config" };
 
-		/**
-		 * Exception type
-		 */
-		class Alias_name_is_not_unique { };
+	void _handle_resource_avail() { }
 
-		/**
-		 * Register child
-		 */
-		void insert(Child *child)
-		{
-			Child_list::insert(&child->_list_element);
-		}
+	Signal_handler<Main> _resource_avail_handler {
+		_env.ep(), *this, &Main::_handle_resource_avail };
 
-		/**
-		 * Unregister child
-		 */
-		void remove(Child *child)
-		{
-			Child_list::remove(&child->_list_element);
-		}
+	Constructible<Reporter> _reporter { };
 
-		/**
-		 * Register alias
-		 */
-		void insert_alias(Alias *alias)
-		{
-			if (!unique(alias->name.string())) {
-				PERR("Alias name %s is not unique", alias->name.string());
-				throw Alias_name_is_not_unique();
+	size_t _report_buffer_size = 0;
+
+	void _handle_config()
+	{
+		_config.update();
+
+		Xml_node const config = _config.xml();
+
+		bool reporter_enabled = false;
+		config.with_sub_node("report", [&] (Xml_node report) {
+
+			reporter_enabled = true;
+
+			/* (re-)construct reporter whenever the buffer size is changed */
+			Number_of_bytes const buffer_size =
+				report.attribute_value("buffer", Number_of_bytes(4096));
+
+			if (buffer_size != _report_buffer_size || !_reporter.constructed()) {
+				_report_buffer_size = buffer_size;
+				_reporter.construct(_env, "state", "state", _report_buffer_size);
 			}
-			_aliases.insert(alias);
+		});
+
+		if (_reporter.constructed())
+			_reporter->enabled(reporter_enabled);
+
+		_sandbox.apply_config(config);
+	}
+
+	Signal_handler<Main> _config_handler {
+		_env.ep(), *this, &Main::_handle_config };
+
+	/**
+	 * Sandbox::State_handler interface
+	 */
+	void handle_sandbox_state() override
+	{
+		try {
+			Reporter::Xml_generator xml(*_reporter, [&] () {
+				_sandbox.generate_state_report(xml); });
 		}
+		catch (Xml_generator::Buffer_exceeded) {
 
-		/**
-		 * Unregister alias
-		 */
-		void remove_alias(Alias *alias)
-		{
-			_aliases.remove(alias);
-		}
+			error("state report exceeds maximum size");
 
-		/**
-		 * Start execution of all children
-		 */
-		void start()
-		{
-			Genode::List_element<Child> *curr = first();
-			for (; curr; curr = curr->next())
-				curr->object()->start();
-		}
-
-		/**
-		 * Return any of the registered children, or 0 if no child exists
-		 */
-		Child *any()
-		{
-			return first() ? first()->object() : 0;
-		}
-
-		/**
-		 * Return any of the registered aliases, or 0 if no alias exists
-		 */
-		Alias *any_alias()
-		{
-			return _aliases.first() ? _aliases.first() : 0;
-		}
-
-		void revoke_server(Genode::Server const *server)
-		{
-			Genode::List_element<Child> *curr = first();
-			for (; curr; curr = curr->next())
-				curr->object()->_child.revoke_server(server);
-		}
-
-
-		/*****************************
-		 ** Name-registry interface **
-		 *****************************/
-
-		bool unique(const char *name) const
-		{
-			/* check for name clash with an existing child */
-			Genode::List_element<Child> const *curr = first();
-			for (; curr; curr = curr->next())
-				if (curr->object()->has_name(name))
-					return false;
-
-			/* check for name clash with an existing alias */
-			for (Alias const *a = _aliases.first(); a; a = a->next()) {
-				if (Alias::Name(name) == a->name)
-					return false;
+			/* try to reflect the error condition as state report */
+			try {
+				Reporter::Xml_generator xml(*_reporter, [&] () {
+					xml.attribute("error", "report buffer exceeded"); });
 			}
-
-			return true;
+			catch (...) { }
 		}
+	}
 
-		Genode::Server *lookup_server(const char *name) const
-		{
-			/*
-			 * Check if an alias with the specified name exists. If so,
-			 * look up the server referred to by the alias.
-			 */
-			for (Alias const *a = _aliases.first(); a; a = a->next())
-				if (Alias::Name(name) == a->name)
-					name = a->child.string();
+	Main(Env &env) : _env(env)
+	{
+		_config.sigh(_config_handler);
 
-			/* look up child with the name */
-			Genode::List_element<Child> const *curr = first();
-			for (; curr; curr = curr->next())
-				if (curr->object()->has_name(name))
-					return curr->object()->server();
+		/* prevent init to block for resource upgrades (never satisfied by core) */
+		_env.parent().resource_avail_sigh(_resource_avail_handler);
 
-			return 0;
-		}
+		_handle_config();
+	}
 };
 
 
-int main(int, char **)
-{
-	using namespace Init;
-	using namespace Genode;
-
-	/* obtain dynamic linker */
-	Dataspace_capability ldso_ds;
-	try {
-		static Rom_connection rom("ld.lib.so");
-		ldso_ds = rom.dataspace();
-	} catch (...) { }
-
-	static Service_registry parent_services;
-	static Service_registry child_services;
-	static Child_registry   children;
-	static Cap_connection   cap;
-
-	/*
-	 * Signal receiver for config changes
-	 */
-	Signal_receiver sig_rec;
-	Signal_context  sig_ctx_config;
-	Signal_context  sig_ctx_res_avail;
-	config()->sigh(sig_rec.manage(&sig_ctx_config));
-	/* prevent init to block for resource upgrades (never satisfied by core) */
-	env()->parent()->resource_avail_sigh(sig_rec.manage(&sig_ctx_res_avail));
-
-	for (;;) {
-
-		config_verbose =
-			config()->xml_node().attribute_value("verbose", false);
-
-		try { determine_parent_services(&parent_services); }
-		catch (...) { }
-
-		/* determine default route for resolving service requests */
-		Xml_node default_route_node("<empty/>");
-		try {
-			default_route_node =
-			config()->xml_node().sub_node("default-route"); }
-		catch (...) { }
-
-		/* create aliases */
-		config()->xml_node().for_each_sub_node("alias", [&] (Xml_node alias_node) {
-
-			try {
-				children.insert_alias(new (env()->heap()) Alias(alias_node));
-			}
-			catch (Alias::Name_is_missing) {
-				PWRN("Missing 'name' attribute in '<alias>' entry\n"); }
-			catch (Alias::Child_is_missing) {
-				PWRN("Missing 'child' attribute in '<alias>' entry\n"); }
-
-		});
-
-		/* create children */
-		try {
-			config()->xml_node().for_each_sub_node("start", [&] (Xml_node start_node) {
-
-				try {
-					children.insert(new (env()->heap())
-					                Init::Child(start_node, default_route_node,
-					                            children, read_prio_levels(),
-					                            read_affinity_space(),
-					                            parent_services, child_services, cap,
-					                            ldso_ds));
-				}
-				catch (Rom_connection::Rom_connection_failed) {
-					/*
-					 * The binary does not exist. An error message is printed
-					 * by the Rom_connection constructor.
-					 */
-				}
-			});
-
-			/* start children */
-			children.start();
-		}
-		catch (Xml_node::Nonexistent_sub_node) {
-			PERR("No children to start"); }
-		catch (Xml_node::Invalid_syntax) {
-			PERR("No children to start"); }
-		catch (Init::Child::Child_name_is_not_unique) { }
-		catch (Init::Child_registry::Alias_name_is_not_unique) { }
-
-		/*
-		 * Respond to config changes at runtime
-		 *
-		 * If the config gets updated to a new version, we kill the current
-		 * scenario and start again with the new config.
-		 */
-
-		/* wait for config change */
-		while (true) {
-			Signal signal = sig_rec.wait_for_signal();
-			if (signal.context() == &sig_ctx_config)
-				break;
-
-			PWRN("unexpected signal received - drop it");
-		}
-
-		/* kill all currently running children */
-		while (children.any()) {
-			Init::Child *child = children.any();
-			children.remove(child);
-			Genode::Server const *server = child->server();
-			destroy(env()->heap(), child);
-
-			/*
-			 * The killed child may have provided services to other children.
-			 * Since the server is dead by now, we cannot close its sessions
-			 * in the cooperative way. Instead, we need to instruct each
-			 * other child to forget about session associated with the dead
-			 * server. Note that the 'child' pointer points a a no-more
-			 * existing object. It is only used to identify the corresponding
-			 * session. It must never by de-referenced!
-			 */
-			children.revoke_server(server);
-		}
-
-		/* remove all known aliases */
-		while (children.any_alias()) {
-			Init::Alias *alias = children.any_alias();
-			children.remove_alias(alias);
-			destroy(env()->heap(), alias);
-		}
-
-		/* reset knowledge about parent services */
-		parent_services.remove_all();
-
-		/* reload config */
-		try { config()->reload(); } catch (...) { }
-	}
-
-	return 0;
-}
+void Component::construct(Genode::Env &env) { static Init::Main main(env); }
 

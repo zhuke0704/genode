@@ -6,17 +6,17 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__CORE_MEM_ALLOC_H_
 #define _CORE__INCLUDE__CORE_MEM_ALLOC_H_
 
-#include <base/lock.h>
 #include <base/allocator_avl.h>
+#include <base/mutex.h>
 #include <synced_range_allocator.h>
 #include <util.h>
 
@@ -106,6 +106,12 @@ class Genode::Mapped_mem_allocator : public Genode::Core_mem_translator
 		Mapped_avl_allocator *_phys_alloc;
 		Mapped_avl_allocator *_virt_alloc;
 
+		/*
+		 * Noncopyable
+		 */
+		Mapped_mem_allocator(Mapped_mem_allocator const &);
+		Mapped_mem_allocator &operator = (Mapped_mem_allocator const &);
+
 	public:
 
 		/**
@@ -136,19 +142,20 @@ class Genode::Mapped_mem_allocator : public Genode::Core_mem_translator
 		 * Note: has to be implemented by platform specific code
 		 *
 		 * \param virt_addr  start address of virtual range
+		 * \param phys_addr  start address of physical range
 		 * \param size       size of range
 		 */
-		bool _unmap_local(addr_t virt_addr, unsigned size);
+		bool _unmap_local(addr_t virt_addr, addr_t phys_addr, unsigned size);
 
 
 		/***********************************
 		 ** Core_mem_translator interface **
 		 ***********************************/
 
-		void * phys_addr(void * addr) {
+		void * phys_addr(void * addr) override {
 			return _virt_alloc->map_addr(addr); }
 
-		void * virt_addr(void * addr) {
+		void * virt_addr(void * addr) override {
 			return _phys_alloc->map_addr(addr); }
 
 
@@ -156,14 +163,13 @@ class Genode::Mapped_mem_allocator : public Genode::Core_mem_translator
 		 ** Range allocator interface **
 		 *******************************/
 
-		int add_range(addr_t base, size_t size) override { return -1; }
-		int remove_range(addr_t base, size_t size) override { return -1; }
-		Alloc_return alloc_aligned(size_t size, void **out_addr,
-		                           int align, addr_t from = 0,
+		int add_range(addr_t, size_t) override { return -1; }
+		int remove_range(addr_t, size_t) override { return -1; }
+		Alloc_return alloc_aligned(size_t, void **, int, addr_t from = 0,
 		                           addr_t to = ~0UL) override;
-		Alloc_return alloc_addr(size_t size, addr_t addr) override {
+		Alloc_return alloc_addr(size_t, addr_t) override {
 			return Alloc_return::RANGE_CONFLICT; }
-		void         free(void *addr) override;
+		void         free(void *) override;
 		size_t       avail() const override { return _phys_alloc->avail(); }
 		bool         valid_addr(addr_t addr) const override {
 			return _virt_alloc->valid_addr(addr); }
@@ -192,16 +198,13 @@ class Genode::Mapped_mem_allocator : public Genode::Core_mem_translator
  */
 class Genode::Core_mem_allocator : public Genode::Core_mem_translator
 {
-	public:
-
-
 	protected:
 
 		/**
-		 * Lock used for synchronization of all operations on the
+		 * Mutex used for synchronization of all operations on the
 		 * embedded allocators.
 		 */
-		Lock _lock;
+		Mutex _mutex { };
 
 		/**
 		 * Synchronized allocator of physical memory ranges
@@ -220,16 +223,16 @@ class Genode::Core_mem_allocator : public Genode::Core_mem_translator
 		Synced_mapped_allocator _virt_alloc;
 
 		/**
-		   * Unsynchronized core-mapped memory allocator
-		   *
-		   * This allocator is internally used within this class for
-		   * allocating meta data for the other allocators. It is not
-		   * synchronized to avoid nested locking. The lock-guarded
-		   * access to this allocator from the outer world is
-		   * provided via the 'Allocator' interface implemented by
-		   * 'Core_mem_allocator'. The allocator works at byte
-		   * granularity.
-		   */
+		 * Unsynchronized core-mapped memory allocator
+		 *
+		 * This allocator is internally used within this class for
+		 * allocating meta data for the other allocators. It is not
+		 * synchronized to avoid nested locking. The Mutex-guarded
+		 * access to this allocator from the outer world is
+		 * provided via the 'Allocator' interface implemented by
+		 * 'Core_mem_allocator'. The allocator works at byte
+		 * granularity.
+		 */
 		Mapped_mem_allocator _mem_alloc;
 
 	public:
@@ -238,31 +241,31 @@ class Genode::Core_mem_allocator : public Genode::Core_mem_translator
 		 * Constructor
 		 */
 		Core_mem_allocator()
-		: _phys_alloc(_lock, &_mem_alloc),
-		  _virt_alloc(_lock, &_mem_alloc),
+		: _phys_alloc(_mutex, &_mem_alloc),
+		  _virt_alloc(_mutex, &_mem_alloc),
 		  _mem_alloc(_phys_alloc, _virt_alloc) { }
 
 		/**
 		 * Access physical-memory allocator
 		 */
-		Synced_mapped_allocator *phys_alloc() { return &_phys_alloc; }
+		Synced_mapped_allocator &phys_alloc() { return _phys_alloc; }
 
 		/**
 		 * Access core's virtual-memory allocator
 		 */
-		Synced_mapped_allocator *virt_alloc() { return &_virt_alloc; }
+		Synced_mapped_allocator &virt_alloc() { return _virt_alloc; }
 
 
 		/***********************************
 		 ** Core_mem_translator interface **
 		 ***********************************/
 
-		void * phys_addr(void * addr)
+		void * phys_addr(void * addr) override
 		{
 			return _virt_alloc()->map_addr(addr);
 		}
 
-		void * virt_addr(void * addr)
+		void * virt_addr(void * addr) override
 		{
 			return _phys_alloc()->map_addr(addr);
 		}
@@ -272,21 +275,21 @@ class Genode::Core_mem_allocator : public Genode::Core_mem_translator
 		 ** Range allocator interface **
 		 *******************************/
 
-		int          add_range(addr_t base, size_t size) override { return -1; }
-		int          remove_range(addr_t base, size_t size) override { return -1; }
-		Alloc_return alloc_addr(size_t size, addr_t addr) override {
+		int add_range(addr_t, size_t) override { return -1; }
+		int remove_range(addr_t, size_t) override { return -1; }
+		Alloc_return alloc_addr(size_t, addr_t) override {
 			return Alloc_return::RANGE_CONFLICT; }
 
 		Alloc_return alloc_aligned(size_t size, void **out_addr, int align,
 		                           addr_t from = 0, addr_t to = ~0UL) override
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			return _mem_alloc.alloc_aligned(size, out_addr, align, from, to);
 		}
 
 		void free(void *addr) override
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			return _mem_alloc.free(addr);
 		}
 
@@ -304,7 +307,7 @@ class Genode::Core_mem_allocator : public Genode::Core_mem_translator
 
 		void free(void *addr, size_t size) override
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			return _mem_alloc.free(addr, size);
 		}
 

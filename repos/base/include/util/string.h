@@ -6,22 +6,24 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__STRING_H_
 #define _INCLUDE__UTIL__STRING_H_
 
 #include <base/stdint.h>
+#include <base/output.h>
 #include <util/misc_math.h>
 #include <cpu/string.h>
 
 namespace Genode {
 
 	class Number_of_bytes;
+	class Cstring;
 	template <Genode::size_t> class String;
 }
 
@@ -49,6 +51,19 @@ class Genode::Number_of_bytes
 		 * Convert number of bytes to 'size_t' value
 		 */
 		operator size_t() const { return _n; }
+
+		void print(Output &output) const
+		{
+			using Genode::print;
+
+			enum { KB = 1024UL, MB = KB*1024UL, GB = MB*1024UL };
+
+			if      (_n      == 0) print(output, 0);
+			else if (_n % GB == 0) print(output, _n/GB, "G");
+			else if (_n % MB == 0) print(output, _n/MB, "M");
+			else if (_n % KB == 0) print(output, _n/KB, "K");
+			else                   print(output, _n);
+		}
 };
 
 
@@ -156,21 +171,15 @@ namespace Genode {
 	 * \param dst   destination buffer
 	 * \param src   buffer holding the null-terminated source string
 	 * \param size  maximum number of characters to copy
-	 * \return      pointer to destination string
 	 *
-	 * Note that this function is not fully compatible to the C standard, in
-	 * particular there is no zero-padding if the length of 'src' is smaller
-	 * than 'size'. Furthermore, in contrast to the libc version, this function
-	 * always produces a null-terminated string in the 'dst' buffer if the
-	 * 'size' argument is greater than 0.
+	 * In contrast to the POSIX 'strncpy' function, 'copy_cstring' always
+	 * produces a null-terminated string in the 'dst' buffer if the 'size'
+	 * argument is greater than 0.
 	 */
-	inline char *strncpy(char *dst, const char *src, size_t size)
+	inline void copy_cstring(char *dst, const char *src, size_t size)
 	{
 		/* sanity check for corner case of a zero-size destination buffer */
-		if (size == 0) return dst;
-
-		/* backup original 'dst' for the use as return value */
-		char *orig_dst = dst;
+		if (size == 0) return;
 
 		/*
 		 * Copy characters from 'src' to 'dst' respecting the 'size' limit.
@@ -183,8 +192,6 @@ namespace Genode {
 
 		/* append null termination to the destination buffer */
 		*dst = 0;
-
-		return orig_dst;
 	}
 
 
@@ -328,6 +335,28 @@ namespace Genode {
 
 
 	/**
+	 * Read unsigned char value from string
+	 *
+	 * \return number of consumed characters
+	 */
+	inline size_t ascii_to(const char *s, unsigned char &result)
+	{
+		return ascii_to_unsigned(s, result, 0);
+	}
+
+
+	/**
+	 * Read unsigned short value from string
+	 *
+	 * \return number of consumed characters
+	 */
+	inline size_t ascii_to(const char *s, unsigned short &result)
+	{
+		return ascii_to_unsigned(s, result, 0);
+	}
+
+
+	/**
 	 * Read unsigned long value from string
 	 *
 	 * \return number of consumed characters
@@ -378,7 +407,7 @@ namespace Genode {
 		int j = 0;
 		unsigned long value = 0;
 
-		j = ascii_to_unsigned(s, value, 10);
+		j = ascii_to_unsigned(s, value, 0);
 
 		if (!j) return i;
 
@@ -406,8 +435,11 @@ namespace Genode {
 		if (i > 0)
 			switch (s[i]) {
 			case 'G': res *= 1024;
+				[[fallthrough]];
 			case 'M': res *= 1024;
+				[[fallthrough]];
 			case 'K': res *= 1024; i++;
+				[[fallthrough]];
 			default: break;
 			}
 
@@ -499,40 +531,175 @@ namespace Genode {
 
 
 /**
+ * Helper for the formatted output of a length-constrained character buffer
+ */
+class Genode::Cstring
+{
+	private:
+
+		char const * const _str;
+		size_t       const _len;
+
+		static size_t _init_len(char const *str, size_t max_len)
+		{
+			/*
+			 * In contrast to 'strlen' we stop searching for a terminating
+			 * null once we reach 'max_len'.
+			 */
+			size_t res = 0;
+			for (; str && *str && res < max_len; str++, res++);
+			return res;
+		}
+
+	public:
+
+		/**
+		 * Constructor
+		 *
+		 * \param str  null-terminated character buffer
+		 */
+		Cstring(char const *str) : _str(str), _len(strlen(str)) { }
+
+		/**
+		 * Constructor
+		 *
+		 * \param str      character buffer, not neccessarily null-terminated
+		 * \param max_len  maximum number of characters to consume
+		 *
+		 * The 'Cstring' contains all characters up to a terminating null in
+		 * the 'str' buffer but not more that 'max_len' characters.
+		 */
+		Cstring(char const *str, size_t max_len)
+		:
+			_str(str), _len(_init_len(str, max_len))
+		{ }
+
+		void print(Output &out) const { out.out_string(_str, _len); }
+
+		size_t length() const { return _len; }
+};
+
+
+/**
  * Buffer that contains a null-terminated string
  *
- * \param CAPACITY  buffer size including the terminating zero
+ * \param CAPACITY  buffer size including the terminating zero,
+ *                  must be higher than zero
  */
 template <Genode::size_t CAPACITY>
 class Genode::String
 {
 	private:
 
-		char   _buf[CAPACITY];
-		size_t _length;
+		char _buf[CAPACITY];
+
+		/**
+		 * Number of chars contained in '_buf' including the terminating null
+		 */
+		size_t _len { 0 };
+
+		/**
+		 * Output facility that targets a character buffer
+		 */
+		class Local_output : public Output
+		{
+			private:
+
+				/*
+				 * Noncopyable
+				 */
+				Local_output(Local_output const &);
+				Local_output &operator = (Local_output const &);
+
+			public:
+
+				char * const _buf;
+
+				size_t _num_chars = 0;
+
+				/**
+				 * Return true if '_buf' can fit at least one additional 'char'.
+				 */
+				bool _capacity_left() const { return CAPACITY - _num_chars - 1; }
+
+				void _append(char c) { _buf[_num_chars++] = c; }
+
+				Local_output(char *buf) : _buf(buf) { }
+
+				size_t num_chars() const { return _num_chars; }
+
+				void out_char(char c) override { if (_capacity_left()) _append(c); }
+
+				void out_string(char const *str, size_t n) override
+				{
+					while (n-- > 0 && _capacity_left() && *str)
+						_append(*str++);
+				}
+		};
 
 	public:
 
 		constexpr static size_t size() { return CAPACITY; }
 
-		String() : _length(0) { }
+		String() { }
 
-		String(char const *str, size_t len = ~0UL - 1)
-		:
-			_length(min(len + 1, min(strlen(str) + 1, CAPACITY)))
+		/**
+		 * Constructor
+		 *
+		 * The constructor accepts a non-zero number of arguments, which
+		 * are concatenated in the resulting 'String' object. In order to
+		 * generate the textual representation of the arguments, the
+		 * argument types must support the 'Output' interface, e.g., by
+		 * providing 'print' method.
+		 *
+		 * If the textual representation of the supplied arguments exceeds
+		 * 'CAPACITY', the resulting string gets truncated. The caller may
+		 * check for this condition by evaluating the 'length' of the
+		 * constructed 'String'. If 'length' equals 'CAPACITY', the string
+		 * may fit perfectly into the buffer or may have been truncated.
+		 * In general, it would be safe to assume the latter.
+		 */
+		template <typename T, typename... TAIL>
+		String(T const &arg, TAIL &&... args)
 		{
-			strncpy(_buf, str, _length);
+			/* initialize string content */
+			Local_output output(_buf);
+			Genode::print(output, arg, args...);
+
+			/* add terminating null */
+			_buf[output.num_chars()] = 0;
+			_len = output.num_chars() + 1;
+		}
+
+		/**
+		 * Constructor
+		 *
+		 * Overload for the common case of constructing a 'String' from a
+		 * string literal.
+		 */
+		String(char const *cstr) : _len(min(Genode::strlen(cstr) + 1, CAPACITY))
+		{
+			copy_cstring(_buf, cstr, _len);
+		}
+
+		/**
+		 * Copy constructor
+		 */
+		template <unsigned N>
+		String(String<N> const &other) : _len(min(other.length(), CAPACITY))
+		{
+			copy_cstring(_buf, other.string(), _len);
 		}
 
 		/**
 		 * Return length of string, including the terminating null character
 		 */
-		size_t length() const { return _length; }
+		size_t length() const { return _len; }
 
 		static constexpr size_t capacity() { return CAPACITY; }
 
 		bool valid() const {
-			return (_length <= CAPACITY) && (_length != 0) && (_buf[_length - 1] == '\0'); }
+			return (_len <= CAPACITY) && (_len != 0) && (_buf[_len - 1] == '\0'); }
 
 		char const *string() const { return valid() ? _buf : ""; }
 
@@ -557,6 +724,8 @@ class Genode::String
 		{
 			return strcmp(string(), other.string()) != 0;
 		}
+
+		void print(Output &out) const { Genode::print(out, string()); }
 };
 
 #endif /* _INCLUDE__UTIL__STRING_H_ */

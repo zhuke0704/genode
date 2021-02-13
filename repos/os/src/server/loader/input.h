@@ -4,17 +4,17 @@
  * \author Norman Feske
  * \date   2010-09-02
  *
- * This input service implementation is used by the virtualized nitpicker
+ * This input service implementation is used by the virtualized GUI
  * service to translate the input coordinate system from the coordinates
  * seen by the user of the virtualized session and the physical coordinates
  * dictated by the loader-session client.
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INPUT_H_
@@ -39,28 +39,32 @@ class Input::Session_component : public Rpc_object<Session>
 {
 	private:
 
-		Session_client _real_input;
-		Motion_delta  &_motion_delta;
-		Event  * const _ev_buf;
+		/*
+		 * Noncopyable
+		 */
+		Session_component(Session_component const &);
+		Session_component &operator = (Session_component const &);
 
-		Genode::Signal_context_capability _sigh;
+		Session_client     _real_input;
+		Motion_delta      &_motion_delta;
+		Attached_dataspace _ev_ds;
+		Event      * const _ev_buf;
+
+		Genode::Signal_context_capability _sigh { };
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Session_component(Session_capability real_input,
+		Session_component(Region_map        &rm,
+		                  Session_capability real_input,
 		                  Motion_delta      &motion_delta)
 		:
-			_real_input(real_input), _motion_delta(motion_delta),
-			_ev_buf(env()->rm_session()->attach(_real_input.dataspace()))
+			_real_input(rm, real_input), _motion_delta(motion_delta),
+			_ev_ds(rm, _real_input.dataspace()),
+			_ev_buf(_ev_ds.local_addr<Event>())
 		{ }
-
-		/**
-		 * Destructor
-		 */
-		~Session_component() { env()->rm_session()->detach(_ev_buf); }
 
 
 		/*****************************
@@ -81,19 +85,10 @@ class Input::Session_component : public Rpc_object<Session>
 
 				Input::Event &ev = _ev_buf[i];
 
-				if ((ev.type() == Input::Event::MOTION)
-				 || (ev.type() == Input::Event::WHEEL)
-				 || (ev.code() == Input::BTN_LEFT)
-				 || (ev.code() == Input::BTN_RIGHT)
-				 || (ev.code() == Input::BTN_MIDDLE)) {
-
-					ev = Input::Event(ev.type(),
-					                  ev.code(),
-					                  ev.ax() + delta.x(),
-					                  ev.ay() + delta.y(),
-					                  ev.rx(),
-					                  ev.ry());
-				}
+				ev.handle_absolute_motion([&] (int x, int y) {
+					Point<> p = Point<>(x, y) + delta;
+					ev = Input::Absolute_motion{p.x(), p.y()};
+				});
 			}
 
 			return num_ev;

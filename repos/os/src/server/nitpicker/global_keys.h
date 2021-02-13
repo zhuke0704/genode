@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _GLOBAL_KEYS_H_
@@ -18,19 +18,22 @@
 #include <input/keycodes.h>
 
 /* local includes */
-#include "session.h"
+#include "gui_session.h"
 
-class Global_keys
+namespace Nitpicker { class Global_keys; }
+
+
+class Nitpicker::Global_keys
 {
 	private:
 
 		struct Policy
 		{
-			Session *_session = nullptr;
+			Gui_session *_session = nullptr;
 
 			bool defined() const { return _session != nullptr; }
 
-			void client(Session *s) { _session = s; }
+			void client(Gui_session *s) { _session = s; }
 		};
 
 		enum { NUM_POLICIES = Input::KEY_MAX + 1 };
@@ -47,10 +50,10 @@ class Global_keys
 
 	public:
 
-		Session *global_receiver(Input::Keycode key) {
+		Gui_session *global_receiver(Input::Keycode key) {
 			return _valid(key) ? _policies[key]._session : 0; }
 
-		void apply_config(Session_list &session_list);
+		void apply_config(Xml_node config, Session_list &session_list);
 };
 
 #endif /* _GLOBAL_KEYS_H_ */

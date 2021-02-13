@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -25,8 +25,6 @@
 
 void prepare_init_main_thread() { }
 
-void prepare_reinit_main_thread() { prepare_init_main_thread(); }
-
 
 /************
  ** Thread **
@@ -35,6 +33,7 @@ void prepare_reinit_main_thread() { prepare_init_main_thread(); }
 void Genode::Thread::_thread_bootstrap() 
 {
 	if (native_thread().ep_sel == 0) {
-		native_thread().ep_sel = _stack->utcb().ep_sel;
+		native_thread().ep_sel   = _stack->utcb().ep_sel();
+		native_thread().lock_sel = _stack->utcb().lock_sel();
 	}
 }

@@ -1,4 +1,3 @@
-
 /*
  * \brief   OKL4 thread facility
  * \author  Julian Stecklina
@@ -8,14 +7,14 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/string.h>
 #include <util/misc_math.h>
 
@@ -24,23 +23,18 @@
 #include <platform_pd.h>
 #include <platform_thread.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/utcb.h>
-#include <l4/thread.h>
-#include <l4/config.h>
-#include <l4/schedule.h>
-#include <l4/kdebug.h>
-} }
+/* base-internal includes */
+#include <base/internal/capability_space_tpl.h>
+#include <base/internal/okl4.h>
 
 using namespace Genode;
 using namespace Okl4;
 
 
-int Platform_thread::start(void *ip, void *sp, unsigned int cpu_no)
+int Platform_thread::start(void *ip, void *sp, unsigned)
 {
 	if (!_platform_pd) {
-		PWRN("thread %d is not bound to a PD", _thread_id);
+		warning("thread ", _thread_id, " is not bound to a PD");
 		return -1;
 	}
 
@@ -50,11 +44,15 @@ int Platform_thread::start(void *ip, void *sp, unsigned int cpu_no)
 	                                                            _thread_id);
 	L4_SpaceId_t  space_id           = L4_SpaceId(space_no);
 	L4_ThreadId_t scheduler          = L4_rootserver;
-	L4_ThreadId_t pager              = _pager ? _pager->cap().dst() : L4_nilthread;
+
+	L4_ThreadId_t pager  = _pager
+	                     ? Capability_space::ipc_cap_data(_pager->cap()).dst
+	                     : L4_nilthread;
+
 	L4_ThreadId_t exception_handler  = pager;
 	L4_Word_t     resources          = 0;
 	L4_Word_t     utcb_size_per_task = L4_GetUtcbSize()*(1 << Thread_id_bits::THREAD);
-	L4_Word_t     utcb_location      = platform_specific()->utcb_base()
+	L4_Word_t     utcb_location      = platform_specific().utcb_base()
 	                                 + _platform_pd->pd_id()*utcb_size_per_task
 	                                 + _thread_id*L4_GetUtcbSize();
 	/*
@@ -82,8 +80,7 @@ int Platform_thread::start(void *ip, void *sp, unsigned int cpu_no)
 	                           scheduler, pager, exception_handler,
 	                           resources, (void *)utcb_location);
 	if (ret != 1) {
-		PERR("L4_ThreadControl returned %d, error code=%d",
-		     ret, (int)L4_ErrorCode());
+		error("L4_ThreadControl returned ", ret, ", error=", ret, L4_ErrorCode());
 		return -1;
 	}
 
@@ -104,7 +101,7 @@ int Platform_thread::start(void *ip, void *sp, unsigned int cpu_no)
 	/* assign priority */
 	if (!L4_Set_Priority(new_thread_id,
 	                     Cpu_session::scale_priority(DEFAULT_PRIORITY, _priority)))
-		PWRN("Could not set thread prioritry to default");
+		warning("could not set thread prioritry to default");
 
 	set_l4_thread_id(new_thread_id);
 	return 0;
@@ -124,11 +121,11 @@ void Platform_thread::resume()
 
 
 void Platform_thread::bind(int thread_id, L4_ThreadId_t l4_thread_id,
-                           Platform_pd *pd)
+                           Platform_pd &pd)
 {
 	_thread_id    = thread_id;
 	_l4_thread_id = l4_thread_id;
-	_platform_pd  = pd;
+	_platform_pd  = &pd;
 }
 
 
@@ -138,32 +135,11 @@ void Platform_thread::unbind()
 	                                 L4_nilthread, L4_nilthread, L4_nilthread, ~0, 0);
 
 	if (res != 1)
-		PERR("Deleting thread 0x%08lx failed. Continuing...", _l4_thread_id.raw);
+		error("deleting thread ", Hex(_l4_thread_id.raw), " failed");
 
 	_thread_id    = THREAD_INVALID;
 	_l4_thread_id = L4_nilthread;
-	_platform_pd  = 0;
-}
-
-
-void Platform_thread::cancel_blocking()
-{
-	L4_Word_t     dummy;
-	L4_ThreadId_t dummy_tid;
-
-	/*
-	 * For more details, please refer to the corresponding implementation in
-	 * the 'base-pistachio' repository.
-	 */
-
-	/* reset value for the thread's user-defined handle */
-	enum { USER_DEFINED_HANDLE_ZERO = 0 };
-
-	L4_ExchangeRegisters(_l4_thread_id,
-	                     L4_ExReg_Resume | L4_ExReg_AbortOperation | L4_ExReg_user,
-	                     0, 0, 0, USER_DEFINED_HANDLE_ZERO, L4_nilthread,
-	                     &dummy, &dummy, &dummy, &dummy, &dummy,
-	                     &dummy_tid);
+	_platform_pd  = nullptr;
 }
 
 
@@ -173,18 +149,13 @@ unsigned long Platform_thread::pager_object_badge() const
 }
 
 
-Weak_ptr<Address_space> Platform_thread::address_space()
-{
-	return _platform_pd->Address_space::weak_ptr();
-}
-
-
 Platform_thread::Platform_thread(size_t, const char *name, unsigned prio,
-                                 Affinity::Location, addr_t, int thread_id)
-: _thread_id(thread_id), _l4_thread_id(L4_nilthread), _platform_pd(0),
-  _priority(prio), _pager(0)
+                                 Affinity::Location, addr_t)
+:
+	_l4_thread_id(L4_nilthread), _platform_pd(0),
+	_priority(prio), _pager(0)
 {
-	strncpy(_name, name, sizeof(_name));
+	copy_cstring(_name, name, sizeof(_name));
 }
 
 
@@ -195,5 +166,5 @@ Platform_thread::~Platform_thread()
 	 * Thread::unbind()
 	 */
 	if (_platform_pd)
-		_platform_pd->unbind_thread(this);
+		_platform_pd->unbind_thread(*this);
 }

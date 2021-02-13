@@ -6,25 +6,29 @@
 #
 
 #
-# Only the NOVA and 32-bit Fiasco.OC base platforms support most of the tested features
-# at this time.
+# Only the NOVA platform supports most of the tested features at this time.
 #
 
 if {![have_include "power_on/qemu"] ||
-    !([have_spec nova] || ([have_spec foc] && [have_spec 32bit]))} {
-	 puts "Run script is only supported for NOVA or 32-bit Fiasco.OC in Qemu"; exit 0
+    !([have_spec nova])} {
+	 puts "Run script is only supported for NOVA in Qemu"; exit 0
 }
 
 #
 # Build
 #
 
-build {
-	core init
-	drivers/timer drivers/uart
+set build_components {
+	core init timer
+	drivers/uart
 	app/gdb_monitor
 	test/gdb_monitor
+	lib/vfs/pipe
 }
+
+lappend build_components "lib/gdbserver_platform-$::env(KERNEL)"
+
+build $build_components
 
 create_boot_directory
 
@@ -36,7 +40,6 @@ set config {
 <config verbose="yes">
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -48,34 +51,36 @@ set config {
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="100"/>
 	<start name="timer">
 		<resource name="RAM" quantum="2M"/>
 		<provides> <service name="Timer"/> </provides>
 	</start>
-	<start name="uart_drv">
+	<start name="pc_uart_drv">
 		<resource name="RAM" quantum="2M"/>
 		<provides>
 			<service name="Terminal"/>
 			<service name="Uart"/>
 		</provides>
 		<config>
-			<policy label="gdb_monitor" uart="1"/>
+			<policy label_prefix="gdb_monitor" uart="1"/>
 		</config>
 	</start>
-	<start name="gdb_monitor">
-		<resource name="RAM" quantum="4M"/>
+	<start name="gdb_monitor" caps="1000">
+		<resource name="RAM" quantum="9M"/>
 		<config>
 			<target name="test-gdb_monitor">
 				<config>
-					<libc stdout="/dev/log" stderr="/dev/log">
-						<vfs> <dir name="dev"> <log/> </dir> </vfs>
-					</libc>
+					<vfs> <dir name="dev"> <log/> </dir> </vfs>
+					<libc stdout="/dev/log" stderr="/dev/log"/>
 				</config>
 			</target>
-			<preserve name="RAM" quantum="3M"/>
-			<libc stdout="/dev/log" stderr="/dev/log">
-				<vfs> <dir name="dev"> <log/> </dir> </vfs>
-			</libc>
+			<preserve name="RAM" quantum="5M"/>
+			<vfs>
+				<dir name="dev"> <log/> <terminal/> </dir>
+				<dir name="pipe"> <pipe/> </dir>
+			</vfs>
+			<libc stdout="/dev/log" stderr="/dev/log" pipe="/pipe"/>
 		</config>
 	</start>
 </config>
@@ -87,12 +92,17 @@ install_config $config
 # Boot modules
 #
 
+# evaluated by the run tool
+proc binary_name_gdbserver_platform_lib_so { } {
+	return "gdbserver_platform-$::env(KERNEL).lib.so"
+}
+
 # generic modules
 set boot_modules {
 	core init timer
-	ld.lib.so libc.lib.so libc_pipe.lib.so libc_terminal.lib.so
-	uart_drv
-	gdb_monitor test-gdb_monitor
+	ld.lib.so libc.lib.so vfs.lib.so libm.lib.so
+	pc_uart_drv posix.lib.so stdcxx.lib.so vfs_pipe.lib.so
+	gdb_monitor gdbserver_platform.lib.so test-gdb_monitor
 }
 
 build_boot_image $boot_modules
@@ -104,31 +114,36 @@ build_boot_image $boot_modules
 set local_port 5555
 
 # qemu config
-append qemu_args " -m 128 -nographic "
+append qemu_args " -display none "
 
 # connect comport 0 to stdio
-append qemu_args " -serial mon:stdio "
+append qemu_args " -serial stdio "
 
 # connect comport 1 with TCP port $local_port
 append qemu_args " -serial chardev:uart "
 append qemu_args " -chardev socket,id=uart,port=$local_port,host=localhost,server,nowait,ipv4 "
 
-run_genode_until {.*\[init -> gdb_monitor\].*} 30
+run_genode_until {.*\[init -> gdb_monitor\] Remote debugging using /dev/terminal.*} 30
 set genode_id [output_spawn_id]
 
 puts "GDB monitor is up, starting GDB"
 
 source ${genode_dir}/repos/ports/run/gdb_monitor.inc
 
+# GDB loads symbols from 'debug/ld.lib.so'
+if { [have_spec nova] } {
+	exec ln -sf ld-nova.lib.so debug/ld.lib.so
+}
+
 set gdb_target_binary "test-gdb_monitor"
 
 # sequence of GDB commands to execute at startup
 set gdb_cmds ""
 append gdb_cmds {-ex "target remote localhost:$local_port" }
-append gdb_cmds [gdb_main_breakpoint_cmds $gdb_target_binary]
+append gdb_cmds [gdb_initial_breakpoint_cmds $gdb_target_binary]
 
-# run GDB and redirect stderr to stdio to get the relevant output into the expect buffer
-eval spawn [gdb] bin/ld.lib.so -n $gdb_cmds 2&>1
+# run GDB
+eval spawn [gdb] debug/ld.lib.so -n $gdb_cmds
 set gdb_id [list $spawn_id $genode_id]
 
 puts ""
@@ -137,10 +152,18 @@ puts ""
 
 run_genode_until {\(gdb\)} 60 $gdb_id
 
+send "b main\n"
+run_genode_until {\(gdb\)} 20 $gdb_id
+send "c\n"
+run_genode_until {\(gdb\)} 20 $gdb_id
+
 if {![regexp {Breakpoint 2, main ()} $output]} {
 	puts stderr "*** Error: Breakpoint in main() did not trigger"
 	exit -1
 }
+
+send "delete 2\n"
+run_genode_until {\(gdb\)} 20 $gdb_id
 
 puts "\n"
 puts "----- test: breakpoint in shared library -----"
@@ -211,13 +234,13 @@ puts "\n"
 puts "----- test: thread info -----"
 puts ""
 
-send "b Test_thread::entry()\n"
+send "b test_thread_start\n"
 run_genode_until {\(gdb\)} 20 $gdb_id
 
 send "c\n"
 run_genode_until {\(gdb\)} 20 $gdb_id
 
-if {![regexp {Breakpoint 4, Test_thread::entry()} $output]} {
+if {![regexp {Breakpoint 4, test_thread_start} $output]} {
 	puts stderr "*** Error: Breakpoint in test thread did not trigger"
 	exit -1
 }
@@ -225,8 +248,8 @@ if {![regexp {Breakpoint 4, Test_thread::entry()} $output]} {
 send "info threads\n"
 run_genode_until {\(gdb\)} 20 $gdb_id
 
-if {![regexp {  4    Thread 3} $output] ||
-    ![regexp {\* 3    Thread 4          Test_thread::entry} $output] ||
+if {![regexp {\* 4    Thread 4          test_thread_start} $output] ||
+    ![regexp {  3    Thread 3} $output] ||
     ![regexp {  2    Thread 2} $output] ||
     ![regexp {  1    Thread 1} $output]} {
 	puts stderr "*** Error: Thread info is not as expected"
@@ -243,7 +266,7 @@ run_genode_until {\(gdb\)} 30 $gdb_id
 send "thread 2\n"
 run_genode_until {\(gdb\)} 20 $gdb_id
 
-if {![regexp {Test_thread::step_func} $output]} {
+if {![regexp {test_thread_step} $output]} {
 	puts stderr "*** Error: Step into function didn't result in the expected output"
 	exit -1
 }
@@ -255,7 +278,7 @@ puts ""
 send "c\n"
 run_genode_until {\(gdb\)} 20 $gdb_id
 
-if {![regexp {Program received signal SIGSEGV, Segmentation fault.} $output]} {
+if {![regexp {Thread 4 received signal SIGSEGV, Segmentation fault.} $output]} {
 	puts stderr "*** Error: Segmentation fault exception was not caught"
 	exit -1
 }
@@ -273,9 +296,9 @@ if {![have_spec arm]} {
 	send "bt\n"
 	run_genode_until {\(gdb\)} 20 $gdb_id
 
-	if {![regexp {Genode::Cancelable_lock::lock\(\)} $output] ||
-		![regexp {Genode::Thread::join\(\)} $output] ||
-		![regexp {in main \(\)} $output]} {
+	if {![regexp {Genode::Signal_receiver::block_for_signal} $output] ||
+		![regexp {Genode::Entrypoint::_wait_and_dispatch_one_io_signal} $output] ||
+		![regexp {Libc::Kernel::run} $output] } {
 
 		puts stderr "*** Error: Stack trace when in syscall is not as expected"
 		exit -1

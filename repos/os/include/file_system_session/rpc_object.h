@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__FILE_SYSTEM_SESSION__SERVER_H_
@@ -36,8 +36,9 @@ class File_system::Session_rpc_object : public Genode::Rpc_object<Session, Sessi
 		 * \param ep     entry point used for packet-stream channel
 		 */
 		Session_rpc_object(Genode::Dataspace_capability  tx_ds,
+		                   Genode::Region_map           &rm,
 		                   Genode::Rpc_entrypoint       &ep)
-		: _tx(tx_ds, ep) { }
+		: _tx(tx_ds, rm, ep) { }
 
 		/**
 		 * Return capability to packet-stream channel
@@ -48,6 +49,13 @@ class File_system::Session_rpc_object : public Genode::Rpc_object<Session, Sessi
 		Genode::Capability<Tx> _tx_cap() { return _tx.cap(); }
 
 		Tx::Sink *tx_sink() { return _tx.sink(); }
+
+		/**
+		 * Default stub implementation
+		 */
+		Watch_handle watch(Path const &) override {
+			throw Unavailable(); }
+
 };
 
 #endif /* _INCLUDE__FILE_SYSTEM_SESSION__SERVER_H_ */

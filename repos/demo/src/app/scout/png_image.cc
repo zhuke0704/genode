@@ -5,20 +5,31 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <png.h>
-
 #include <scout/misc_math.h>
-#include <scout/alloc.h>
+#include <mini_c/init.h>
 
 #include "elements.h"
 
 using namespace Scout;
+
+
+static Genode::Allocator *_alloc_ptr;
+static Genode::Allocator &alloc()
+{
+	if (_alloc_ptr)
+		return *_alloc_ptr;
+
+	Genode::error("missing call of Png_image::init");
+	class Png_image_init_missing { };
+	throw Png_image_init_missing();
+}
 
 
 class Png_stream
@@ -32,7 +43,7 @@ class Png_stream
 		/**
 		 * Constructor
 		 */
-		Png_stream(char *addr) { _addr = addr; }
+		Png_stream(char *addr) : _addr(addr) { }
 
 		/**
 		 * Read from png stream
@@ -56,13 +67,10 @@ static void user_read_data(png_structp png_ptr, png_bytep data, png_size_t len)
 }
 
 
-/**
- * Dummy to make libl4png happy
- */
-extern "C" int l4libpng_fread(void *buf, int size, int nmemb, void *stream)
+void Png_image::init(Genode::Allocator &alloc)
 {
-	printf("l4libpng_fread called - function not implemented\n");
-	return 0;
+	_alloc_ptr = &alloc;
+	mini_c_init(alloc);
 }
 
 
@@ -74,8 +82,7 @@ void Png_image::fill_cache(Canvas_base &canvas)
 {
 	if (_texture) return;
 
-
-	Png_stream *stream = new Png_stream((char *)_png_data);
+	Png_stream *stream = new (alloc()) Png_stream((char *)_png_data);
 
 	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0);
 	if (!png_ptr) return;
@@ -97,7 +104,7 @@ void Png_image::fill_cache(Canvas_base &canvas)
 	             &interlace_type, int_p_NULL, int_p_NULL);
 
 	_min_size = Scout::Area(w, h);
-	printf("png is %d x %d, depth=%d\n", _min_size.w(), _min_size.h(), bit_depth);
+	log("png is ", _min_size, " depth=", bit_depth);
 
 	if (color_type == PNG_COLOR_TYPE_PALETTE)
 		png_set_palette_to_rgb(png_ptr);
@@ -120,10 +127,11 @@ void Png_image::fill_cache(Canvas_base &canvas)
 	int needed_row_size = png_get_rowbytes(png_ptr, info_ptr)*8;
 
 	if (curr_row_size < needed_row_size) {
-		if (row_ptr) Scout::free(row_ptr);
-		row_ptr = (png_byte *)Scout::malloc(needed_row_size);
+		if (row_ptr) alloc().free(row_ptr, curr_row_size);
+		row_ptr = (png_byte *)alloc().alloc(needed_row_size);
 		curr_row_size = needed_row_size;
 	}
+	memset(row_ptr, 0, curr_row_size);
 
 	/* fill texture */
 	for (unsigned j = 0; j < _min_size.h(); j++) {

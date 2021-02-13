@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <debug.h>
@@ -26,15 +26,10 @@ void binary_ready_hook_for_gdb() { }
 extern "C" void brk(Linker::Debug *, Linker::Link_map *) { }
 
 
-void Linker::dump_link_map(Object *o)
+void Linker::dump_link_map(Object const &obj)
 {
-	for (; o; o = o->next_obj()) {
-
-		if (o->is_binary())
-			continue;
-
-		Genode::printf("  " EFMT " .. " EFMT ": %s\n",
-		                o->link_map()->addr, o->link_map()->addr + o->size() - 1,
-		                o->name());
-	}
+	if (!obj.is_binary())
+		log("  ",   Hex(obj.link_map().addr),
+		    " .. ", Hex(obj.link_map().addr + obj.size() - 1),
+		    ": ", obj.name());
 }

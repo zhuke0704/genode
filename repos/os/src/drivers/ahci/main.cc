@@ -5,164 +5,398 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2016-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <block/component.h>
-#include <os/config.h>
-#include <os/server.h>
+/* Genode includes */
+#include <base/attached_rom_dataspace.h>
+#include <base/component.h>
+#include <base/log.h>
+#include <block/request_stream.h>
+#include <os/session_policy.h>
+#include <timer_session/connection.h>
 #include <util/xml_node.h>
+#include <os/reporter.h>
 
-#include "ahci.h"
+/* local includes */
+#include <ahci.h>
+#include <ata_protocol.h>
+#include <atapi_protocol.h>
 
-namespace Block {
-	class Factory;
-	class Root_multiple_clients;
+namespace Ahci {
+	struct Dispatch;
+	class  Driver;
+	struct Main;
+	struct Block_session_handler;
+	struct Block_session_component;
 }
 
 
-struct Block::Factory : Driver_factory
+struct Ahci::Dispatch : Interface
 {
-	long device_num;
-
-	Block::Driver *create()
-	{
-		return Ahci_driver::claim_port(device_num);
-	}
-
-	void destroy(Block::Driver *driver)
-	{
-		Ahci_driver::free_port(device_num);
-	}
-
-	Factory(long device_num) : device_num(device_num) { }
+	virtual void session(unsigned index) = 0;
 };
 
 
-class Session_component : public Block::Session_component
+class Ahci::Driver : Noncopyable
 {
 	public:
 
-		Session_component(Block::Driver_factory     &driver_factory,
-		                  Server::Entrypoint       &ep, Genode::size_t buf_size)
-		: Block::Session_component(driver_factory, ep, buf_size) { }
+		enum { MAX_PORTS = 32 };
 
-		Block::Driver_factory &factory() { return _driver_factory; }
-};
-
-
-class Block::Root_multiple_clients : public Root_component< ::Session_component>,
-                                     public Ahci_root
-{
 	private:
 
-		Server::Entrypoint &_ep;
+		Env      &_env;
+		Dispatch &_dispatch;
 
-		long _device_num(const char *session_label, char *model, char *sn, size_t bufs_len)
+
+		struct Timer_delayer : Mmio::Delayer, Timer::Connection
 		{
-			long num = -1;
+			Timer_delayer(Env &env)
+			: Timer::Connection(env) { }
 
-			Xml_node policy = config()->xml_node().sub_node("policy");
+			void usleep(uint64_t us) override { Timer::Connection::usleep(us); }
+		} _delayer { _env };
 
-			for (;; policy = policy.next("policy")) {
-				char label_buf[64];
-				policy.attribute("label").value(label_buf, sizeof(label_buf));
+		Hba  _hba { _env, _delayer };
 
-				if (Genode::strcmp(session_label, label_buf))
+		Constructible<Ata::Protocol>   _ata[MAX_PORTS];
+		Constructible<Atapi::Protocol> _atapi[MAX_PORTS];
+		Constructible<Port>            _ports[MAX_PORTS];
+
+		Signal_handler<Driver> _irq { _env.ep(), *this, &Driver::handle_irq };
+		bool                   _enable_atapi;
+
+		void _info()
+		{
+			log("version: "
+			    "major=", Hex(_hba.read<Hba::Version::Major>()), " "
+			    "minor=", Hex(_hba.read<Hba::Version::Minor>()));
+			log("command slots: ", _hba.command_slots());
+			log("native command queuing: ", _hba.ncq() ? "yes" : "no");
+			log("64-bit support: ", _hba.supports_64bit() ? "yes" : "no");
+		}
+
+		void _scan_ports(Region_map &rm)
+		{
+			log("number of ports: ", _hba.port_count(), " pi: ",
+			    Hex(_hba.read<Hba::Pi>()));
+
+			for (unsigned index = 0; index < MAX_PORTS; index++) {
+
+				Port_base port(index, _hba);
+
+				if (port.implemented() == false)
 					continue;
 
-				/* try read device port number attribute */
-				try {
-					policy.attribute("device").value(&num);
-				} catch (...) { }
+				bool enabled = false;
+				if (port.ata()) {
+					try {
+						_ata[index].construct();
+						_ports[index].construct(*_ata[index], rm, _hba, index);
+						enabled = true;
+					} catch (...) { }
 
-				/* try read device model and serial number attributes */
-				try {
-					model[0] = sn[0] = 0;
-					policy.attribute("model").value(model, bufs_len);
-					policy.attribute("serial").value(sn, bufs_len);
-				} catch (...) { }
-				break;
+					log("\t\t#", index, ":", enabled ? " ATA" : " off (ATA)");
+				} else if (port.atapi() && _enable_atapi) {
+					try {
+						_atapi[index].construct();
+						_ports[index].construct(*_atapi[index], rm, _hba, index);
+						enabled = true;
+					} catch (...) { }
+
+					log("\t\t#", index, ":", enabled ? " ATAPI" : " off (ATAPI)");
+				} else {
+						log("\t\t#", index, ":", port.atapi() ? " off (ATAPI)"
+						    : "  off (unknown device signature)");
+				}
 			}
-
-			return num;
-		}
-
-	protected:
-
-		::Session_component *_create_session(const char *args)
-		{
-			size_t tx_buf_size =
-				Arg_string::find_arg(args, "tx_buf_size").ulong_value(0);
-
-			/* TODO: build quota check */
-
-			/* Search for configured device */
-			char label_buf[64], model_buf[64], sn_buf[64];
-			Genode::Arg_string::find_arg(args,
-			                             "label").string(label_buf,
-			                                             sizeof(label_buf),
-			                                             "<unlabeled>");
-			long num = _device_num(label_buf, model_buf, sn_buf, sizeof(model_buf));
-			/* prefer model/serial routing */
-			if ((model_buf[0] != 0) && (sn_buf[0] != 0))
-				num = Ahci_driver::device_number(model_buf, sn_buf);
-
-			if (num < 0) {
-				PERR("No confguration found for client: %s", label_buf);
-				throw Root::Invalid_args();
-			}
-
-			if (!Ahci_driver::avail(num)) {
-				PERR("Device %ld not available", num);
-				throw Root::Unavailable();
-			}
-
-			Factory *factory = new (Genode::env()->heap()) Factory(num);
-			return new (md_alloc()) ::Session_component(*factory,
-			                                            _ep, tx_buf_size);
-		}
-
-		void _destroy_session(::Session_component *session)
-		{
-			Driver_factory &factory = session->factory();
-			destroy(env()->heap(), session);
-			destroy(env()->heap(), &factory);
 		}
 
 	public:
 
-		Root_multiple_clients(Server::Entrypoint &ep, Allocator *md_alloc)
-		: Root_component(&ep.rpc_ep(), md_alloc), _ep(ep) { }
-
-		Server::Entrypoint &entrypoint() override { return _ep; }
-
-		void announce() override
+		Driver(Env &env, Dispatch &dispatch, bool support_atapi)
+		: _env(env), _dispatch(dispatch), _enable_atapi(support_atapi)
 		{
-			Genode::env()->parent()->announce(_ep.manage(*this));
+			_info();
+
+			/* register irq handler */
+			_hba.sigh_irq(_irq);
+
+			/* initialize HBA (IRQs, memory) */
+			_hba.init();
+
+			/* search for devices */
+			_scan_ports(env.rm());
+		}
+
+		/**
+		 * Forward IRQs to ports/block sessions
+		 */
+		void handle_irq()
+		{
+			unsigned port_list = _hba.read<Hba::Is>();
+			while (port_list) {
+				unsigned port = log2(port_list);
+				port_list    &= ~(1U << port);
+
+				/* ack irq */
+				if (_ports[port].constructed())
+					_ports[port]->handle_irq();
+
+				/* handle (pending) requests */
+				_dispatch.session(port);
+			}
+
+			/* clear status register */
+			_hba.ack_irq();
+		}
+		Port &port(Session_label const &label, Session_policy const &policy)
+		{
+			/* try read device port number attribute */
+			long device = policy.attribute_value("device", -1L);
+
+			/* try read device model and serial number attributes */
+			auto const model  = policy.attribute_value("model",  String<64>());
+			auto const serial = policy.attribute_value("serial", String<64>());
+
+			/* check for model/device */
+			if (model != "" && serial != "") {
+				for (long index = 0; index < MAX_PORTS; index++) {
+					if (!_ata[index].constructed()) continue;
+
+					Ata::Protocol &protocol = *_ata[index];
+					if (*protocol.model == model.string() && *protocol.serial == serial.string())
+						return *_ports[index];
+				}
+				warning("No device with model ", model, " and serial ", serial, " found for \"", label, "\"");
+			}
+
+			/* check for device number */
+			if (device >= 0 && device < MAX_PORTS && _ports[device].constructed())
+				return *_ports[device];
+
+			warning("No device found on port ", device, " for \"", label, "\"");
+			throw Service_denied();
+		}
+
+		template <typename FN> void for_each_port(FN const &fn)
+		{
+			for (unsigned index = 0; index < MAX_PORTS; index++) {
+				if (!_ports[index].constructed()) continue;
+				fn(*_ports[index], index, !_ata[index].constructed());
+			}
+		}
+
+		void report_ports(Reporter &reporter)
+		{
+			Reporter::Xml_generator xml(reporter, [&] () {
+
+				auto report = [&](Port const &port, unsigned index, bool atapi) {
+
+					Block::Session::Info info = port.info();
+					xml.node("port", [&] () {
+						xml.attribute("num", index);
+						xml.attribute("type", atapi ? "ATAPI" : "ATA");
+						xml.attribute("block_count", info.block_count);
+						xml.attribute("block_size", info.block_size);
+						if (!atapi) {
+							xml.attribute("model", _ata[index]->model->cstring());
+							xml.attribute("serial", _ata[index]->serial->cstring());
+						}
+					});
+				};
+
+				for_each_port(report);
+			});
 		}
 };
 
 
-struct Main
+struct Ahci::Block_session_handler : Interface
 {
-	Block::Root_multiple_clients root;
+	Env                     &env;
+	Port                    &port;
+	Ram_dataspace_capability ds;
 
-	Main(Server::Entrypoint &ep)
-	: root(ep, Genode::env()->heap())
+	Signal_handler<Block_session_handler> request_handler
+	  { env.ep(), *this, &Block_session_handler::handle};
+
+	Block_session_handler(Env &env, Port &port, size_t buffer_size)
+	: env(env), port(port), ds(port.alloc_buffer(buffer_size))
+	{ }
+
+	~Block_session_handler()
 	{
-		PINF("--- Starting AHCI driver -> done right .-) --\n");
-		bool support_atapi = Genode::config()->xml_node().attribute_value("atapi", false);
-		Ahci_driver::init(root, support_atapi);
+		port.free_buffer(ds);
+	}
+
+	virtual void handle_requests()= 0;
+
+	void handle()
+	{
+		handle_requests();
+	}
+};
+
+struct Ahci::Block_session_component : Rpc_object<Block::Session>,
+                                       Block_session_handler,
+                                       Block::Request_stream
+{
+	Block_session_component(Env &env, Port &port, size_t buffer_size)
+	:
+	  Block_session_handler(env, port, buffer_size),
+	  Request_stream(env.rm(), ds, env.ep(), request_handler, port.info())
+	{
+		env.ep().manage(*this);
+	}
+
+	~Block_session_component()
+	{
+		env.ep().dissolve(*this);
+	}
+
+	Info info() const override { return Request_stream::info(); }
+
+	Capability<Tx> tx_cap() override { return Request_stream::tx_cap(); }
+
+	void handle_requests() override
+	{
+		while (true) {
+
+			bool progress = false;
+
+			/*
+			 * Acknowledge any pending packets before sending new request to the
+			 * controller.
+			 */
+			try_acknowledge([&](Ack &ack) {
+				port.for_one_completed_request([&] (Block::Request request) {
+					progress = true;
+					ack.submit(request);
+				});
+			});
+
+			with_requests([&] (Block::Request request) {
+
+				Response response = Response::RETRY;
+
+				/* ignored operations */
+				if (request.operation.type == Block::Operation::Type::TRIM ||
+				    request.operation.type == Block::Operation::Type::INVALID) {
+					request.success = true;
+					progress = true;
+					return Response::REJECTED;
+				}
+
+				if ((response = port.submit(request)) != Response::RETRY)
+					progress = true;
+
+				return response;
+			});
+
+			if (progress == false) break;
+		}
+
+		/* poke */
+		wakeup_client_if_needed();
 	}
 };
 
 
-namespace Server {
-	char const *name()                    { return "ahci_ep"; }
-	size_t      stack_size()              { return 2 * 1024 * sizeof(long); }
-	void        construct(Entrypoint &ep) { static Main server(ep); }
-}
+struct Ahci::Main : Rpc_object<Typed_root<Block::Session>>,
+                    Dispatch
+{
+	Env  &env;
+
+	Attached_rom_dataspace config { env, "config" };
+
+	Constructible<Ahci::Driver> driver { };
+	Constructible<Reporter> reporter { };
+	Constructible<Block_session_component> block_session[Driver::MAX_PORTS];
+
+	Main(Env &env)
+	: env(env)
+	{
+		log("--- Starting AHCI driver ---");
+		bool support_atapi  = config.xml().attribute_value("atapi", false);
+		try {
+			driver.construct(env, *this, support_atapi);
+			report_ports();
+		} catch (Ahci::Missing_controller) {
+			error("no AHCI controller found");
+			env.parent().exit(~0);
+		} catch (Service_denied) {
+			error("hardware access denied");
+			env.parent().exit(~0);
+		}
+
+		env.parent().announce(env.ep().manage(*this));
+	}
+
+	void session(unsigned index) override
+	{
+		if (index > Driver::MAX_PORTS || !block_session[index].constructed()) return;
+		block_session[index]->handle_requests();
+	}
+
+	Session_capability session(Root::Session_args const &args,
+	                            Affinity const &) override
+	{
+		Session_label const label = label_from_args(args.string());
+		Session_policy const policy(label, config.xml());
+
+		Ram_quota const ram_quota = ram_quota_from_args(args.string());
+		size_t const tx_buf_size =
+			Arg_string::find_arg(args.string(), "tx_buf_size").ulong_value(0);
+
+		if (!tx_buf_size)
+			throw Service_denied();
+
+		if (tx_buf_size > ram_quota.value) {
+			error("insufficient 'ram_quota' from '", label, "',"
+			      " got ", ram_quota, ", need ", tx_buf_size);
+			throw Insufficient_ram_quota();
+		}
+
+		Port &port = driver->port(label, policy);
+
+		if (block_session[port.index].constructed()) {
+			error("Device with number=", port.index, " is already in use");
+			throw Service_denied();
+		}
+
+		port.writeable(policy.attribute_value("writeable", false));
+		block_session[port.index].construct(env, port, tx_buf_size);
+		return block_session[port.index]->cap();
+	}
+
+	void upgrade(Session_capability, Root::Upgrade_args const&) override { }
+
+	void close(Session_capability cap) override
+	{
+		for (int index = 0; index < Driver::MAX_PORTS; index++) {
+			if (!block_session[index].constructed() || !(cap == block_session[index]->cap()))
+				continue;
+
+			block_session[index].destruct();
+		}
+	}
+
+	void report_ports()
+	{
+		try {
+			Xml_node report = config.xml().sub_node("report");
+			if (report.attribute_value("ports", false)) {
+				reporter.construct(env, "ports");
+				reporter->enabled(true);
+				driver->report_ports(*reporter);
+			}
+		} catch (Xml_node::Nonexistent_sub_node) { }
+	}
+};
+
+void Component::construct(Genode::Env &env) { static Ahci::Main server(env); }

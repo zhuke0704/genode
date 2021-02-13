@@ -5,16 +5,17 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _LIBC_PLUGIN__PLUGIN_H_
 #define _LIBC_PLUGIN__PLUGIN_H_
 
 #include <os/path.h>
+#include <base/exception.h>
 #include <util/list.h>
 
 #include <netdb.h>
@@ -22,20 +23,32 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/mount.h>  /* for 'struct statfs' */
+#include <sys/poll.h>   /* for 'struct pollfd' */
+
+namespace Genode { class Env; }
 
 namespace Libc {
 
 	using namespace Genode;
 	
 	class File_descriptor;
-	
+
 	typedef Genode::Path<PATH_MAX> Absolute_path;
+
+	class Symlink_resolve_error : Genode::Exception { };
+
+	void resolve_symlinks(char const *path, Absolute_path &resolved_path);
 
 	class Plugin : public List<Plugin>::Element
 	{
 		protected:
 
 			int _priority;
+
+			typedef Genode::size_t size_t;
+
+			/* Resume all libc threads blocked for I/O */
+			void resume_all();
 
 		public:
 
@@ -45,16 +58,11 @@ namespace Libc {
 			virtual int priority();
 
 			virtual bool supports_access(char const *path, int amode);
-			virtual bool supports_execve(char const *filename, char *const argv[],
-			                             char *const envp[]);
 			virtual bool supports_mkdir(const char *path, mode_t mode);
-			virtual bool supports_freeaddrinfo(struct ::addrinfo *res);
-			virtual bool supports_getaddrinfo(const char *node, const char *service,
-			                                  const struct ::addrinfo *hints,
-			                                  struct ::addrinfo **res);
 			virtual bool supports_open(const char *pathname, int flags);
 			virtual bool supports_pipe();
-			virtual bool supports_readlink(const char *path, char *buf, size_t bufsiz);
+			virtual bool supports_poll();
+			virtual bool supports_readlink(const char *path, char *buf, ::size_t bufsiz);
 			virtual bool supports_rename(const char *oldpath, const char *newpath);
 			virtual bool supports_rmdir(const char *path);
 			virtual bool supports_select(int nfds,
@@ -67,6 +75,11 @@ namespace Libc {
 			virtual bool supports_symlink(const char *oldpath, const char *newpath);
 			virtual bool supports_unlink(const char *path);
 			virtual bool supports_mmap();
+
+			/*
+			 * Should be overwritten for plugins that require the Genode environment
+			 */
+			virtual void init(Genode::Env &env) { }
 
 			virtual File_descriptor *accept(File_descriptor *,
 			                                struct ::sockaddr *addr,
@@ -81,17 +94,11 @@ namespace Libc {
 			                    socklen_t addrlen);
 			virtual File_descriptor *dup(File_descriptor*);
 			virtual int dup2(File_descriptor *, File_descriptor *new_fd);
-			virtual int execve(char const *filename, char *const argv[],
-			                   char *const envp[]);
 			virtual int fstatfs(File_descriptor *, struct statfs *buf);
 			virtual int fcntl(File_descriptor *, int cmd, long arg);
-			virtual void freeaddrinfo(struct ::addrinfo *res);
 			virtual int fstat(File_descriptor *, struct stat *buf);
 			virtual int fsync(File_descriptor *);
 			virtual int ftruncate(File_descriptor *, ::off_t length);
-			virtual int getaddrinfo(const char *node, const char *service,
-			                        const struct ::addrinfo *hints,
-			                        struct ::addrinfo **res);
 			virtual ssize_t getdirentries(File_descriptor *, char *buf,
 			                              ::size_t nbytes, ::off_t *basep);
 			virtual int getpeername(File_descriptor *,
@@ -103,15 +110,17 @@ namespace Libc {
 			virtual int getsockopt(File_descriptor *, int level,
 			                       int optname, void *optval,
 			                       socklen_t *optlen);
-			virtual int ioctl(File_descriptor *, int request, char *argp);
+			virtual int ioctl(File_descriptor *, unsigned long request, char *argp);
 			virtual int listen(File_descriptor *, int backlog);
 			virtual ::off_t lseek(File_descriptor *, ::off_t offset, int whence);
 			virtual int mkdir(const char *pathname, mode_t mode);
 			virtual void *mmap(void *addr, ::size_t length, int prot, int flags,
 			                   File_descriptor *, ::off_t offset);
 			virtual int munmap(void *addr, ::size_t length);
+			virtual int msync(void *addr, ::size_t len, int flags);
 			virtual File_descriptor *open(const char *pathname, int flags);
 			virtual int pipe(File_descriptor *pipefd[2]);
+			virtual bool poll(File_descriptor&, struct pollfd &pfd);
 			virtual ssize_t read(File_descriptor *, void *buf, ::size_t count);
 			virtual ssize_t readlink(const char *path, char *buf, ::size_t bufsiz);
 			virtual ssize_t recv(File_descriptor *, void *buf, ::size_t len, int flags);

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _THEME_H_
@@ -16,7 +16,6 @@
 
 /* Genode includes */
 #include <os/texture.h>
-#include <os/pixel_rgb565.h>
 #include <os/pixel_alpha8.h>
 #include <os/pixel_rgb888.h>
 
@@ -25,7 +24,6 @@ namespace Decorator {
 	class Theme;
 
 	typedef Genode::Pixel_rgb888 Pixel_rgb888;
-	typedef Genode::Pixel_rgb565 Pixel_rgb565;
 	typedef Genode::Pixel_alpha8 Pixel_alpha8;
 
 	typedef Genode::Surface<Pixel_rgb888> Pixel_surface;
@@ -41,7 +39,9 @@ class Decorator::Theme
 {
 	private:
 
-		Genode::Allocator &_alloc;
+		Genode::Ram_allocator &_ram;
+		Genode::Region_map    &_rm;
+		Genode::Allocator     &_alloc;
 
 	public:
 
@@ -54,7 +54,8 @@ class Decorator::Theme
 
 		enum Element_type { ELEMENT_TYPE_CLOSER, ELEMENT_TYPE_MAXIMIZER };
 
-		Theme(Genode::Allocator &alloc) : _alloc(alloc) { }
+		Theme(Genode::Ram_allocator &ram, Genode::Region_map &rm, Genode::Allocator &alloc)
+		: _ram(ram), _rm(rm), _alloc(alloc) { }
 
 		Area background_size() const;
 
@@ -62,11 +63,11 @@ class Decorator::Theme
 
 		Margins decor_margins() const;
 
-		void draw_background(Pixel_surface, Alpha_surface, unsigned alpha) const;
+		void draw_background(Pixel_surface &, Alpha_surface &, Area, unsigned alpha) const;
 
-		void draw_title(Pixel_surface, Alpha_surface, char const *title) const;
+		void draw_title(Pixel_surface &, Alpha_surface &, Area, char const *title) const;
 
-		void draw_element(Pixel_surface, Alpha_surface, Element_type,
+		void draw_element(Pixel_surface &, Alpha_surface &, Area, Element_type,
 		                  unsigned alpha) const;
 
 		/**

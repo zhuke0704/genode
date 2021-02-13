@@ -4,70 +4,75 @@
  * \date 2015-10-15
  */
 
+/*
+ * Copyright (C) 2015-2020 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/thread.h>
-#include <os/attached_rom_dataspace.h>
+#include <base/attached_rom_dataspace.h>
+#include <libc/component.h>
 
 /* Qt includes */
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
 
+/* qt5_component includes */
+#include <qt5_component/qpa_init.h>
+
 /* application includes */
 #include "main_window.h"
 
 
-enum { THREAD_STACK_SIZE = 2 * 1024 * sizeof(long) };
+enum { SIGNAL_EP_STACK_SIZE = 16*1024 };
 
 
-struct Report_thread : Genode::Thread_deprecated<THREAD_STACK_SIZE>
+struct Report_handler
 {
 	QMember<Report_proxy> proxy;
 
-	Genode::Attached_rom_dataspace channels_rom { "channel_list" };
+	Genode::Attached_rom_dataspace channels_rom;
 
-	Genode::Signal_receiver                  sig_rec;
-	Genode::Signal_dispatcher<Report_thread> channels_dispatcher;
+	Genode::Entrypoint                     sig_ep;
+	Genode::Signal_handler<Report_handler> channels_handler;
 
-	Genode::Lock _report_lock { Genode::Lock::LOCKED };
+	Genode::Blockade _report_blockade { };
+
+	bool window_connected { false };
 
 	void _report(char const *data, size_t size)
 	{
 		Genode::Xml_node node(data, size);
-		proxy->report_changed(&_report_lock, &node);
+		proxy->report_changed(&_report_blockade, &node);
 
 		/* wait until the report was handled */
-		_report_lock.lock();
+		_report_blockade.block();
 	}
 
-	void _handle_channels(unsigned)
+	void _handle_channels()
 	{
+		if (!window_connected)
+			return;
+
 		channels_rom.update();
 
 		if (channels_rom.valid())
 			_report(channels_rom.local_addr<char>(), channels_rom.size());
 	}
 
-	Report_thread()
+	Report_handler(Genode::Env &env)
 	:
-		Genode::Thread_deprecated<THREAD_STACK_SIZE>("report_thread"),
-		channels_dispatcher(sig_rec, *this, &Report_thread::_handle_channels)
+		channels_rom(env, "channel_list"),
+		sig_ep(env, SIGNAL_EP_STACK_SIZE, "signal ep",
+		       Genode::Affinity::Location()),
+		channels_handler(sig_ep, *this, &Report_handler::_handle_channels)
 	{
-		channels_rom.sigh(channels_dispatcher);
-	}
-
-	void entry() override
-	{
-		using namespace Genode;
-		while (true) {
-			Signal sig = sig_rec.wait_for_signal();
-			int num    = sig.num();
-
-			Signal_dispatcher_base *dispatcher;
-			dispatcher = dynamic_cast<Signal_dispatcher_base *>(sig.context());
-			dispatcher->dispatch(num);
-		}
+		channels_rom.sigh(channels_handler);
 	}
 
 	void connect_window(Main_window *win)
@@ -75,6 +80,8 @@ struct Report_thread : Genode::Thread_deprecated<THREAD_STACK_SIZE>
 		QObject::connect(proxy, SIGNAL(report_changed(void *,void const*)),
 		                 win,   SLOT(report_changed(void *, void const*)),
 		                 Qt::QueuedConnection);
+
+		window_connected = true;
 	}
 };
 
@@ -92,26 +99,33 @@ static inline void load_stylesheet()
 }
 
 
-int main(int argc, char *argv[])
+void Libc::Component::construct(Libc::Env &env)
 {
-	Report_thread *report_thread;
-	try { report_thread = new Report_thread(); }
-	catch (...) {
-		PERR("Could not create Report_thread");
+	Libc::with_libc([&] {
+
+		qpa_init(env);
+
+		int argc = 1;
+		char const *argv[] = { "mixer_gui_qt", 0 };
+
+		Report_handler *report_handler;
+		try { report_handler = new Report_handler(env); }
+		catch (...) {
+		Genode::error("Could not create Report_handler");
 		return -1;
-	}
+		}
 
-	QApplication app(argc, argv);
+		QApplication app(argc, (char**)argv);
 
-	load_stylesheet();
+		load_stylesheet();
 
-	QMember<Main_window> main_window;
-	main_window->show();
+		QMember<Main_window> main_window(env);
+		main_window->show();
 
-	report_thread->connect_window(main_window);
-	report_thread->start();
+		report_handler->connect_window(main_window);
 
-	app.connect(&app, SIGNAL(lastWindowClosed()), SLOT(quit()));
+		app.connect(&app, SIGNAL(lastWindowClosed()), SLOT(quit()));
 
-	return app.exec();
+		exit(app.exec());
+	});
 }

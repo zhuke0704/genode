@@ -5,17 +5,14 @@
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Linux kit includes */
 #include <lx_kit/timer.h>
-
-
-void init_timer(struct timer_list *timer) { }
 
 
 int mod_timer(struct timer_list *timer, unsigned long expires)
@@ -27,12 +24,21 @@ int mod_timer(struct timer_list *timer, unsigned long expires)
 }
 
 
-void setup_timer(struct timer_list *timer,void (*function)(unsigned long),
-                 unsigned long data)
+void timer_setup(struct timer_list *timer,
+                 void (*function)(struct timer_list *),
+                 unsigned int flags)
 {
 	timer->function = function;
-	timer->data     = data;
-	init_timer(timer);
+	timer->flags    = flags;
+
+	/*
+	 * For compatibility with 4.4.3 drivers, the 'data' member is passed as
+	 * argument to the callback function. Since the 4.16.3 callback function
+	 * interface has a 'timer_list' pointer as argument, the 'data' member
+	 * points to the 'timer_list' object  itself when set up with this
+	 * function.
+	 */
+	timer->data     = (unsigned long)timer;
 }
 
 
@@ -59,7 +65,7 @@ void hrtimer_init(struct hrtimer *timer, clockid_t clock_id, enum hrtimer_mode m
 int hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
                            unsigned long delta_ns, const enum hrtimer_mode mode)
 {
-	unsigned long expires = tim.tv64 / (NSEC_PER_MSEC * HZ);
+	unsigned long expires = tim / ((1000/HZ) * NSEC_PER_MSEC);
 
 	/*
 	 * Prevent truncation through rounding the values by adding 1 jiffy
@@ -71,6 +77,12 @@ int hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
 		Lx::timer().add(timer, Lx::Timer::HR);
 
 	return Lx::timer().schedule(timer, expires);
+}
+
+
+bool hrtimer_active(const struct hrtimer *timer)
+{
+	return Lx::timer().find(timer);
 }
 
 

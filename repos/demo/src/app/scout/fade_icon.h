@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _FADE_ICON_H_
@@ -30,8 +30,8 @@ class Scout::Fade_icon : public Fader, public Icon<PT, W, H>
 {
 	private:
 
-		int _default_alpha;
-		int _focus_alpha;
+		int _default_alpha = 100;
+		int _focus_alpha   = 255;
 
 	public:
 
@@ -40,8 +40,7 @@ class Scout::Fade_icon : public Fader, public Icon<PT, W, H>
 		 */
 		Fade_icon()
 		{
-			_curr_value = _dst_value = _default_alpha = 100;
-			_focus_alpha = 255;
+			_curr_value = _dst_value = 100;
 			step(12);
 		}
 
@@ -63,7 +62,7 @@ class Scout::Fade_icon : public Fader, public Icon<PT, W, H>
 		/**
 		 * Tick interface
 		 */
-		int on_tick()
+		int on_tick() override
 		{
 			/* call on_tick function of the fader */
 			if (Fader::on_tick() == 0) return 0;
@@ -75,7 +74,7 @@ class Scout::Fade_icon : public Fader, public Icon<PT, W, H>
 		/**
 		 * Icon interface
 		 */
-		void alpha(int alpha)
+		void alpha(int alpha) override
 		{
 			_curr_value = alpha;
 			Icon<PT, W, H>::alpha(alpha);
@@ -84,7 +83,7 @@ class Scout::Fade_icon : public Fader, public Icon<PT, W, H>
 		/**
 		 * Element interface
 		 */
-		void mfocus(int flag)
+		void mfocus(int flag) override
 		{
 			Icon<PT, W, H>::mfocus(flag);
 			int step = _focus_alpha - _default_alpha;

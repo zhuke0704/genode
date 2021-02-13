@@ -5,17 +5,19 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <os/config.h>
+#include <base/heap.h>
+#include <base/component.h>
+#include <base/attached_rom_dataspace.h>
 #include <polygon_gfx/shaded_polygon_painter.h>
-#include <polygon_gfx/interpolate_rgb565.h>
 #include <polygon_gfx/textured_polygon_painter.h>
+#include <os/pixel_rgb888.h>
 #include <nano3d/dodecahedron_shape.h>
 #include <nano3d/cube_shape.h>
 #include <nano3d/scene.h>
@@ -32,7 +34,10 @@ class Scene : public Nano3d::Scene<PT>
 
 	private:
 
-		Nitpicker::Area const _size;
+		Genode::Env  &_env;
+		Genode::Heap  _heap { _env.ram(), _env.rm() };
+
+		Gui::Area const _size;
 
 		struct Radial_texture
 		{
@@ -70,48 +75,49 @@ class Scene : public Nano3d::Scene<PT>
 			}
 		};
 
-		Radial_texture _texture;
+		Radial_texture _texture { };
 
 		Shape   _shape   = SHAPE_DODECAHEDRON;
 		Painter _painter = PAINTER_TEXTURED;
 
-		void _handle_config(unsigned)
+		Genode::Attached_rom_dataspace _config { _env, "config" };
+
+		void _handle_config()
 		{
-			Genode::config()->reload();
+			_config.update();
 
 			try {
 				_shape = SHAPE_DODECAHEDRON;
-				if (Genode::config()->xml_node().attribute("shape").has_value("cube"))
+				if (_config.xml().attribute("shape").has_value("cube"))
 					_shape = SHAPE_CUBE;
 			} catch (...) { }
 
 			try {
 				_painter = PAINTER_TEXTURED;
-				if (Genode::config()->xml_node().attribute("painter").has_value("shaded"))
+				if (_config.xml().attribute("painter").has_value("shaded"))
 					_painter = PAINTER_SHADED;
 			} catch (...) { }
 		}
 
-		Genode::Signal_dispatcher<Scene> _config_dispatcher;
+		Genode::Signal_handler<Scene> _config_handler;
 
 	public:
 
-		Scene(Genode::Signal_receiver &sig_rec, unsigned update_rate_ms,
-		      Nitpicker::Point pos, Nitpicker::Area size)
+		Scene(Genode::Env &env, Genode::uint64_t update_rate_ms,
+		      Gui::Point pos, Gui::Area size)
 		:
-			Nano3d::Scene<PT>(sig_rec, update_rate_ms, pos, size), _size(size),
-			_config_dispatcher(sig_rec, *this, &Scene::_handle_config)
+			Nano3d::Scene<PT>(env, update_rate_ms, pos, size),
+			_env(env), _size(size),
+			_config_handler(env.ep(), *this, &Scene::_handle_config)
 		{
-			Genode::config()->sigh(_config_dispatcher);
-			_handle_config(0);
+			_config.sigh(_config_handler);
+			_handle_config();
 		}
 
 	private:
 
-		Polygon::Shaded_painter _shaded_painter {
-			*Genode::env()->heap(), _size.h() };
-		Polygon::Textured_painter _textured_painter {
-			*Genode::env()->heap(), _size.h() };
+		Polygon::Shaded_painter   _shaded_painter   { _heap, _size.h() };
+		Polygon::Textured_painter _textured_painter { _heap, _size.h() };
 
 		Nano3d::Cube_shape         const _cube         { 7000 };
 		Nano3d::Dodecahedron_shape const _dodecahedron { 10000 };
@@ -219,17 +225,11 @@ class Scene : public Nano3d::Scene<PT>
 };
 
 
-int main(int argc, char **argv)
+void Component::construct(Genode::Env &env)
 {
-	static Genode::Signal_receiver sig_rec;
-
 	enum { UPDATE_RATE_MS = 20 };
 
-	static Scene<Genode::Pixel_rgb565>
-		scene(sig_rec, UPDATE_RATE_MS,
-		      Nitpicker::Point(-200, -200), Nitpicker::Area(400, 400));
-
-	scene.dispatch_signals_loop(sig_rec);
-
-	return 0;
+	static Scene<Genode::Pixel_rgb888>
+		scene(env, UPDATE_RATE_MS,
+		      Gui::Point(-200, -200), Gui::Area(400, 400));
 }

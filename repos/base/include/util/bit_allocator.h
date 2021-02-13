@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__BIT_ALLOCATOR_H_
@@ -34,8 +34,8 @@ class Genode::Bit_allocator
 
 		using Array = Bit_array<BITS_ALIGNED>;
 
-		addr_t _next;
-		Array  _array;
+		addr_t _next = 0;
+		Array  _array { };
 
 		/**
 		 * Reserve consecutive number of bits
@@ -52,10 +52,21 @@ class Genode::Bit_allocator
 	public:
 
 		class Out_of_indices : Exception {};
+		class Range_conflict : Exception {};
 
-		Bit_allocator() : _next(0) {
-			_reserve(BITS, BITS_ALIGNED - BITS); }
+		Bit_allocator() { _reserve(BITS, BITS_ALIGNED - BITS); }
+		Bit_allocator(Bit_allocator const &other) : _array(other._array) { }
 
+		/**
+		 * Allocate block of bits
+		 *
+		 * \param num_log2  2-based logarithm of size of block
+		 *
+		 * The requested block is allocated at the lowest available index in
+		 * the bit array.
+		 *
+		 * \throw Array::Out_of_indices
+		 */
 		addr_t alloc(size_t const num_log2 = 0)
 		{
 			addr_t const step = 1UL << num_log2;
@@ -82,10 +93,36 @@ class Genode::Bit_allocator
 			throw Out_of_indices();
 		}
 
+		/**
+		 * Allocate specific block of bits
+		 *
+		 * \param first_bit  desired address of block
+		 * \param num_log2   2-based logarithm of size of block
+		 *
+		 * \throw Range_conflict
+		 * \throw Array::Invalid_index_access
+		 */
+		void alloc_addr(addr_t const bit_start, size_t const num_log2 = 0)
+		{
+			addr_t const step = 1UL << num_log2;
+			if (_array.get(bit_start, step))
+				throw Range_conflict();
+
+			_array.set(bit_start, step);
+			_next = bit_start + step;
+			return;
+		}
+
 		void free(addr_t const bit_start, size_t const num_log2 = 0)
 		{
 			_array.clear(bit_start, 1UL << num_log2);
-			_next = bit_start;
+
+			/*
+			 * We only rewind the _next pointer (if needed) to densely allocate
+			 * from the start of the array and avoid gaps.
+			 */
+			if (bit_start < _next)
+				_next = bit_start;
 		}
 };
 

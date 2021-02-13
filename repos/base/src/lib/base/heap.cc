@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <util/construct_at.h>
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/heap.h>
-#include <base/lock.h>
 
 using namespace Genode;
 
@@ -36,33 +35,37 @@ namespace {
 }
 
 
+void Heap::Dataspace_pool::remove_and_free(Dataspace &ds)
+{
+	/*
+	 * read dataspace capability and modify _ds_list before detaching
+	 * possible backing store for Dataspace - we rely on LIFO list
+	 * manipulation here!
+	 */
+
+	Ram_dataspace_capability ds_cap = ds.cap;
+	void *ds_local_addr             = ds.local_addr;
+
+	remove(&ds);
+
+	/*
+	 * Call 'Dataspace' destructor to properly release the RAM dataspace
+	 * capabilities. Note that we don't free the 'Dataspace' object at the
+	 * local allocator because this is already done by the 'Heap'
+	 * destructor prior executing the 'Dataspace_pool' destructor.
+	 */
+	ds.~Dataspace();
+
+	region_map->detach(ds_local_addr);
+	ram_alloc->free(ds_cap);
+}
+
+
 Heap::Dataspace_pool::~Dataspace_pool()
 {
 	/* free all ram_dataspaces */
-	for (Dataspace *ds; (ds = first()); ) {
-
-		/*
-		 * read dataspace capability and modify _ds_list before detaching
-		 * possible backing store for Dataspace - we rely on LIFO list
-		 * manipulation here!
-		 */
-
-		Ram_dataspace_capability ds_cap = ds->cap;
-		void *ds_local_addr             = ds->local_addr;
-
-		remove(ds);
-
-		/*
-		 * Call 'Dataspace' destructor to properly release the RAM dataspace
-		 * capabilities. Note that we don't free the 'Dataspace' object at the
-		 * local allocator because this is already done by the 'Heap'
-		 * destructor prior executing the 'Dataspace_pool' destructor.
-		 */
-		ds->~Dataspace();
-
-		region_map->detach(ds_local_addr);
-		ram_session->free(ds_cap);
-	}
+	for (Dataspace *ds; (ds = first()); )
+		remove_and_free(*ds);
 }
 
 
@@ -83,22 +86,34 @@ Heap::Dataspace *Heap::_allocate_dataspace(size_t size, bool enforce_separate_me
 
 	/* make new ram dataspace available at our local address space */
 	try {
-		new_ds_cap = _ds_pool.ram_session->alloc(size);
-		ds_addr = _ds_pool.region_map->attach(new_ds_cap);
-	} catch (Ram_session::Alloc_failed) {
-		PWRN("could not allocate new dataspace of size %zu", size);
-		return 0;
-	} catch (Region_map::Attach_failed) {
-		PWRN("could not attach dataspace");
-		_ds_pool.ram_session->free(new_ds_cap);
-		return 0;
+		new_ds_cap = _ds_pool.ram_alloc->alloc(size);
+		try { ds_addr = _ds_pool.region_map->attach(new_ds_cap); }
+		catch (Out_of_ram) {
+			_ds_pool.ram_alloc->free(new_ds_cap);
+			return nullptr;
+		}
+		catch (Out_of_caps) {
+			_ds_pool.ram_alloc->free(new_ds_cap);
+			throw;
+		}
+		catch (Region_map::Invalid_dataspace) {
+			warning("heap: attempt to attach invalid dataspace");
+			_ds_pool.ram_alloc->free(new_ds_cap);
+			return nullptr;
+		}
+		catch (Region_map::Region_conflict) {
+			warning("heap: region conflict while allocating dataspace");
+			_ds_pool.ram_alloc->free(new_ds_cap);
+			return nullptr;
+		}
 	}
+	catch (Out_of_ram)  { return nullptr; }
 
 	if (enforce_separate_metadata) {
 
 		/* allocate the Dataspace structure */
-		if (_unsynchronized_alloc(sizeof(Heap::Dataspace), &ds_meta_data_addr) < 0) {
-			PWRN("could not allocate dataspace meta data");
+		if (!_unsynchronized_alloc(sizeof(Heap::Dataspace), &ds_meta_data_addr)) {
+			warning("could not allocate dataspace meta data");
 			return 0;
 		}
 
@@ -108,11 +123,10 @@ Heap::Dataspace *Heap::_allocate_dataspace(size_t size, bool enforce_separate_me
 		_alloc->add_range((addr_t)ds_addr, size);
 
 		/* allocate the Dataspace structure */
-		if (_alloc->alloc_aligned(sizeof(Heap::Dataspace), &ds_meta_data_addr, log2(sizeof(addr_t))).error()) {
-			PWRN("could not allocate dataspace meta data - this should never happen");
+		if (_alloc->alloc_aligned(sizeof(Heap::Dataspace), &ds_meta_data_addr, log2(16)).error()) {
+			warning("could not allocate dataspace meta data - this should never happen");
 			return 0;
 		}
-
 	}
 
 	ds = construct_at<Dataspace>(ds_meta_data_addr, new_ds_cap, ds_addr, size);
@@ -125,7 +139,7 @@ Heap::Dataspace *Heap::_allocate_dataspace(size_t size, bool enforce_separate_me
 
 bool Heap::_try_local_alloc(size_t size, void **out_addr)
 {
-	if (_alloc->alloc_aligned(size, out_addr, log2(sizeof(addr_t))).error())
+	if (_alloc->alloc_aligned(size, out_addr, log2(16)).error())
 		return false;
 
 	_quota_used += size;
@@ -152,7 +166,7 @@ bool Heap::_unsynchronized_alloc(size_t size, void **out_addr)
 		Heap::Dataspace *ds = _allocate_dataspace(dataspace_size, true);
 
 		if (!ds) {
-			PWRN("could not allocate dataspace");
+			warning("could not allocate dataspace");
 			return false;
 		}
 
@@ -205,8 +219,11 @@ bool Heap::_unsynchronized_alloc(size_t size, void **out_addr)
 
 bool Heap::alloc(size_t size, void **out_addr)
 {
+	if (size == 0)
+		error("attempt to allocate zero-size block from heap");
+
 	/* serialize access of heap functions */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
 	/* check requested allocation against quota limit */
 	if (size + _quota_used > _quota_limit)
@@ -216,48 +233,53 @@ bool Heap::alloc(size_t size, void **out_addr)
 }
 
 
-void Heap::free(void *addr, size_t size)
+void Heap::free(void *addr, size_t)
 {
 	/* serialize access of heap functions */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
-	if (size >= BIG_ALLOCATION_THRESHOLD) {
+	/* try to find the size in our local allocator */
+	size_t const size = _alloc->size_at(addr);
 
-		Heap::Dataspace *ds;
+	if (size != 0) {
 
-		for (ds = _ds_pool.first(); ds; ds = ds->next())
-			if (((addr_t)addr >= (addr_t)ds->local_addr) &&
-			    ((addr_t)addr <= (addr_t)ds->local_addr + ds->size - 1))
-				break;
-
-		_ds_pool.remove(ds);
-		_ds_pool.region_map->detach(ds->local_addr);
-		_ds_pool.ram_session->free(ds->cap);
-
-		_quota_used -= ds->size;
-
-		destroy(*_alloc, ds);
-
-	} else {
-
-		/*
-		 * forward request to our local allocator
-		 */
+		/* forward request to our local allocator */
 		_alloc->free(addr, size);
-
 		_quota_used -= size;
+		return;
 	}
+
+	/*
+	 * Block could not be found in local allocator. So it is either a big
+	 * allocation or invalid address.
+	 */
+
+	Heap::Dataspace *ds = nullptr;
+	for (ds = _ds_pool.first(); ds; ds = ds->next())
+		if (((addr_t)addr >= (addr_t)ds->local_addr) &&
+		    ((addr_t)addr <= (addr_t)ds->local_addr + ds->size - 1))
+			break;
+
+	if (!ds) {
+		warning("heap could not free memory block");
+		return;
+	}
+
+	_ds_pool.remove_and_free(*ds);
+	_alloc->free(ds);
+
+	_quota_used -= ds->size;
 }
 
 
-Heap::Heap(Ram_session *ram_session,
-           Region_map  *region_map,
-           size_t       quota_limit,
-           void        *static_addr,
-           size_t       static_size)
+Heap::Heap(Ram_allocator *ram_alloc,
+           Region_map    *region_map,
+           size_t         quota_limit,
+           void          *static_addr,
+           size_t         static_size)
 :
 	_alloc(nullptr),
-	_ds_pool(ram_session, region_map),
+	_ds_pool(ram_alloc, region_map),
 	_quota_limit(quota_limit), _quota_used(0),
 	_chunk_size(MIN_CHUNK_SIZE)
 {

@@ -7,39 +7,38 @@
  */
 
 /*
- * Copyright (C) 2012-2015 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <root/root.h>
 
 /* core includes */
+#include <hw/assert.h>
 #include <platform_pd.h>
 #include <platform_thread.h>
 
-extern int _prog_img_beg;
-extern int _prog_img_end;
-
 using namespace Genode;
+using Hw::Page_table;
 
 
 /**************************************
  ** Hw::Address_space implementation **
  **************************************/
 
-Core_mem_allocator * Hw::Address_space::_cma() {
-	return static_cast<Core_mem_allocator*>(platform()->core_mem_alloc()); }
+Core_mem_allocator &Hw::Address_space::_cma() {
+	return static_cast<Core_mem_allocator &>(platform().core_mem_alloc()); }
 
 
-void * Hw::Address_space::_table_alloc()
+void *Hw::Address_space::_table_alloc()
 {
-	void * ret;
-	if (!_cma()->alloc_aligned(sizeof(Translation_table), (void**)&ret,
-	                           Translation_table::ALIGNM_LOG2).ok())
-		throw Root::Quota_exceeded();
+	void * ret = nullptr;
+	if (!_cma().alloc_aligned(sizeof(Page_table), (void**)&ret,
+	                          Page_table::ALIGNM_LOG2).ok())
+		throw Insufficient_ram_quota();
 	return ret;
 }
 
@@ -50,80 +49,83 @@ bool Hw::Address_space::insert_translation(addr_t virt, addr_t phys,
 	try {
 		for (;;) {
 			try {
-				Lock::Guard guard(_lock);
-				_tt->insert_translation(virt, phys, size, flags, _tt_alloc);
+				Mutex::Guard guard(_mutex);
+				_tt.insert_translation(virt, phys, size, flags, _tt_alloc);
 				return true;
-			} catch(Allocator::Out_of_memory) {
-				flush(platform()->vm_start(), platform()->vm_size());
+			} catch(Hw::Out_of_tables &) {
+				flush(platform().vm_start(), platform().vm_size());
 			}
 		}
 	} catch(...) {
-		PERR("Invalid mapping %p -> %p (%zx)", (void*)phys, (void*)virt, size);
+		error("invalid mapping ", Hex(phys), " -> ", Hex(virt), " (", size, ")");
 	}
 	return false;
 }
 
 
-void Hw::Address_space::flush(addr_t virt, size_t size)
+bool Hw::Address_space::lookup_translation(addr_t const virt, addr_t & phys)
 {
-	Lock::Guard guard(_lock);
+	/** FIXME: for the time-being we use it without lock,
+	 * because it is used directly by the kernel when cache_coherent_region
+	 * gets called. In future it would be better that core provides an API
+	 * for it, and does the lookup with the hold lock
+	 */
+	return _tt.lookup_translation(virt, phys, _tt_alloc);
+}
+
+
+void Hw::Address_space::flush(addr_t virt, size_t size, Core_local_addr)
+{
+	Mutex::Guard guard(_mutex);
 
 	try {
-		if (_tt) _tt->remove_translation(virt, size, _tt_alloc);
-
-		/* update translation caches */
-		Kernel::update_pd(_kernel_pd);
+		_tt.remove_translation(virt, size, _tt_alloc);
+		Kernel::invalidate_tlb(*_kobj, virt, size);
 	} catch(...) {
-		PERR("tried to remove invalid region!");
+		error("tried to remove invalid region!");
 	}
 }
 
 
-Hw::Address_space::Address_space(Kernel::Pd* pd, Translation_table * tt,
-                                 Translation_table_allocator * tt_alloc)
-: _tt(tt), _tt_phys(tt), _tt_alloc(tt_alloc), _kernel_pd(pd) { }
+Hw::Address_space::Address_space(Page_table            & tt,
+                                 Page_table::Allocator & tt_alloc,
+                                 Platform_pd           & pd)
+: _tt(tt),
+  _tt_phys(Platform::core_page_table()),
+  _tt_alloc(tt_alloc),
+  _kobj(false, *(Page_table*)translation_table_phys(), pd) {}
 
 
-Hw::Address_space::Address_space(Kernel::Pd * pd)
-: _tt(construct_at<Translation_table>(_table_alloc())),
-  _tt_phys(reinterpret_cast<Translation_table*>(_cma()->phys_addr(_tt))),
-  _tt_alloc((new (_cma()) Table_allocator(_cma()))->alloc()),
-  _kernel_pd(pd)
-{
-	Lock::Guard guard(_lock);
-	Kernel::mtc()->map(_tt, _tt_alloc);
-}
+Hw::Address_space::Address_space(Platform_pd & pd)
+: _tt(*construct_at<Page_table>(_table_alloc(), *((Page_table*)Hw::Mm::core_page_tables().base))),
+  _tt_phys((addr_t)_cma().phys_addr(&_tt)),
+  _tt_array(new (_cma()) Array([] (void * virt) {
+    return (addr_t)_cma().phys_addr(virt);})),
+  _tt_alloc(_tt_array->alloc()),
+  _kobj(true, *(Page_table*)translation_table_phys(), pd) { }
 
 
 Hw::Address_space::~Address_space()
 {
-	flush(platform()->vm_start(), platform()->vm_size());
-	destroy(_cma(), Table_allocator::base(_tt_alloc));
-	destroy(_cma(), _tt);
+	flush(platform().vm_start(), platform().vm_size());
+	destroy(_cma(), _tt_array);
+	destroy(_cma(), &_tt);
 }
 
 
-/*************************************
- ** Capability_space implementation **
- *************************************/
+/******************************
+ ** Cap_space implementation **
+ ******************************/
 
-Capability_space::Capability_space()
-: _slab(nullptr, &_initial_sb) { }
+Cap_space::Cap_space() : _slab(nullptr, &_initial_sb) { }
 
 
-void Capability_space::upgrade_slab(Allocator &alloc)
+void Cap_space::upgrade_slab(Allocator &alloc)
 {
-	for (;;) {
-		void *block = nullptr;
-
-		/*
-		 * On every upgrade we try allocating as many blocks as possible.
-		 * If the underlying allocator complains that its quota is exceeded
-		 * this is normal as we use it as indication when to exit the loop.
-		 */
-		if (!alloc.alloc(SLAB_SIZE, &block)) return;
-		_slab.insert_sb(block);
-	}
+	void * block = nullptr;
+	if (!alloc.alloc(SLAB_SIZE, &block))
+		throw Out_of_ram();
+	_slab.insert_sb(block);
 }
 
 
@@ -131,18 +133,14 @@ void Capability_space::upgrade_slab(Allocator &alloc)
  ** Platform_pd implementation **
  ********************************/
 
-bool Platform_pd::bind_thread(Platform_thread * t)
+bool Platform_pd::bind_thread(Platform_thread &t)
 {
 	/* is this the first and therefore main thread in this PD? */
 	bool main_thread = !_thread_associated;
 	_thread_associated = true;
-	t->join_pd(this, main_thread, Address_space::weak_ptr());
+	t.join_pd(this, main_thread, Address_space::weak_ptr());
 	return true;
 }
-
-
-void Platform_pd::unbind_thread(Platform_thread *t) {
-	t->join_pd(nullptr, false, Address_space::weak_ptr()); }
 
 
 void Platform_pd::assign_parent(Native_capability parent)
@@ -152,21 +150,17 @@ void Platform_pd::assign_parent(Native_capability parent)
 }
 
 
-Platform_pd::Platform_pd(Translation_table * tt,
-                         Translation_table_allocator * alloc)
-: Hw::Address_space(kernel_object(), tt, alloc),
-  Kernel_object<Kernel::Pd>(false, tt, this),
-  _label("core") { }
+Platform_pd::Platform_pd(Page_table & tt,
+                         Page_table::Allocator & alloc)
+: Hw::Address_space(tt, alloc, *this), _label("core") { }
 
 
-Platform_pd::Platform_pd(Allocator * md_alloc, char const *label)
-: Hw::Address_space(kernel_object()),
-  Kernel_object<Kernel::Pd>(true, translation_table_phys(), this),
-  _label(label)
+Platform_pd::Platform_pd(Allocator &, char const *label)
+: Hw::Address_space(*this), _label(label)
 {
-	if (!_cap.valid()) {
-		PERR("failed to create kernel object");
-		throw Root::Unavailable();
+	if (!_kobj.cap().valid()) {
+		error("failed to create kernel object");
+		throw Service_denied();
 	}
 }
 
@@ -181,67 +175,6 @@ Platform_pd::~Platform_pd()
  ** Core_platform_pd implementation **
  *************************************/
 
-Translation_table * const Core_platform_pd::_table()
-{
-	return unmanaged_singleton<Translation_table,
-	                           1 << Translation_table::ALIGNM_LOG2>();
-}
-
-
-Translation_table_allocator * const Core_platform_pd::_table_alloc()
-{
-	constexpr size_t count = Genode::Translation_table::CORE_TRANS_TABLE_COUNT;
-	using Allocator = Translation_table_allocator_tpl<count>;
-
-	static Allocator * alloc = nullptr;
-	if (!alloc) {
-		void * base = (void*) Platform::core_translation_tables();
-		alloc = construct_at<Allocator>(base);
-	}
-	return alloc->alloc();
-}
-
-
-void Core_platform_pd::_map(addr_t start, addr_t end, bool io_mem)
-{
-	const Page_flags flags =
-		Page_flags::apply_mapping(true, io_mem ? UNCACHED : CACHED, io_mem);
-
-	start = trunc_page(start);
-
-	/* omitt regions before vm_start */
-	if (start < VIRT_ADDR_SPACE_START)
-		start = VIRT_ADDR_SPACE_START;
-
-	size_t size  = round_page(end) - start;
-	try {
-		_table()->insert_translation(start, start, size, flags, _table_alloc());
-	} catch(Allocator::Out_of_memory) {
-		PERR("Translation table needs to much RAM");
-	} catch(...) {
-		PERR("Invalid mapping %p -> %p (%zx)", (void*)start,
-			 (void*)start, size);
-	}
-}
-
-
 Core_platform_pd::Core_platform_pd()
-: Platform_pd(_table(), _table_alloc())
-{
-	/* map exception vector for core */
-	Kernel::mtc()->map(_table(), _table_alloc());
-
-	/* map core's program image */
-	_map((addr_t)&_prog_img_beg, (addr_t)&_prog_img_end, false);
-
-	/* map core's page table allocator */
-	_map(Platform::core_translation_tables(),
-	     Platform::core_translation_tables() +
-	     Platform::core_translation_tables_size(), false);
-
-	/* map core's mmio regions */
-	Native_region * r = Platform::_core_only_mmio_regions(0);
-	for (unsigned i = 0; r;
-		 r = Platform::_core_only_mmio_regions(++i))
-		_map(r->base, r->base + r->size, true);
-}
+: Platform_pd(*(Hw::Page_table*)Hw::Mm::core_page_tables().base,
+              Platform::core_page_table_allocator()) { }

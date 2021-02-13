@@ -5,98 +5,144 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
+#include <base/log.h>
+#include <base/component.h>
+#include <base/attached_rom_dataspace.h>
 #include <os/reporter.h>
-#include <os/attached_rom_dataspace.h>
 #include <timer_session/connection.h>
 
 
 #define ASSERT(cond) \
 	if (!(cond)) { \
-		PERR("assertion %s failed", #cond); \
-		return -2; }
+		error("assertion ", #cond, " failed"); \
+		throw -2; }
 
 
-static void report_brightness(Genode::Reporter &reporter, int value)
-{
-	Genode::Reporter::Xml_generator xml(reporter, [&] () {
-		xml.attribute("brightness", value); });
+namespace Test {
+	struct Main;
+	using namespace Genode;
 }
 
 
-int main(int argc, char **argv)
+struct Test::Main
 {
-	using namespace Genode;
+	Env &_env;
 
-	Signal_receiver sig_rec;
-	Signal_context  sig_ctx;
-	Signal_context_capability sig_cap = sig_rec.manage(&sig_ctx);
+	Timer::Connection _timer { _env };
 
-	printf("--- test-report_rom started ---\n");
+	Constructible<Reporter> _brightness_reporter { };
 
-	printf("Reporter: open session\n");
-	Reporter brightness_reporter("brightness");
-	brightness_reporter.enabled(true);
-
-	printf("Reporter: brightness 10\n");
-	report_brightness(brightness_reporter, 10);
-
-	printf("ROM client: request brightness report\n");
-	Attached_rom_dataspace brightness_rom("brightness");
-
-	ASSERT(brightness_rom.valid());
-
-	brightness_rom.sigh(sig_cap);
-	printf("         -> %s\n", brightness_rom.local_addr<char>());
-
-	printf("Reporter: updated brightness to 77\n");
-	report_brightness(brightness_reporter, 77);
-
-	printf("ROM client: wait for update notification\n");
-	sig_rec.wait_for_signal();
-	printf("ROM client: got signal\n");
-
-	printf("ROM client: request updated brightness report\n");
-	brightness_rom.update();
-	printf("         -> %s\n", brightness_rom.local_addr<char>());
-
-	printf("Reporter: close report session\n");
-	brightness_reporter.enabled(false);
-
-	/* give report_rom some time to close the report session */
-	static Timer::Connection timer;
-	timer.msleep(250);
-
-	brightness_rom.update();
-	ASSERT(brightness_rom.valid());
-	printf("ROM client: ROM is available despite report was closed - OK\n");
-
-	printf("Reporter: start reporting (while the ROM client still listens)\n");
-	brightness_reporter.enabled(true);
-	report_brightness(brightness_reporter, 99);
-
-	printf("ROM client: wait for update notification\n");
-	sig_rec.wait_for_signal();
-
-	try {
-		printf("ROM client: try to open the same report again\n");
-		Reporter again("brightness");
-		again.enabled(true);
-		PERR("expected Service_denied");
-		return -3;
-	} catch (Genode::Parent::Service_denied) {
-		printf("ROM client: catched Parent::Service_denied - OK\n");
+	void _report_brightness(int value)
+	{
+		Reporter::Xml_generator xml(*_brightness_reporter, [&] () {
+			xml.attribute("value", value); });
 	}
 
-	printf("--- test-report_rom finished ---\n");
+	Constructible<Attached_rom_dataspace> _brightness_rom { };
 
-	sig_rec.dissolve(&sig_ctx);
+	enum State { WAIT_FOR_FIRST_UPDATE,
+	             WAIT_FOR_TIMEOUT,
+	             WAIT_FOR_SECOND_UPDATE } _state = WAIT_FOR_FIRST_UPDATE;
 
-	return 0;
-}
+	void _handle_rom_update()
+	{
+		if (_state == WAIT_FOR_FIRST_UPDATE) {
+
+			log("ROM client: got signal");
+
+			log("ROM client: request updated brightness report");
+			_brightness_rom->update();
+			log("         -> ", _brightness_rom->local_addr<char const>());
+
+			log("Reporter: close report session, wait a bit");
+			_brightness_reporter->enabled(false);
+
+			_timer.trigger_once(250*1000);
+			_state = WAIT_FOR_TIMEOUT;
+			return;
+		}
+
+		if (_state == WAIT_FOR_SECOND_UPDATE) {
+			try {
+				log("ROM client: try to open the same report again");
+				Reporter again { _env, "brightness" };
+				again.enabled(true);
+				error("expected Service_denied");
+				throw -3;
+			}
+			catch (Service_denied) {
+				log("ROM client: caught Service_denied - OK"); }
+
+			log("--- test-report_rom finished ---");
+			_env.parent().exit(0);
+			return;
+		}
+	}
+
+	Signal_handler<Main> _rom_update_handler {
+		_env.ep(), *this, &Main::_handle_rom_update };
+
+	void _handle_timer()
+	{
+		if (_state == WAIT_FOR_TIMEOUT) {
+			log("got timeout");
+			String<100> rom_content(_brightness_rom->local_addr<char const>()),
+			            expected("<brightness value=\"77\"/>\n");
+			log("         -> ", rom_content);
+			if (rom_content != expected) {
+				error("unexpected ROM content: '", rom_content, "'");
+				_env.parent().exit(-1);
+			}
+			_brightness_rom->update();
+			ASSERT(_brightness_rom->valid());
+			log("ROM client: ROM is available despite report was closed - OK");
+
+			log("Reporter: start reporting (while the ROM client still listens)");
+			_brightness_reporter->enabled(true);
+			_report_brightness(99);
+
+			log("ROM client: wait for update notification");
+			_state = WAIT_FOR_SECOND_UPDATE;
+			return;
+		}
+	}
+
+	Signal_handler<Main> _timer_handler {
+		_env.ep(), *this, &Main::_handle_timer };
+
+	Main(Env &env) : _env(env)
+	{
+		log("--- test-report_rom started ---");
+
+		_timer.sigh(_timer_handler);
+
+		log("Reporter: open session");
+		_brightness_reporter.construct(_env, "brightness");
+		_brightness_reporter->enabled(true);
+
+		log("Reporter: brightness 10");
+		_report_brightness(10);
+
+		log("ROM client: request brightness report");
+		_brightness_rom.construct(_env, "brightness");
+
+		ASSERT(_brightness_rom->valid());
+
+		_brightness_rom->sigh(_rom_update_handler);
+		log("         -> ", _brightness_rom->local_addr<char const>());
+
+		log("Reporter: updated brightness to 77");
+		_report_brightness(77);
+
+		log("ROM client: wait for update notification");
+	}
+};
+
+
+void Component::construct(Genode::Env &env) { static Test::Main main(env); }

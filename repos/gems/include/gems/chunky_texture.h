@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__GEMS__CHUNKY_TEXTURE_H_
@@ -16,7 +16,7 @@
 
 #include <os/surface.h>
 #include <os/texture.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 
 template <typename PT>
 class Chunky_texture : Genode::Attached_ram_dataspace, public Genode::Texture<PT>
@@ -53,9 +53,10 @@ class Chunky_texture : Genode::Attached_ram_dataspace, public Genode::Texture<PT
 
 	public:
 
-		Chunky_texture(Genode::Ram_session &ram, Genode::Surface_base::Area size)
+		Chunky_texture(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+		               Genode::Surface_base::Area size)
 		:
-			Genode::Attached_ram_dataspace(&ram, _num_bytes(size)),
+			Genode::Attached_ram_dataspace(ram, rm, _num_bytes(size)),
 			Genode::Texture<PT>(_pixel(), _alpha(size), size)
 		{ }
 };

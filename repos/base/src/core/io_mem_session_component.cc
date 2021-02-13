@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <util/string.h>
@@ -22,12 +22,9 @@
 using namespace Genode;
 
 
-static const bool verbose = false;
-
-
 Io_mem_session_component::Dataspace_attr
 Io_mem_session_component::_prepare_io_mem(const char      *args,
-                                          Range_allocator *ram_alloc)
+                                          Range_allocator &ram_alloc)
 {
 	addr_t req_base = Arg_string::find_arg(args, "base").ulong_value(0);
 	size_t req_size = Arg_string::find_arg(args, "size").ulong_value(0);
@@ -45,19 +42,20 @@ Io_mem_session_component::_prepare_io_mem(const char      *args,
 
 	/* check for RAM collision */
 	int ret;
-	if ((ret = ram_alloc->remove_range(base, size))) {
-		PERR("I/O memory [%lx,%lx) used by RAM allocator (%d)", base, base + size, ret);
+	if ((ret = ram_alloc.remove_range(base, size))) {
+		error("I/O memory ", Hex_range<addr_t>(base, size), " "
+		      "used by RAM allocator (", ret, ")");
 		return Dataspace_attr();
 	}
 
 	/* allocate region */
-	switch (_io_mem_alloc->alloc_addr(req_size, req_base).value) {
+	switch (_io_mem_alloc.alloc_addr(req_size, req_base).value) {
 	case Range_allocator::Alloc_return::RANGE_CONFLICT:
-		PERR("I/O memory [%lx,%lx) not available", req_base, req_base + req_size);
+		error("I/O memory ", Hex_range<addr_t>(req_base, req_size), " not available");
 		return Dataspace_attr();
 
 	case Range_allocator::Alloc_return::OUT_OF_METADATA:
-		PERR("I/O memory allocator ran out of meta data");
+		error("I/O memory allocator ran out of meta data");
 		return Dataspace_attr();
 
 	case Range_allocator::Alloc_return::OK: break;
@@ -66,18 +64,13 @@ Io_mem_session_component::_prepare_io_mem(const char      *args,
 	/* request local mapping */
 	addr_t local_addr = _map_local(base, size);
 
-	if (verbose)
-		PDBG("I/O mem [%lx,%lx) => [%lx,%lx)%s",
-		     base, base + size, local_addr, local_addr + size,
-		     (_cacheable == WRITE_COMBINED) ? " (write-combined)" : "");
-
 	return Dataspace_attr(size, local_addr, base, _cacheable, req_base);
 }
 
 
-Io_mem_session_component::Io_mem_session_component(Range_allocator *io_mem_alloc,
-                                                   Range_allocator *ram_alloc,
-                                                   Rpc_entrypoint  *ds_ep,
+Io_mem_session_component::Io_mem_session_component(Range_allocator &io_mem_alloc,
+                                                   Range_allocator &ram_alloc,
+                                                   Rpc_entrypoint  &ds_ep,
                                                    const char      *args)
 :
 	_io_mem_alloc(io_mem_alloc),
@@ -85,23 +78,20 @@ Io_mem_session_component::Io_mem_session_component(Range_allocator *io_mem_alloc
 	_ds_ep(ds_ep)
 {
 	if (!_ds.valid()) {
-		PERR("Local MMIO mapping failed!");
+		error("Local MMIO mapping failed!");
 
 		_ds_cap = Io_mem_dataspace_capability();
-		throw Root::Invalid_args();
+		throw Service_denied();
 	}
 
-	_ds_cap = static_cap_cast<Io_mem_dataspace>(_ds_ep->manage(&_ds));
+	_ds_cap = static_cap_cast<Io_mem_dataspace>(_ds_ep.manage(&_ds));
 }
 
 
 Io_mem_session_component::~Io_mem_session_component()
 {
-	if (verbose)
-		PDBG("I/O mem free [%lx,%lx)", _ds.phys_addr(), _ds.phys_addr() + _ds.size());
-
 	/* dissolve IO_MEM dataspace from service entry point */
-	_ds_ep->dissolve(&_ds);
+	_ds_ep.dissolve(&_ds);
 
 	/* flush local mapping of IO_MEM */
 	_unmap_local(_ds.core_local_addr(), _ds.size());
@@ -113,5 +103,5 @@ Io_mem_session_component::~Io_mem_session_component()
 	 */
 
 	/* free region in IO_MEM allocator */
-	_io_mem_alloc->free(reinterpret_cast<void *>(_ds.req_base));
+	_io_mem_alloc.free(reinterpret_cast<void *>(_ds.req_base));
 }

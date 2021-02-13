@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NOVA_NATIVE_CPU__CLIENT_H_
@@ -20,13 +20,14 @@
 namespace Genode { struct Nova_native_cpu_client; }
 
 
-struct Genode::Nova_native_cpu_client : Rpc_client<Nova_native_cpu>
+struct Genode::Nova_native_cpu_client : Rpc_client<Cpu_session::Native_cpu>
 {
-	explicit Nova_native_cpu_client(Capability<Native_cpu> cap)
-	: Rpc_client<Nova_native_cpu>(static_cap_cast<Nova_native_cpu>(cap)) { }
+	explicit Nova_native_cpu_client(Capability<Cpu_session::Native_cpu> cap)
+	: Rpc_client<Cpu_session::Native_cpu>(cap) { }
 
-	Native_capability pager_cap(Thread_capability cap) {
-		return call<Rpc_pager_cap>(cap); }
+	void thread_type(Thread_capability thread_cap, Thread_type thread_type,
+	                 Exception_base exception_base) override {
+		call<Rpc_thread_type>(thread_cap, thread_type, exception_base); }
 };
 
 #endif /* _INCLUDE__NOVA_NATIVE_CPU__CLIENT_H_ */

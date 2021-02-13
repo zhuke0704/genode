@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__AUDIO_IN_SESSION__CLIENT_H_
@@ -17,6 +17,7 @@
 /* Genode includes */
 #include <base/env.h>
 #include <base/rpc_client.h>
+#include <base/attached_dataspace.h>
 #include <audio_in_session/audio_in_session.h>
 
 
@@ -33,6 +34,7 @@ struct Audio_in::Signal
 	Genode::Signal_context_capability cap;
 
 	Signal() : cap(recv.manage(&context)) { }
+	~Signal() { recv.dissolve(&context); }
 
 	void wait() { recv.wait_for_signal(); }
 };
@@ -41,6 +43,8 @@ struct Audio_in::Signal
 class Audio_in::Session_client : public Genode::Rpc_client<Session>
 {
 	private:
+
+		Genode::Attached_dataspace _shared_ds;
 
 		Signal _progress;
 
@@ -54,14 +58,15 @@ class Audio_in::Session_client : public Genode::Rpc_client<Session>
 		 * \param session          session capability
 		 * \param progress_signal  true, install 'progress_signal' receiver
 		 */
-		Session_client(Genode::Capability<Session> session,
+		Session_client(Genode::Region_map &rm,
+		               Genode::Capability<Session> session,
 		               bool progress_signal)
 		:
 		  Genode::Rpc_client<Session>(session),
+		  _shared_ds(rm, call<Rpc_dataspace>()),
 		  _data_avail(call<Rpc_data_avail_sigh>())
 		{
-			/* ask server for stream data space and attach it */
-			_stream = static_cast<Stream *>(Genode::env()->rm_session()->attach(call<Rpc_dataspace>()));
+			_stream = _shared_ds.local_addr<Stream>();
 
 			if (progress_signal)
 				progress_sigh(_progress.cap);
@@ -107,8 +112,8 @@ class Audio_in::Session_client : public Genode::Rpc_client<Session>
 		void wait_for_progress()
 		{
 			if (!_progress.cap.valid()) {
-				PWRN("Progress signal is not installed, will not block "
-				     "(enable in 'Audio_in::Connection')");
+				Genode::warning("Progress signal is not installed, will not block "
+				                "(enable in 'Audio_in::Connection')");
 				return;
 			}
 

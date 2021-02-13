@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__RELOCATION_GENERIC_H_
@@ -18,9 +18,9 @@
 
 constexpr bool verbose_relocation = false;
 
-static inline bool verbose_reloc(Linker::Dependency const *d)
+static inline bool verbose_reloc(Linker::Dependency const &d)
 {
-	return d->root && verbose_relocation;
+	return d.root() && verbose_relocation;
 }
 
 /**
@@ -31,7 +31,7 @@ extern "C" void _jmp_slot(void);
 
 namespace Linker
 {
-	struct Plt_got;
+	template <unsigned JUMP_INDEX = 2> struct Plt_got_generic;
 	template <typename REL, unsigned TYPE, bool DIV> class Reloc_jmpslot_generic;
 	template <typename REL, unsigned TYPE, unsigned JMPSLOT> struct Reloc_plt_generic;
 	template <typename REL, unsigned TYPE> struct Reloc_bind_now_generic;
@@ -43,15 +43,15 @@ namespace Linker
  * Set 2nd and 3rd GOT entry (see: SYSTEM V APPLICATION BINARY INTERFACE
  * Intel386 Architecture Processor Supplement - 5.9
  */
-struct Linker::Plt_got
+template <unsigned JUMP_INDEX> struct Linker::Plt_got_generic
 {
-	Plt_got(Dependency const *dep, Elf::Addr *pltgot)
+	Plt_got_generic(Dependency const &dep, Elf::Addr *pltgot)
 	{
 		if (verbose_relocation)
-			PDBG("OBJ: %s (%p)", dep->obj->name(), dep);
+			log("OBJ: ", dep.obj().name(), " (", &dep, ")");
 
-		pltgot[1] = (Elf::Addr) dep;        /* ELF object */
-		pltgot[2] = (Elf::Addr) &_jmp_slot; /* Linker entry */
+		pltgot[1]          = (Elf::Addr) &dep;       /* ELF object */
+		pltgot[JUMP_INDEX] = (Elf::Addr) &_jmp_slot; /* Linker entry */
 	}
 };
 
@@ -62,11 +62,11 @@ struct Linker::Plt_got
 template<typename REL, unsigned TYPE, unsigned JMPSLOT>
 struct Linker::Reloc_plt_generic
 {
-	Reloc_plt_generic(Object const *obj, D_tag const type,
+	Reloc_plt_generic(Object const &obj, D_tag const type,
 	                  Elf::Rel const *start, unsigned long size)
 	{
 		if (type != TYPE) {
-			PERR("LD: Unsupported PLT relocation type: %u", type);
+			error("LD: Unsupported PLT relocation type: ", (int)type);
 			throw Incompatible();
 		}
 
@@ -75,13 +75,13 @@ struct Linker::Reloc_plt_generic
 		for (; rel < end; rel++) {
 
 			if (rel->type() != JMPSLOT) {
-				PERR("LD: Unsupported PLT relocation %u", rel->type());
+				error("LD: Unsupported PLT relocation ", (int)rel->type());
 				throw Incompatible();
 			}
 
 			/* find relocation address and add relocation base */
-			Elf::Addr *addr = (Elf::Addr *)(obj->reloc_base() + rel->offset);
-			*addr          += obj->reloc_base();
+			Elf::Addr *addr = (Elf::Addr *)(obj.reloc_base() + rel->offset);
+			*addr          += obj.reloc_base();
 		}
 	}
 };
@@ -91,7 +91,7 @@ class Linker::Reloc_non_plt_generic
 {
 	protected:
 
-		Dependency const *_dep;
+		Dependency const &_dep;
 
 		/**
 		 * Copy relocations, these are just for the main program, we can do them
@@ -101,8 +101,9 @@ class Linker::Reloc_non_plt_generic
 		template <typename REL>
 		void _copy(REL const *rel, Elf::Addr *addr)
 		{
-			if (!_dep->obj->is_binary()) {
-				PERR("LD: Copy relocation in DSO (%s at %p)", _dep->obj->name(), addr);
+			if (!_dep.obj().is_binary()) {
+				error("LD: copy relocation in DSO "
+				      "(", _dep.obj().name(), " at ", addr, ")");
 				throw Incompatible();
 			}
 
@@ -111,21 +112,22 @@ class Linker::Reloc_non_plt_generic
 
 			 /* search symbol in other objects, do not return undefined symbols */
 			if (!(sym = lookup_symbol(rel->sym(), _dep, &reloc_base, false, true))) {
-				PWRN("LD: Symbol not found");
+				warning("LD: symbol not found");
 				return;
 			}
 
 			Elf::Addr src = reloc_base + sym->st_value;
-			Genode::memcpy(addr, (void *)src, sym->st_size);
+			memcpy(addr, (void *)src, sym->st_size);
 
 			if (verbose_relocation)
-				PDBG("Copy relocation: " EFMT " -> %p (0x" EFMT " bytes) val: " EFMT "\n",
-				      src, addr, sym->st_size, sym->st_value);
+				log("Copy relocation: ", Hex(src),
+				    " -> ", addr, " (", Hex(sym->st_size), " bytes)"
+				    " val: ", Hex(sym->st_value));
 		}
 
 	public:
 
-		Reloc_non_plt_generic(Dependency const *dep) : _dep(dep) { }
+		Reloc_non_plt_generic(Dependency const &dep) : _dep(dep) { }
 };
 
 
@@ -139,11 +141,11 @@ class Linker::Reloc_jmpslot_generic
 
 	public:
 
-		Reloc_jmpslot_generic(Dependency const *dep, unsigned const type, Elf::Rel const* pltrel,
+		Reloc_jmpslot_generic(Dependency const &dep, unsigned const type, Elf::Rel const* pltrel,
 		                      Elf::Size const index)
 		{
 			if (type != TYPE) {
-				PERR("LD: Unsupported JMP relocation type: %u", type);
+				error("LD: unsupported JMP relocation type: ", (int)type);
 				throw Incompatible();
 			}
 		
@@ -152,22 +154,23 @@ class Linker::Reloc_jmpslot_generic
 			Elf::Addr      reloc_base;
 
 			if (!(sym = lookup_symbol(rel->sym(), dep, &reloc_base))) {
-				PWRN("LD: Symbol not found");
+				warning("LD: symbol not found");
 				return;
 			}
 
 			/* write address of symbol to jump slot */
-			_addr  = (Elf::Addr *)(dep->obj->reloc_base() + rel->offset);
+			_addr  = (Elf::Addr *)(dep.obj().reloc_base() + rel->offset);
 			*_addr = reloc_base + sym->st_value;
 
 
 			if (verbose_relocation) {
-				PDBG("jmp: rbase " EFMT " s: %p sval: " EFMT, reloc_base, sym, sym->st_value);
-				PDBG("jmp_slot at %p -> " EFMT, _addr, *_addr);
+				log("jmp: rbase ", Hex(reloc_base),
+				    " s: ", sym, " sval: ", Hex(sym->st_value));
+				log("jmp_slot at ", _addr, " -> ", *_addr);
 			}
 		}
 
-		Elf::Addr target_addr() const { return *_addr; }
+		Elf::Addr target_addr() const { return _addr ? *_addr : 0; }
 };
 
 
@@ -177,7 +180,7 @@ class Linker::Reloc_jmpslot_generic
 template <typename REL, unsigned TYPE>
 struct Linker::Reloc_bind_now_generic
 {
-	Reloc_bind_now_generic(Dependency const *dep, Elf::Rel const *pltrel, unsigned long const size)
+	Reloc_bind_now_generic(Dependency const &dep, Elf::Rel const *pltrel, unsigned long const size)
 	{
 		Elf::Size last_index = size / sizeof(REL);
 

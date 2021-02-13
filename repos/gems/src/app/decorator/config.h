@@ -5,17 +5,19 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CONFIG_H_
 #define _CONFIG_H_
 
 /* Genode includes */
+#include <util/reconstructible.h>
 #include <os/session_policy.h>
+#include <os/buffered_xml.h>
 #include <util/color.h>
 
 /* decorator includes */
@@ -24,8 +26,10 @@
 namespace Decorator {
 
 	class Config;
-
 	typedef Genode::String<200> Window_title;
+
+	using Genode::Allocator;
+	using Genode::Reconstructible;
 }
 
 
@@ -78,7 +82,15 @@ class Decorator::Config
 
 	private:
 
+		/**
+		 * Noncopyable
+		 */
+		Config(Config const &);
+		Config & operator = (Config const &);
+
 		Genode::Allocator &_alloc;
+
+		Reconstructible<Genode::Buffered_xml> _buffered_config;
 
 		/**
 		 * Maximum number of configured window controls
@@ -105,7 +117,9 @@ class Decorator::Config
 
 	public:
 
-		Config(Genode::Allocator &alloc) : _alloc(alloc)
+		Config(Genode::Allocator &alloc, Xml_node config)
+		:
+			_alloc(alloc), _buffered_config(_alloc, config)
 		{
 			_reset_window_controls();
 		}
@@ -153,7 +167,7 @@ class Decorator::Config
 			Color result(68, 75, 95);
 
 			try {
-				Genode::Session_policy policy(title);
+				Genode::Session_policy policy(title, _buffered_config->xml());
 				result = policy.attribute_value("color", result);
 
 			} catch (Genode::Session_policy::No_policy_defined) { }
@@ -167,10 +181,10 @@ class Decorator::Config
 		int gradient_percent(Window_title const &title) const
 		{
 			unsigned long result =
-				Genode::config()->xml_node().attribute_value("gradient", 32UL);
+				_buffered_config->xml().attribute_value("gradient", 32UL);
 			
 			try {
-				Genode::Session_policy policy(title);
+				Genode::Session_policy policy(title, _buffered_config->xml());
 				result = policy.attribute_value("gradient", result);
 
 			} catch (Genode::Session_policy::No_policy_defined) { }
@@ -181,8 +195,10 @@ class Decorator::Config
 		/**
 		 * Update the internally cached configuration state
 		 */
-		void update()
+		void update(Xml_node config)
 		{
+			_buffered_config.construct(_alloc, config);
+
 			_reset_window_controls();
 
 			/*
@@ -191,7 +207,7 @@ class Decorator::Config
 			auto lambda = [&] (Xml_node node) {
 
 				if (_num_window_controls >= MAX_WINDOW_CONTROLS) {
-					PWRN("number of configured window controls exceeds maximum");
+					Genode::warning("number of configured window controls exceeds maximum");
 					return;
 				}
 
@@ -212,8 +228,6 @@ class Decorator::Config
 				_window_controls[_num_window_controls++] =
 					new (_alloc) Window_control(type, align);
 			};
-
-			Xml_node config = Genode::config()->xml_node();
 
 			try { config.sub_node("controls").for_each_sub_node(lambda); }
 			catch (Xml_node::Nonexistent_sub_node) { }

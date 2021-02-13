@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__GEMS__PNG_IMAGE_H_
@@ -45,89 +45,125 @@ class Png_image
 			return arg;
 		};
 
-		struct Read_struct
+		Genode::Ram_allocator &_ram;
+		Genode::Region_map    &_rm;
+		Genode::Allocator     &_alloc;
+
+		class Read_struct
 		{
-			/* start of PNG data */
-			png_bytep const data;
+			private:
 
-			/* read position, maintained by 'read_callback' */
-			unsigned pos = 0;
+				/*
+				 * Noncopyable
+				 */
+				Read_struct(Read_struct const &);
+				Read_struct & operator = (Read_struct const &);
 
-			static void callback(png_structp png_ptr, png_bytep dst, png_size_t len)
-			{
-				Png_image *png = (Png_image *)png_get_io_ptr(png_ptr);
-				Genode::memcpy(dst, png->_read_struct.data + png->_read_struct.pos, len);
-				png->_read_struct.pos += len;
-			}
+			public:
 
-			png_structp png_ptr =
-				_assert_non_null<Read_struct_failed>(
-					png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0));
+				/* start of PNG data */
+				png_bytep const data;
 
-			Read_struct(void *data) : data((png_bytep)data)
-			{
-				png_set_read_fn(png_ptr, this, callback);
-			}
+				/* read position, maintained by 'read_callback' */
+				unsigned pos = 0;
 
-			~Read_struct()
-			{
-				png_destroy_read_struct(&png_ptr, nullptr, nullptr);
-			}
+				static void callback(png_structp png_ptr, png_bytep dst, png_size_t len)
+				{
+					Read_struct &read_struct = *(Read_struct *)png_get_io_ptr(png_ptr);
+					Genode::memcpy(dst, read_struct.data + read_struct.pos, len);
+					read_struct.pos += len;
+				}
+
+				png_structp png_ptr =
+					_assert_non_null<Read_struct_failed>(
+						png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0));
+
+				Read_struct(void const *data) : data((png_bytep)data)
+				{
+					png_set_read_fn(png_ptr, this, callback);
+				}
+
+				~Read_struct()
+				{
+					png_destroy_read_struct(&png_ptr, nullptr, nullptr);
+				}
 		};
 
 		Read_struct _read_struct;
 
-		struct Info
+		class Info
 		{
-			png_structp png_ptr;
-			png_infop   info_ptr;
+			private:
 
-			int         bit_depth, color_type, interlace_type;
-			png_uint_32 img_w, img_h;
+				/*
+				 * Noncopyable
+				 */
+				Info(Info const &);
+				Info & operator = (Info const &);
 
-			Info(png_structp png_ptr)
-			:
-				png_ptr(png_ptr),
-				info_ptr(_assert_non_null<Info_failed>(png_create_info_struct(png_ptr)))
-			{
-				png_read_info(png_ptr, info_ptr);
+			public:
 
-				png_get_IHDR(png_ptr, info_ptr, &img_w, &img_h, &bit_depth, &color_type,
-				             &interlace_type, nullptr, nullptr);
+				png_structp png_ptr;
+				png_infop   info_ptr;
 
-				if (color_type == PNG_COLOR_TYPE_PALETTE)
-					png_set_palette_to_rgb(png_ptr);
+				int         bit_depth = 0, color_type = 0, interlace_type = 0;
+				png_uint_32 img_w = 0, img_h = 0;
 
-				if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
-					png_set_gray_to_rgb(png_ptr);
+				Info(png_structp png_ptr)
+				:
+					png_ptr(png_ptr),
+					info_ptr(_assert_non_null<Info_failed>(png_create_info_struct(png_ptr)))
+				{
+					png_read_info(png_ptr, info_ptr);
 
-				if (bit_depth <   8) png_set_packing(png_ptr);
-				if (bit_depth == 16) png_set_strip_16(png_ptr);
-			}
+					png_get_IHDR(png_ptr, info_ptr, &img_w, &img_h, &bit_depth, &color_type,
+					             &interlace_type, nullptr, nullptr);
 
-			~Info()
-			{
-				png_destroy_info_struct(png_ptr, &info_ptr);
-			}
+					if (color_type == PNG_COLOR_TYPE_PALETTE)
+						png_set_palette_to_rgb(png_ptr);
+
+					if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+						png_set_gray_to_rgb(png_ptr);
+
+					if (bit_depth <   8) png_set_packing(png_ptr);
+					if (bit_depth == 16) png_set_strip_16(png_ptr);
+				}
+
+				~Info()
+				{
+					png_destroy_info_struct(png_ptr, &info_ptr);
+				}
 
 		} _info { _read_struct.png_ptr };
 
-		struct Row
+		class Row
 		{
-			size_t const row_num_bytes;
-			png_bytep const row_ptr;
+			private:
 
-			Row(png_structp png_ptr, png_infop info_ptr)
-			:
-				row_num_bytes(png_get_rowbytes(png_ptr, info_ptr)*8),
-				row_ptr((png_bytep)Genode::env()->heap()->alloc(row_num_bytes))
-			{ }
+				/*
+				 * Noncopyable
+				 */
+				Row(Row const &);
+				Row & operator = (Row const &);
 
-			~Row()
-			{
-				Genode::env()->heap()->free(row_ptr, row_num_bytes);
-			}
-		} _row { _read_struct.png_ptr, _info.info_ptr };
+			public:
+
+				Genode::Allocator &alloc;
+				size_t const row_num_bytes;
+				png_bytep const row_ptr;
+
+				Row(Genode::Allocator &alloc, png_structp png_ptr, png_infop info_ptr)
+				:
+					alloc(alloc),
+					row_num_bytes(png_get_rowbytes(png_ptr, info_ptr)*8),
+					row_ptr((png_bytep)alloc.alloc(row_num_bytes))
+				{ }
+
+				~Row()
+				{
+					alloc.free(row_ptr, row_num_bytes);
+				}
+		} _row { _alloc, _read_struct.png_ptr, _info.info_ptr };
 
 	public:
 
@@ -137,7 +173,11 @@ class Png_image
 		 * \throw Read_struct_failed
 		 * \throw Info_failed
 		 */
-		Png_image(void *data) : _read_struct(data) { }
+		Png_image(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+		          Genode::Allocator &alloc, void const *data)
+		:
+			_ram(ram), _rm(rm), _alloc(alloc), _read_struct(data)
+		{ }
 
 		/**
 		 * Return size of PNG image
@@ -153,8 +193,8 @@ class Png_image
 		template <typename PT>
 		Genode::Texture<PT> *texture()
 		{
-			Genode::Texture<PT> *texture = new (Genode::env()->heap())
-				Chunky_texture<PT>(*Genode::env()->ram_session(), size());
+			Genode::Texture<PT> *texture = new (_alloc)
+				Chunky_texture<PT>(_ram, _rm, size());
 
 			/* fill texture with PNG image data */
 			for (unsigned i = 0; i < size().h(); i++) {
@@ -174,7 +214,7 @@ class Png_image
 			Chunky_texture<PT> *chunky_texture =
 				static_cast<Chunky_texture<PT> *>(texture);
 
-			Genode::destroy(Genode::env()->heap(), chunky_texture);
+			Genode::destroy(_alloc, chunky_texture);
 		}
 };
 

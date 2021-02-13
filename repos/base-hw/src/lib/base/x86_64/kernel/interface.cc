@@ -5,14 +5,13 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
 #include <kernel/interface.h>
 
 using namespace Kernel;
@@ -62,6 +61,14 @@ using namespace Kernel;
  ******************/
 
 Call_ret Kernel::call(Call_arg arg_0)
+{
+	CALL_1_FILL_ARG_REGS
+	asm volatile(CALL_1_SYSCALL);
+	return arg_0_reg;
+}
+
+
+Call_ret_64 Kernel::call64(Call_arg arg_0)
 {
 	CALL_1_FILL_ARG_REGS
 	asm volatile(CALL_1_SYSCALL);

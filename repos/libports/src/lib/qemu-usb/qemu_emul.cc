@@ -6,15 +6,15 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/misc_math.h>
 
 /* local includes */
@@ -35,10 +35,12 @@ static bool const verbose_iov  = false;
 static bool const verbose_mmio = false;
 
 extern "C" void _type_init_usb_register_types();
-extern "C" void _type_init_usb_host_register_types(Genode::Signal_receiver*);
+extern "C" void _type_init_usb_host_register_types(Genode::Entrypoint*,
+                                                   Genode::Allocator*,
+                                                   Genode::Env *);
 extern "C" void _type_init_xhci_register_types();
 
-extern Genode::Lock _lock;
+extern Genode::Mutex _mutex;
 
 Qemu::Controller *qemu_controller();
 
@@ -46,15 +48,19 @@ Qemu::Controller *qemu_controller();
 static Qemu::Timer_queue* _timer_queue;
 static Qemu::Pci_device*  _pci_device;
 
+static Genode::Allocator *_heap = nullptr;
 
-Qemu::Controller *Qemu::usb_init(Timer_queue &tq, Pci_device &pci, Genode::Signal_receiver &sig_rec)
+Qemu::Controller *Qemu::usb_init(Timer_queue &tq, Pci_device &pci,
+                                 Genode::Entrypoint &ep,
+                                 Genode::Allocator &alloc, Genode::Env &env)
 {
+	_heap = &alloc;
 	_timer_queue = &tq;
 	_pci_device  = &pci;
 
 	_type_init_usb_register_types();
 	_type_init_xhci_register_types();
-	_type_init_usb_host_register_types(&sig_rec);
+	_type_init_usb_host_register_types(&ep, &alloc, &env);
 
 	return qemu_controller();
 }
@@ -75,7 +81,7 @@ void Qemu::usb_update_devices() {
 
 void Qemu::usb_timer_callback(void (*cb)(void*), void *data)
 {
-	Genode::Lock::Guard g(_lock);
+	Genode::Mutex::Guard guard(_mutex);
 
 	cb(data);
 }
@@ -85,24 +91,30 @@ void Qemu::usb_timer_callback(void (*cb)(void*), void *data)
  ** libc **
  **********/
 
-void *malloc(size_t size) {
-	return Genode::env()->heap()->alloc(size); }
+void *g_malloc(size_t size) {
+	return _heap->alloc(size); }
+
+
+void g_free(void *p) {
+	if (!p) return;
+	_heap->free(p, 0);
+}
 
 
 void *memset(void *s, int c, size_t n) {
 	return Genode::memset(s, c, n); }
 
 
-void free(void *p) {
-	Genode::env()->heap()->free(p, 0); }
-
-
 void q_printf(char const *fmt, ...)
 {
-	va_list va;
-	va_start(va, fmt);
-	Genode::vprintf(fmt, va);
-	va_end(va);
+	enum { BUF_SIZE = 128 };
+	char buf[BUF_SIZE] { };
+	va_list args;
+	va_start(args, fmt);
+	Genode::String_console sc(buf, BUF_SIZE);
+	sc.vprintf(fmt, args);
+	Genode::log(Genode::Cstring(buf));
+	va_end(args);
 }
 
 
@@ -241,7 +253,8 @@ struct Object_pool
 				return &w;
 		}
 
-		PERR("object for pointer not found called from: %p", __builtin_return_address(0));
+		Genode::error("object for pointer not found called from: ",
+		              __builtin_return_address(0));
 		throw -1;
 	}
 
@@ -319,7 +332,7 @@ USBHostDevice *create_usbdevice(void *data)
 {
 	Wrapper *obj = Object_pool::p()->create_object();
 	if (!obj) {
-		PERR("could not create new object");
+		Genode::error("could not create new object");
 		return nullptr;
 	}
 
@@ -356,20 +369,26 @@ USBHostDevice *create_usbdevice(void *data)
 
 void remove_usbdevice(USBHostDevice *device)
 {
-	DeviceClass *usb_device_class = &Object_pool::p()->obj[Object_pool::USB_DEVICE]._device_class;
-	DeviceState *usb_device_state = cast_DeviceState(device);
+	try {
+		DeviceClass *usb_device_class = &Object_pool::p()->obj[Object_pool::USB_DEVICE]._device_class;
+		DeviceState *usb_device_state = cast_DeviceState(device);
 
-	if (usb_device_class == nullptr)
-		PERR("usb_device_class null");
+		if (usb_device_class == nullptr)
+			Genode::error("usb_device_class null");
 
-	if (usb_device_state == nullptr)
-		PERR("usb_device_class null");
+		if (usb_device_state == nullptr)
+			Genode::error("usb_device_state null");
 
-	Error *e = nullptr;
-	usb_device_class->unrealize(usb_device_state, &e);
+		Error *e = nullptr;
+		usb_device_class->unrealize(usb_device_state, &e);
 
-	Wrapper *obj = Object_pool::p()->find_object(device);
-	Object_pool::p()->free_object(obj);
+		Wrapper *obj = Object_pool::p()->find_object(device);
+		if (obj)
+			Object_pool::p()->free_object(obj);
+	} catch (int) {
+		/* thrown by find_object */
+		Genode::warning("usb device unknown");
+	}
 }
 
 
@@ -390,7 +409,7 @@ Type type_register_static(TypeInfo const *t)
 {
 	if (!Genode::strcmp(t->name, TYPE_XHCI)) {
 		Wrapper *w = &Object_pool::p()->obj[Object_pool::XHCI];
-		w->_xhci_state = (XHCIState*) malloc(sizeof(XHCIState));
+		w->_xhci_state = (XHCIState*) g_malloc(sizeof(XHCIState));
 		Genode::memset(w->_xhci_state, 0, sizeof(XHCIState));
 
 		t->class_init(&w->_object_class, 0);
@@ -429,8 +448,8 @@ void qbus_create_inplace(void* bus, size_t size , const char* type,
 	Wrapper    *w =  &Object_pool::p()->obj[Object_pool::USB_BUS];
 	BusState   *b = &w->_bus_state;
 	char const *n = "xhci.0";
-	b->name = (char *)malloc(Genode::strlen(n) + 1);
-	Genode::strncpy(b->name, n, Genode::strlen(n) + 1);
+	b->name = (char *)g_malloc(Genode::strlen(n) + 1);
+	Genode::copy_cstring(b->name, n, Genode::strlen(n) + 1);
 }
 
 
@@ -443,7 +462,7 @@ void timer_del(QEMUTimer *t)
 void timer_free(QEMUTimer *t)
 {
 	_timer_queue->delete_timer(t);
-	free(t);
+	g_free(t);
 }
 
 
@@ -455,9 +474,9 @@ void timer_mod(QEMUTimer *t, int64_t expire)
 
 QEMUTimer* timer_new_ns(QEMUClockType, void (*cb)(void*), void *opaque)
 {
-	QEMUTimer *t = (QEMUTimer*)malloc(sizeof(QEMUTimer));
+	QEMUTimer *t = (QEMUTimer*)g_malloc(sizeof(QEMUTimer));
 	if (t == nullptr) {
-		PERR("could not create QEMUTimer");
+		Genode::error("could not create QEMUTimer");
 		return nullptr;
 	}
 
@@ -483,6 +502,8 @@ struct Controller : public Qemu::Controller
 	} mmio_regions [16];
 
 	uint64_t _mmio_size;
+
+	typedef Genode::Hex Hex;
 
 	Controller()
 	{
@@ -511,7 +532,8 @@ struct Controller : public Qemu::Controller
 				return mmio;
 		}
 
-		PERR("could not find MMIO region for offset: %lx", offset);
+		Genode::error("could not find MMIO region for offset: ",
+		              Genode::Hex(offset));
 		throw -1;
 	}
 
@@ -525,11 +547,11 @@ struct Controller : public Qemu::Controller
 		}
 	}
 
-	size_t mmio_size() const { return _mmio_size; }
+	Genode::size_t mmio_size() const { return _mmio_size; }
 
-	int    mmio_read(Genode::off_t offset, void *buf, size_t size)
+	int    mmio_read(Genode::off_t offset, void *buf, Genode::size_t size)
 	{
-		Genode::Lock::Guard g(_lock);
+		Genode::Mutex::Guard guard(_mutex);
 		Mmio &mmio        = find_region(offset);
 		Genode::off_t reg = offset - mmio.offset;
 
@@ -543,23 +565,25 @@ struct Controller : public Qemu::Controller
 			ptr = (void*)&Object_pool::p()->xhci_state()->ports[port];
 		}
 
-		uint64_t v        = mmio.ops->read(ptr, reg, size);
-		*((uint32_t*)buf) = v;
+		uint64_t v = mmio.ops->read(ptr, reg, size);
+		memcpy(buf, &v, Genode::min(sizeof(v), size));
 
 		if (verbose_mmio)
-			PDBG("mmio: %lx offset: %lx reg: %lx v: %llx", mmio.id, offset, reg, v);
+			Genode::log(__func__, ": ", Hex(mmio.id), " offset: ", Hex(offset), " "
+			            "reg: ", Hex(reg), " v: ", Hex(v));
 
 		return 0;
 	}
 
-	int    mmio_write(Genode::off_t offset, void const *buf, size_t size)
+	int    mmio_write(Genode::off_t offset, void const *buf, Genode::size_t size)
 	{
-		Genode::Lock::Guard g(_lock);
+		Genode::Mutex::Guard guard(_mutex);
 		Mmio &mmio        = find_region(offset);
 		Genode::off_t reg = offset - mmio.offset;
-		uint64_t v        = *((uint64_t*)buf);
+		void *ptr         = Object_pool::p()->xhci_state();
+		uint64_t v        = 0ULL;
 
-		void *ptr = Object_pool::p()->xhci_state();
+		memcpy(&v, buf, Genode::min(sizeof(v), size));
 
 		/*
 		 * Handle port access
@@ -572,7 +596,8 @@ struct Controller : public Qemu::Controller
 		mmio.ops->write(ptr, reg, v, size);
 
 		if (verbose_mmio)
-			PDBG("mmio: %lx offset: %lx reg: %lx v: %llx", mmio.id, offset, reg, v);
+			Genode::log(__func__, ": ", Hex(mmio.id), " offset: ", Hex(offset), " "
+			            "reg: ", Hex(reg), " v: ", Hex(v));
 
 		return 0;
 	}
@@ -637,7 +662,7 @@ int dma_memory_read(AddressSpace*, dma_addr_t addr, void *buf, dma_addr_t size)
 void pci_set_irq(PCIDevice*, int level)
 {
 	if (verbose_irq)
-		PDBG("IRQ level: %d", level);
+		Genode::log(__func__, ": IRQ level: ", level);
 	_pci_device->raise_interrupt(level);
 }
 
@@ -690,12 +715,13 @@ void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
 
 	if (qiov->alloc_hint <= niov) {
 		if (verbose_iov)
-			PDBG("alloc_hint %d <= niov: %d", qiov->alloc_hint, niov);
+			Genode::log(__func__, ": alloc_hint ", qiov->alloc_hint,
+			            " <= niov: ", niov);
 
 		qiov->alloc_hint += 64;
-		iovec *new_iov = (iovec*) malloc(sizeof(iovec) * qiov->alloc_hint);
+		iovec *new_iov = (iovec*) g_malloc(sizeof(iovec) * qiov->alloc_hint);
 		if (new_iov == nullptr) {
-			PERR("Could not reallocate iov");
+			Genode::error("could not reallocate iov");
 			throw -1;
 		}
 
@@ -704,13 +730,13 @@ void qemu_iovec_add(QEMUIOVector *qiov, void *base, size_t len)
 			new_iov[i].iov_len  = qiov->iov[i].iov_len;
 		}
 
-		free(qiov->iov);
+		g_free(qiov->iov);
 		qiov->iov = new_iov;
 	}
 
 	if (verbose_iov)
-		PDBG("niov: %u iov_base: %p base: %p len: %zu",
-		     niov, &qiov->iov[niov].iov_base, base, len);
+		Genode::log(__func__, ": niov: ", niov, " iov_base: ",
+		            &qiov->iov[niov].iov_base, " base: ", base, " len: ", len);
 
 	qiov->iov[niov].iov_base = base;
 	qiov->iov[niov].iov_len  = len;
@@ -723,7 +749,7 @@ void qemu_iovec_destroy(QEMUIOVector *qiov)
 {
 	qemu_iovec_reset(qiov);
 
-	free(qiov->iov);
+	g_free(qiov->iov);
 	qiov->iov = nullptr;
 }
 
@@ -738,12 +764,12 @@ void qemu_iovec_reset(QEMUIOVector *qiov)
 void qemu_iovec_init(QEMUIOVector *qiov, int alloc_hint)
 {
 	if (verbose_iov)
-		PDBG("iov: %p alloc_hint: %d", qiov->iov, alloc_hint);
+		Genode::log(__func__, " iov: ", qiov->iov, " alloc_hint: ", alloc_hint);
 
 	iovec *iov = qiov->iov;
 	if (iov != nullptr) {
 		if (alloc_hint > qiov->alloc_hint)
-			PERR("iov already initialized: %p and alloc_hint smaller", iov);
+			Genode::error("iov already initialized: ", iov, " and alloc_hint smaller");
 
 		qemu_iovec_reset(qiov);
 		return;
@@ -753,9 +779,9 @@ void qemu_iovec_init(QEMUIOVector *qiov, int alloc_hint)
 
 	qiov->alloc_hint = alloc_hint;
 
-	qiov->iov = (iovec*) malloc(sizeof(iovec) * alloc_hint);
+	qiov->iov = (iovec*) g_malloc(sizeof(iovec) * alloc_hint);
 	if (qiov->iov == nullptr) {
-		PERR("Could not allocate iov");
+		Genode::error("could not allocate iov");
 		throw -1;
 	}
 
@@ -833,7 +859,8 @@ int usb_packet_map(USBPacket *p, QEMUSGList *sgl)
 			dma_addr_t xlen = len;
 			mem = _pci_device->map_dma(base, xlen);
 			if (verbose_iov)
-				PDBG("mem: 0x%p base: 0x%p len: 0x%lx", mem, (void*)base, len);
+				Genode::log("mem: ", mem, " base: ", (void *)base, " len: ",
+				            Genode::Hex(len));
 
 			if (!mem) {
 				goto err;
@@ -849,7 +876,7 @@ int usb_packet_map(USBPacket *p, QEMUSGList *sgl)
 	return 0;
 
 err:
-	PERR("could not map dma");
+	Genode::error("could not map dma");
 	usb_packet_unmap(p, sgl);
 	return -1;
 }
@@ -872,9 +899,9 @@ void error_setg(Error **errp, const char *fmt, ...)
 {
 	assert(*errp == nullptr);
 
-	*errp = (Error*) malloc(sizeof(Error));
+	*errp = (Error*) g_malloc(sizeof(Error));
 	if (*errp == nullptr) {
-		PERR("Could not allocate Error");
+		Genode::error("could not allocate Error");
 		return;
 	}
 
@@ -893,4 +920,4 @@ void error_propagate(Error **dst_errp, Error *local_err) {
 	*dst_errp = local_err; }
 
 
-void error_free(Error *err) { free(err); }
+void error_free(Error *err) { g_free(err); }

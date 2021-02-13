@@ -5,17 +5,19 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__PCI_DEV_REGISTRY_H_
 #define _LX_KIT__PCI_DEV_REGISTRY_H_
 
 /* Linux emulation environment includes */
+#include <lx_kit/pci.h>
 #include <lx_kit/internal/pci_dev.h>
+#include <io_port_session/connection.h>
 
 namespace Lx {
 	
@@ -26,7 +28,7 @@ namespace Lx {
 	 *
 	 * Implementation must be provided by the driver.
 	 */
-	Pci_dev_registry *pci_dev_registry();
+	Pci_dev_registry *pci_dev_registry(Genode::Env *env = nullptr);
 }
 
 
@@ -34,14 +36,28 @@ class Lx::Pci_dev_registry
 {
 	private:
 
-		Lx_kit::List<Pci_dev> _devs;
+		Lx_kit::List<Pci_dev>  _devs;
+		Genode::Env           &_env;
 
 	public:
 
+		Pci_dev_registry(Genode::Env &env) : _env(env) { }
+
 		void insert(Pci_dev *pci_dev)
 		{
-			PDBG("insert pci_dev %p", pci_dev);
-			_devs.insert(pci_dev);
+			/*
+			 * Keep PCI devices in natural bus order. Otherwise on a Lenovo
+			 * ThinkCentre M57p, the system locks up when the UHCI controller
+			 * BIOS handoff (disabling bit 4 in the LEGSUP register) for the
+			 * controller with PCI BDF 00:1d:2 is attempted before the handoff
+			 * for the controller with BDF 00:1a:0.
+			 */
+			_devs.append(pci_dev);
+		}
+
+		void remove(Pci_dev *pci_dev)
+		{
+			_devs.remove(pci_dev);
 		}
 
 		Pci_dev* first() { return _devs.first(); }
@@ -74,7 +90,8 @@ class Lx::Pci_dev_registry
 				return Genode::Io_mem_session_client(io_mem_cap).dataspace();
 			}
 
-			PERR("Device using i/o memory of address %lx is unknown", phys);
+			Genode::error("device using I/O memory of address ",
+			              Genode::Hex(phys), " is unknown");
 			return Genode::Io_mem_dataspace_capability();
 		}
 
@@ -88,19 +105,52 @@ class Lx::Pci_dev_registry
 					return value;
 			}
 
-			PWRN("I/O port(%u) read failed", port);
-			return (T)~0;
+			try {
+				Genode::Io_port_connection iox(_env, port, sizeof(T));
+				switch (sizeof(T)) {
+				case 1:
+					return iox.inb(port);
+				case 2:
+					return iox.inw(port);
+				case 4:
+					return iox.inl(port);
+				}
+			} catch (...) {
+				Genode::error("unknown exception io_read");
+			}
+
+			Genode::warning("I/O port(", port, ") read failed");
+
+			return (T)~0U;
 		}
 
 		template <typename T>
 		void io_write(unsigned port, T value)
 		{
 			/* try I/O access on all PCI devices, return on first success */
-			for (Pci_dev *d = _devs.first(); d; d = d->next())
+			for (Pci_dev *d = _devs.first(); d; d = d->next()) {
 				if (d->io_port().out<T>(port, value))
 					return;
+			}
 
-			PWRN("I/O port(%u) write failed", port);
+			try {
+				Genode::Io_port_connection iox(_env, port, sizeof(T));
+				switch (sizeof(T)) {
+				case 1:
+					iox.outb(port, value);
+					return;
+				case 2:
+					iox.outw(port, value);
+					return;
+				case 4:
+					iox.outl(port, value);
+					return;
+				}
+			} catch (...) {
+				Genode::error("unknown exception io_write");
+			}
+
+			Genode::warning("I/O port(", port, ") write failed");
 		}
 };
 

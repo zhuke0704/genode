@@ -1,3 +1,5 @@
 TARGET   = test-expat
 SRC_CC   = main.cc
-LIBS     = expat libc
+LIBS     = expat posix
+
+CC_CXX_WARN_STRICT =

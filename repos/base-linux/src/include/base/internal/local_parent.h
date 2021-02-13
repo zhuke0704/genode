@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__LOCAL_PARENT_H_
@@ -23,7 +23,10 @@
 /* base-internal includes */
 #include <base/internal/expanding_parent_client.h>
 
-namespace Genode { class Local_parent; }
+namespace Genode {
+	class Local_session;
+	class Local_parent;
+}
 
 
 /**
@@ -42,6 +45,7 @@ class Genode::Local_parent : public Expanding_parent_client
 	private:
 
 		Allocator &_alloc;
+		Id_space<Client> _local_sessions_id_space { };
 
 	public:
 
@@ -49,10 +53,9 @@ class Genode::Local_parent : public Expanding_parent_client
 		 ** Parent interface **
 		 **********************/
 
-		Session_capability session(Service_name const &,
-		                           Session_args const &,
-		                           Affinity     const & = Affinity());
-		void close(Session_capability);
+		Session_capability session(Client::Id, Service_name const &, Session_args const &,
+		                           Affinity const & = Affinity()) override;
+		Close_result close(Client::Id) override;
 
 		/**
 		 * Constructor
@@ -61,9 +64,7 @@ class Genode::Local_parent : public Expanding_parent_client
 		 *                    promote requests to non-local
 		 *                    services
 		 */
-		Local_parent(Parent_capability parent_cap,
-		             Emergency_ram_reserve &,
-		             Allocator &);
+		Local_parent(Parent_capability parent_cap, Allocator &);
 };
 
 #endif /* _INCLUDE__BASE__INTERNAL__LOCAL_PARENT_H_ */

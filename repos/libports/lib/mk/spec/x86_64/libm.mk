@@ -1,5 +1,2 @@
-include $(REP_DIR)/lib/mk/libm.mk
-
-SRC_C += msun/amd64/fenv.c
-
-vpath msun/amd64/fenv.c $(LIBC_DIR)/lib
+ARCH = amd64
+include $(REP_DIR)/lib/mk/libm.inc

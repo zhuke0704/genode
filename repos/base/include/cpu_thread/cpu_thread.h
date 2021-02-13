@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__CPU_THREAD__CPU_THREAD_H_
@@ -24,7 +24,7 @@
 namespace Genode { struct Cpu_thread; }
 
 
-struct Genode::Cpu_thread
+struct Genode::Cpu_thread : Interface
 {
 	class State_access_failed : public Exception { };
 
@@ -54,11 +54,6 @@ struct Genode::Cpu_thread
 	 * Resume the thread
 	 */
 	virtual void resume() = 0;
-
-	/**
-	 * Cancel a currently blocking operation
-	 */
-	virtual void cancel_blocking() = 0;
 
 	/**
 	 * Get the current thread state
@@ -141,7 +136,6 @@ struct Genode::Cpu_thread
 	GENODE_RPC(Rpc_start, void, start, addr_t, addr_t);
 	GENODE_RPC(Rpc_pause, void, pause);
 	GENODE_RPC(Rpc_resume, void, resume);
-	GENODE_RPC(Rpc_cancel_blocking, void, cancel_blocking);
 	GENODE_RPC_THROW(Rpc_get_state, Thread_state, state,
 	                 GENODE_TYPE_LIST(State_access_failed));
 	GENODE_RPC_THROW(Rpc_set_state, void, state,
@@ -155,7 +149,7 @@ struct Genode::Cpu_thread
 	GENODE_RPC(Rpc_trace_policy, Dataspace_capability, trace_policy);
 
 	GENODE_RPC_INTERFACE(Rpc_utcb, Rpc_start, Rpc_pause, Rpc_resume,
-	                     Rpc_cancel_blocking, Rpc_set_state, Rpc_get_state,
+	                     Rpc_set_state, Rpc_get_state,
 	                     Rpc_exception_sigh, Rpc_single_step, Rpc_affinity,
 	                     Rpc_trace_control_index, Rpc_trace_buffer,
 	                     Rpc_trace_policy);

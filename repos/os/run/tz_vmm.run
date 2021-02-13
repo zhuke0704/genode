@@ -17,7 +17,7 @@
 #   ! export TARGET_DEV=/dev/sdX                 # empty boot medium
 #   ! export TARGET_MNT=/mnt                     # where to mount the boot medium
 #   ! export GENODE_DIR=/path/genode             # root of the Genode sources
-#   ! export BUILD_DIR=/path/build/hw_usb_armory # Genode build directory
+#   ! export BUILD_DIR=/path/build/usb_armory # Genode build directory
 #
 # :Format microSD card:
 #
@@ -30,8 +30,8 @@
 # :Install bootloader:
 #
 #   ! cd $GENODE_DIR
-#   ! ./tool/create_uboot hw_usb_armory
-#   ! sudo dd if=contrib/uboot/build/hw_usb_armory/mmc_img of=$TARGET_DEV bs=1K seek=1 conv=fsync
+#   ! ./tool/create_uboot usb_armory
+#   ! sudo dd if=contrib/uboot/build/usb_armory/mmc_img of=$TARGET_DEV bs=1K seek=1 conv=fsync
 #
 # :Install Genode:
 #
@@ -86,29 +86,34 @@
 #
 
 assert_spec hw
-assert_spec imx53
-assert_spec trustzone
+assert_spec imx53_qsb_tz
 
 # determine platform specific configuration
-set trusted_led       [have_spec hw_usb_armory]
-set inversepath_linux [have_spec hw_usb_armory]
-set freescale_linux   [have_spec hw_imx53_qsb_tz]
+set trusted_led       [have_board usb_armory]
+set inversepath_linux [have_board usb_armory]
+set freescale_linux   [have_board imx53_qsb_tz]
 set initrd_rootfs     $freescale_linux
 set mmc_rootfs        $inversepath_linux
 set dtb               $inversepath_linux
 
 set targets { core init server/tz_vmm }
 
+proc tz_vmm_binary {} {
+	if {[have_board usb_armory]} { return usb_armory_tz_vmm }
+	if {[have_board imx53_qsb]}  { return imx53_qsb_tz_vmm }
+	return no_tz_vmm_binary
+}
+
 if { $mmc_rootfs } {
 
 	# choose interrupt for paravirtualized block
-	if { [have_spec imx53] } { set tz_vmm_block_irq 92 }
+	if { [have_board imx53_qsb_tz] } { set tz_vmm_block_irq 92 }
 
 	# add targets that enable MMC access via paravirtualized block
-	lappend targets drivers/timer
+	lappend targets timer
 	lappend targets drivers/platform
-	lappend targets drivers/sd_card
-	lappend targets server/part_blk
+	lappend targets drivers/sd_card/imx53
+	lappend targets server/part_block
 }
 
 lappend_if $trusted_led targets drivers/gpio
@@ -122,7 +127,6 @@ set config {
 <config verbose="yes">
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -134,13 +138,36 @@ set config {
 	</parent-provides>
 	<default-route>
 		<any-service><any-child/><parent/></any-service>
-	</default-route> }
+	</default-route>
+	<default caps="100"/>}
 
 append_if $trusted_led config {
-	<start name="gpio_drv">
+	<start name="platform_drv" caps="150">
+		<resource name="RAM" quantum="1M"/>
+		<provides> <service name="Platform"/> </provides>
+		<config>
+			<device name="gpio">
+				<io_mem address="0x53f90000" size="0x4000"/>
+				<irq number="56"/>
+				<irq number="57"/>
+			</device>
+			<device name="sd_card">
+				<io_mem address="0x50004000" size="0x4000"/>
+				<irq    number="1"/>
+			</device>
+			<policy label="imx_gpio_drv -> "> <device name="gpio"/> </policy>
+			<policy label="sd_card_drv -> "> <device name="sd_card"/> </policy>
+		</config>
+	</start>
+
+	<start name="imx_gpio_drv">
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Gpio"/></provides>
 		<config/>
+		<route>
+			<service name="Platform"><child name="platform_drv" /></service>
+			<any-service><parent/><any-child/></any-service>
+		</route>
 	</start>}
 
 append_if $mmc_rootfs config {
@@ -148,22 +175,20 @@ append_if $mmc_rootfs config {
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Timer"/></provides>
 	</start>
-	<start name="platform_drv">
-		<resource name="RAM" quantum="3M"/>
-		<provides>
-			<service name="Regulator"/>
-			<service name="Platform"/>
-		</provides>
-	</start>
 	<start name="sd_card_drv">
+		<binary name="imx53_sd_card_drv"/>
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Block"/></provides>
+		<route>
+			<service name="Platform"> <child name="platform_drv"/> </service>
+			<any-service><parent/><any-child/></any-service>
+		</route>
 	</start>
-	<start name="part_blk">
+	<start name="part_block">
 		<resource name="RAM" quantum="10M" />
 		<provides><service name="Block" /></provides>
 		<route>
-			<service name="Block"><child name="sd_card_drv" /></service>
+			<service name="Block"><child name="imx53_sd_card_drv" /></service>
 			<any-service><parent/><any-child/></any-service>
 		</route>
 		<config>
@@ -173,15 +198,16 @@ append_if $mmc_rootfs config {
 
 append config {
 	<start name="tz_vmm">
+		<binary name="} [tz_vmm_binary] {"/>
 		<resource name="RAM" quantum="10M"/> }
 
 if { $mmc_rootfs } {
 	append config "
 		<config>
-			<block label=\"sda1\" irq=\"$tz_vmm_block_irq\"/>
+			<block name=\"sda1\" irq=\"$tz_vmm_block_irq\"/>
 		</config>
 		<route>
-			<service name=\"Block\"><child name=\"part_blk\" /></service>
+			<service name=\"Block\"><child name=\"part_block\" /></service>
 			<any-service><any-child/><parent/></any-service>
 		</route> "
 }
@@ -209,7 +235,8 @@ if {![file exists linux]} {
 exec >& /dev/null wget -O linux.md5 $linux_uri.md5
 exec md5sum -c linux.md5
 
-set boot_modules { core init tz_vmm linux }
+set boot_modules { core ld.lib.so init linux }
+lappend boot_modules [tz_vmm_binary]
 
 if { $dtb } {
 
@@ -228,9 +255,8 @@ if { $mmc_rootfs } {
 
 	# add components that enable MMC access via parvirtualized block
 	lappend boot_modules timer
-	lappend boot_modules platform_drv
-	lappend boot_modules sd_card_drv
-	lappend boot_modules part_blk
+	lappend boot_modules imx53_sd_card_drv
+	lappend boot_modules part_block
 
 	# download and add rootfs
 	set rootfs_uri "http://genode.org/files/release-15.11/usb_armory_tz_vmm/rootfs"
@@ -258,7 +284,8 @@ if { $mmc_rootfs } {
 }
 cd ..
 
-lappend_if $trusted_led boot_modules gpio_drv
+lappend_if $trusted_led boot_modules imx_gpio_drv
+lappend_if $trusted_led boot_modules platform_drv
 
 build_boot_image [join $boot_modules " "]
 

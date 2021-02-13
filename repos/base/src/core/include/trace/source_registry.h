@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__TRACE__SOURCE_REGISTRY_H_
@@ -16,7 +16,7 @@
 
 #include <util/list.h>
 #include <util/string.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/trace/types.h>
 #include <base/weak_ptr.h>
 
@@ -61,7 +61,7 @@ class Genode::Trace::Source
 		/**
 		 * Interface for querying trace-source information
 		 */
-		struct Info_accessor
+		struct Info_accessor : Interface
 		{
 			virtual Info trace_source_info() const = 0;
 		};
@@ -71,11 +71,17 @@ class Genode::Trace::Source
 		unsigned      const  _unique_id;
 		Info_accessor const &_info;
 		Control             &_control;
-		Dataspace_capability _policy;
-		Dataspace_capability _buffer;
-		Source_owner  const *_owner = nullptr;
+		Dataspace_capability _policy { };
+		Dataspace_capability _buffer { };
+		Source_owner  const *_owner_ptr = nullptr;
 
 		static unsigned _alloc_unique_id();
+
+		/*
+		 * Noncopyable
+		 */
+		Source(Source const &);
+		Source &operator = (Source const &);
 
 	public:
 
@@ -106,21 +112,21 @@ class Genode::Trace::Source
 		void enable()  { _control.enable(); }
 		void disable() { _control.disable(); }
 
-		bool try_acquire(Source_owner const *new_owner)
+		bool try_acquire(Source_owner const &new_owner)
 		{
-			if (_owner && _owner != new_owner)
+			if (_owner_ptr && _owner_ptr != &new_owner)
 				return false;
 
-			_owner = new_owner;
+			_owner_ptr = &new_owner;
 			return true;
 		}
 
-		bool owned_by(Source_owner const *owner) { return owner == _owner; }
+		bool owned_by(Source_owner const &owner) { return &owner == _owner_ptr; }
 
-		void release_ownership(Source_owner const *owner)
+		void release_ownership(Source_owner const &owner)
 		{
 			if (owned_by(owner))
-				_owner = 0;
+				_owner_ptr = nullptr;
 		}
 
 		bool error()   const { return _control.has_error(); }
@@ -146,8 +152,8 @@ class Genode::Trace::Source_registry
 {
 	private:
 
-		Lock         _lock;
-		List<Source> _entries;
+		Mutex        _mutex   { };
+		List<Source> _entries { };
 
 	public:
 
@@ -157,14 +163,14 @@ class Genode::Trace::Source_registry
 
 		void insert(Source *entry)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			_entries.insert(entry);
 		}
 
 		void remove(Source *entry)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 			_entries.remove(entry);
 		}
 

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _BSD_H_
@@ -19,16 +19,13 @@
 #include <base/env.h>
 #include <irq_session/capability.h>
 
-/* local includes */
-#include <scheduler.h>
-
 namespace Bsd {
 
 	int probe_drivers(Genode::Env&, Genode::Allocator&);
 
 	void mem_init(Genode::Env&, Genode::Allocator &);
 	void irq_init(Genode::Entrypoint&, Genode::Allocator&);
-	void timer_init(Genode::Entrypoint&);
+	void timer_init(Genode::Env&);
 	void update_time();
 
 

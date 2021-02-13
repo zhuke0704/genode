@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__INTERNAL__PCI_DEV_H_
@@ -21,11 +21,10 @@
 #include <platform_session/connection.h>
 #include <platform_device/client.h>
 #include <io_mem_session/connection.h>
-#include <os/attached_dataspace.h>
+#include <base/attached_dataspace.h>
 #include <util/retry.h>
 
 /* Linux emulation environment includes */
-#include <lx_kit/internal/debug.h>
 #include <lx_kit/internal/list.h>
 #include <lx_kit/internal/io_port.h>
 
@@ -36,12 +35,14 @@ namespace Lx {
 	/**
 	 * Return singleton 'Platform::Connection'
 	 *
-	 * Implementation must be privided by the driver.
+	 * Implementation must be provided by the driver.
 	 */
 	Platform::Connection *pci();
 
 	template <typename FUNC>
-	static inline void for_each_pci_device(FUNC const &func);
+	static inline void for_each_pci_device(FUNC const &func,
+	                                       unsigned const device_class = 0,
+	                                       unsigned const class_mask = 0);
 }
 
 
@@ -123,6 +124,7 @@ class Lx::Pci_dev : public pci_dev, public Lx_kit::List<Pci_dev>::Element
 
 			/* setup resources */
 			bool io = false;
+			bool mem = false;
 			for (int i = 0; i < Device::NUM_RESOURCES; i++) {
 				Device::Resource res = _client.resource(i);
 				if (res.type() == Device::Resource::INVALID)
@@ -136,27 +138,20 @@ class Lx::Pci_dev : public pci_dev, public Lx_kit::List<Pci_dev>::Element
 				if (res.type() == Device::Resource::MEMORY) flags |= IORESOURCE_MEM;
 				this->resource[i].flags = flags;
 
-				PDBGV("this=%p base: %x size: %x type: %u",
-				     this, res.base(), res.size(), res.type());
-
 				/* request port I/O session */
 				if (res.type() == Device::Resource::IO) {
 					uint8_t const virt_bar = _client.phys_bar_to_virt(i);
 					_io_port.session(res.base(), res.size(), _client.io_port(virt_bar));
 					io = true;
-					PDBGV("I/O [%u-%u)",
-					       res.base(), res.base() + res.size());
 				}
-
-				/* request I/O memory (write combined) */
 				if (res.type() == Device::Resource::MEMORY)
-					PDBGV("I/O memory [%x-%x)", res.base(),
-					     res.base() + res.size());
+					mem = true;
 			}
 
-			/* enable bus master and io bits */
+			/* enable bus master, memory and io bits */
 			uint16_t cmd = _client.config_read(CMD, Device::ACCESS_16BIT);
 			cmd |= io ? 0x1 : 0;
+			cmd |= mem ? 0x2 : 0;
 
 			/* enable bus master */
 			cmd |= 0x4;
@@ -195,16 +190,8 @@ class Lx::Pci_dev : public pci_dev, public Lx_kit::List<Pci_dev>::Element
 		template <typename T>
 		void config_write(unsigned int devfn, T val)
 		{
-			Genode::size_t donate = 4096;
-			Genode::retry<Platform::Device::Quota_exceeded>(
-				[&] () { _client.config_write(devfn, val, _access_size(val)); },
-				[&] () {
-					char quota[32];
-					Genode::snprintf(quota, sizeof(quota), "ram_quota=%zd",
-					                 donate);
-					Genode::env()->parent()->upgrade(pci()->cap(), quota);
-					donate *= 2;
-				});
+			pci()->with_upgrade([&] () {
+				_client.config_write(devfn, val, _access_size(val)); });
 		}
 
 		Platform::Device &client() { return _client; }
@@ -235,23 +222,16 @@ class Lx::Pci_dev : public pci_dev, public Lx_kit::List<Pci_dev>::Element
  * released at the platform driver.
  */
 template <typename FUNC>
-void Lx::for_each_pci_device(FUNC const &func)
+void Lx::for_each_pci_device(FUNC const &func, unsigned const device_class,
+                             unsigned const class_mask)
 {
-	/*
-	 * Functor that is called if the platform driver throws a
-	 * 'Out_of_metadata' exception.
-	 */
-	auto handler = [&] () {
-		Genode::env()->parent()->upgrade(Lx::pci()->cap(),
-		                                 "ram_quota=4096"); };
-
 	/*
 	 * Obtain first device, the operation may exceed the session quota.
 	 * So we use the 'retry' mechanism.
 	 */
-	Platform::Device_capability cap;
-	auto attempt = [&] () { cap = Lx::pci()->first_device(); };
-	Genode::retry<Platform::Session::Out_of_metadata>(attempt, handler);
+	Platform::Device_capability cap =
+		Lx::pci()->with_upgrade([&] () {
+			return Lx::pci()->first_device(device_class, class_mask); });
 
 	/*
 	 * Iterate over the devices of the platform session.
@@ -268,12 +248,12 @@ void Lx::for_each_pci_device(FUNC const &func)
 		 * Release current device and try next one. Upgrade session
 		 * quota on demand.
 		 */
-		auto attempt = [&] () {
-			Platform::Device_capability next_cap = pci()->next_device(cap);
-			Lx::pci()->release_device(cap);
-			cap = next_cap;
-		};
-		Genode::retry<Platform::Session::Out_of_metadata>(attempt, handler);
+		Platform::Device_capability next_cap =
+			Lx::pci()->with_upgrade([&] () {
+				return pci()->next_device(cap, device_class, class_mask); });
+
+		Lx::pci()->release_device(cap);
+		cap = next_cap;
 	}
 }
 

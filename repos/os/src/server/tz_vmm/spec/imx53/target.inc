@@ -1,14 +1,9 @@
-TARGET    = tz_vmm
-REQUIRES += trustzone imx53
+REQUIRES  = hw arm_v7
 LIBS     += base
-LIBS     += config
-SRC_CC   += vm.cc
-SRC_CC   += main.cc
-SRC_CC   += serial.cc
-SRC_CC   += block.cc
-INC_DIR  += $(PRG_DIR)
-INC_DIR  += $(PRG_DIR)/../../include
-INC_DIR  += $(PRG_DIR)/../imx53
+SRC_CC   += serial_driver.cc block_driver.cc vm_base.cc spec/imx53/main.cc
+INC_DIR  += $(REP_DIR)/src/server/tz_vmm/spec/imx53
+INC_DIR  += $(REP_DIR)/src/server/tz_vmm/include
 
-vpath main.cc $(PRG_DIR)/../imx53
-vpath %       $(PRG_DIR)/../..
+vpath % $(REP_DIR)/src/server/tz_vmm
+
+CC_CXX_WARN_STRICT =

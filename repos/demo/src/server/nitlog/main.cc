@@ -5,31 +5,29 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <util/arg_string.h>
-#include <base/env.h>
-#include <base/sleep.h>
-#include <base/lock.h>
-#include <base/snprintf.h>
+#include <base/component.h>
+#include <base/heap.h>
 #include <base/rpc_server.h>
+#include <base/session_label.h>
 #include <root/component.h>
-#include <cap_session/connection.h>
 #include <log_session/log_session.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <timer_session/connection.h>
 #include <input/event.h>
-#include <os/pixel_rgb565.h>
+#include <os/pixel_rgb888.h>
 
 /*
  * Nitpicker's graphics backend
  */
-#include <nitpicker_gfx/text_painter.h>
 #include <nitpicker_gfx/box_painter.h>
+#include <nitpicker_gfx/tff_font.h>
 
 
 enum { LOG_W = 80 };  /* number of visible characters per line */
@@ -43,16 +41,27 @@ typedef Genode::Color               Color;
 
 
 /*
- * Font initialization
+ * Builtin font
  */
-extern char _binary_mono_tff_start;
-Font default_font(&_binary_mono_tff_start);
+extern char _binary_mono_tff_start[];
+
+
+namespace Nitlog {
+
+	class Session_component;
+	class Root;
+	struct Main;
+
+	using namespace Genode;
+}
+
+
 
 
 /**
  * Pixel-type-independent interface to graphics backend
  */
-struct Canvas_base
+struct Canvas_base : Genode::Interface
 {
 	virtual void draw_string(Point, Font const &, Color, char const *) = 0;
 
@@ -77,12 +86,13 @@ class Canvas : public Canvas_base
 		void clip(Rect rect) { _surface.clip(rect); }
 
 		void draw_string(Point p, Font const &font, Color color,
-		                 char const *sstr)
+		                 char const *sstr) override
 		{
-			Text_painter::paint(_surface, p, font, color, sstr);
+			Text_painter::paint(_surface, Text_painter::Position(p.x(), p.y()),
+			                    font, color, sstr);
 		}
 
-		void draw_box(Rect rect, Color color)
+		void draw_box(Rect rect, Color color) override
 		{
 			Box_painter::paint(_surface, rect, color);
 		}
@@ -98,10 +108,10 @@ class Log_entry
 		char  _label[64];
 		char  _text[LOG_W];
 		char  _attr[LOG_W];
-		Color _color;
-		int   _label_len;
-		int   _text_len;
-		int   _id;
+		Color _color { };
+		int   _label_len = 0;
+		int   _text_len  = 0;
+		int   _id        = 0;
 
 	public:
 
@@ -115,8 +125,8 @@ class Log_entry
 		Log_entry(Genode::Color color, const char *label, const char *log_text, const char *log_attr, int id):
 			_color(color), _id(id)
 		{
-			Genode::strncpy(_label, label,    sizeof(_label));
-			Genode::strncpy(_text,  log_text, sizeof(_text));
+			Genode::copy_cstring(_label, label,    sizeof(_label));
+			Genode::copy_cstring(_text,  log_text, sizeof(_text));
 
 			_label_len = Genode::strlen(_label);
 			_text_len  = Genode::strlen(_text);
@@ -135,7 +145,7 @@ class Log_entry
 		 * marks a transition of output from one session to another. This
 		 * information is used to separate sessions visually.
 		 */
-		void draw(Canvas_base &canvas, int y, int new_section = false)
+		void draw(Canvas_base &canvas, Font const &font, int y, int new_section = false)
 		{
 			Color label_fgcol = Color(Genode::min(255, _color.r + 200),
 			                          Genode::min(255, _color.g + 200),
@@ -145,12 +155,12 @@ class Log_entry
 			Color text_bgcol  = Color(_color.r / 2, _color.g / 2, _color.b / 2);
 
 			/* calculate label dimensions */
-			int label_w = default_font.str_w(_label);
-			int label_h = default_font.str_h(_label);
+			int label_w = font.string_width(_label).decimal();
+			int label_h = font.bounding_box().h();
 
 			if (new_section) {
 				canvas.draw_box(Rect(Point(1, y), Area(label_w + 2, label_h - 1)), label_bgcol);
-				canvas.draw_string(Point(1, y - 1), default_font, label_fgcol, _label);
+				canvas.draw_string(Point(1, y - 1), font, label_fgcol, _label);
 				canvas.draw_box(Rect(Point(1, y + label_h - 1), Area(label_w + 2, 1)), Color(0, 0, 0));
 				canvas.draw_box(Rect(Point(label_w + 2, y), Area(1, label_h - 1)), _color);
 				canvas.draw_box(Rect(Point(label_w + 3, y), Area(1, label_h - 1)), Color(0, 0, 0));
@@ -160,7 +170,7 @@ class Log_entry
 				canvas.draw_box(Rect(Point(1, y), Area(1000, label_h)), text_bgcol);
 
 			/* draw log text */
-			canvas.draw_string(Point(label_w + 6, y), default_font, text_fgcol, _text);
+			canvas.draw_string(Point(label_w + 6, y), font, text_fgcol, _text);
 		}
 
 		/**
@@ -175,23 +185,23 @@ class Log_window
 {
 	private:
 
-		Canvas_base &_canvas;
-		Log_entry    _entries[LOG_H]; /* log entries                           */
-		int          _dst_entry;      /* destination entry for next write      */
-		int          _view_pos;       /* current view port on the entry array  */
-		bool         _scroll;         /* scroll mode (when text hits bottom)   */
-		char         _attr[LOG_W];    /* character attribute buffer            */
-		bool         _dirty;          /* schedules the log window for a redraw */
-		Genode::Lock _dirty_lock;
+		Canvas_base  &_canvas;
+		Font  const  &_font;
+		Log_entry     _entries[LOG_H];    /* log entries                           */
+		int           _dst_entry = 0;     /* destination entry for next write      */
+		int           _view_pos  = 0;     /* current view port on the entry array  */
+		bool          _scroll    = false; /* scroll mode (when text hits bottom)   */
+		char          _attr[LOG_W];       /* character attribute buffer            */
+		bool          _dirty     = true;  /* schedules the log window for a redraw */
+		Genode::Mutex _dirty_mutex { };
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Log_window(Canvas_base &canvas)
-		: _canvas(canvas), _dst_entry(0), _view_pos(0), _dirty(true)
-		{ }
+		Log_window(Canvas_base &canvas, Font const &font)
+		: _canvas(canvas), _font(font) { }
 
 		/**
 		 * Write log entry
@@ -216,7 +226,7 @@ class Log_window
 				_scroll = true;
 
 			/* schedule log window for redraw */
-			Genode::Lock::Guard lock_guard(_dirty_lock);
+			Genode::Mutex::Guard guard(_dirty_mutex);
 			_dirty |= 1;
 		}
 
@@ -228,17 +238,17 @@ class Log_window
 		bool draw()
 		{
 			{
-				Genode::Lock::Guard lock_guard(_dirty_lock);
+				Genode::Mutex::Guard guard(_dirty_mutex);
 				if (!_dirty) return false;
 				_dirty = false;
 			}
 
-			int line_h = default_font.str_h(" ");
+			int line_h = _font.bounding_box().h();
 			int curr_session_id = -1;
 
 			for (int i = 0, y = 0; i < LOG_H; i++, y += line_h) {
 				Log_entry *le = &_entries[(i + _view_pos) % LOG_H];
-				le->draw(_canvas, y, curr_session_id != le->id());
+				le->draw(_canvas, _font, y, curr_session_id != le->id());
 				curr_session_id = le->id();
 			}
 
@@ -247,81 +257,81 @@ class Log_window
 };
 
 
-class Log_session_component : public Genode::Rpc_object<Genode::Log_session>
+class Nitlog::Session_component : public Rpc_object<Log_session>
 {
-	public:
-
-		enum { LABEL_LEN = 64 };
-
 	private:
 
-		Genode::Color _color;
-		Log_window   *_log_window;
-		char          _label[LABEL_LEN];
-		int           _id;
+		Log_window &_log_window;
+
+		Session_label const _label;
+
+		int const _id;
 
 		static int _bit(int v, int bit_num) { return (v >> bit_num) & 1; }
+
+		/**
+		 * Compute session color
+		 */
+		static Color _session_color(int id)
+		{
+			int const scale  = 32;
+			int const offset = 64;
+
+			int r = (_bit(id, 3) + 2*_bit(id, 0))*scale + offset;
+			int g = (_bit(id, 4) + 2*_bit(id, 1))*scale + offset;
+			int b = (_bit(id, 5) + 2*_bit(id, 2))*scale + offset;
+
+			return Color(r, g, b);
+		}
+
+		Color const _color = _session_color(_id);
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Log_session_component(const char *label, Log_window *log_window)
-		: _color(0, 0, 0), _log_window(log_window)
-		{
-			static int cnt;
-
-			_id = cnt++;
-
-			const int scale  = 32;
-			const int offset = 64;
-
-			/* compute session color */
-			int r = (_bit(_id, 3) + 2*_bit(_id, 0))*scale + offset;
-			int g = (_bit(_id, 4) + 2*_bit(_id, 1))*scale + offset;
-			int b = (_bit(_id, 5) + 2*_bit(_id, 2))*scale + offset;
-
-			_color = Genode::Color(r, g, b);
-
-			Genode::strncpy(_label, label, sizeof(_label));
-		}
+		Session_component(Session_label const &label,
+		                  Log_window &log_window, int &cnt)
+		:
+			_log_window(log_window), _label(label), _id(cnt++)
+		{ }
 
 
 		/***************************
 		 ** Log session interface **
 		 ***************************/
 
-		Genode::size_t write(String const &log_text)
+		void write(String const &log_text) override
 		{
 			if (!log_text.valid_string()) {
-				PERR("corrupted string");
-				return 0;
+				error("corrupted string");
+				return;
 			}
 
-			_log_window->write(_color, _label, log_text.string(), _id);
-			return Genode::strlen(log_text.string());
+			_log_window.write(_color, _label.string(), log_text.string(), _id);
 		}
 };
 
 
-class Log_root_component : public Genode::Root_component<Log_session_component>
+class Nitlog::Root : public Root_component<Session_component>
 {
 	private:
 
-		Log_window *_log_window;
+		Log_window &_log_window;
+
+		/* session counter, used as a key to generate session colors */
+		int _session_cnt = 0;
 
 	protected:
 
-		Log_session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *args) override
 		{
-			PINF("create log session (%s)", args);
-			char label_buf[Log_session_component::LABEL_LEN];
+			log("create log session args: ", args);
 
-			Genode::Arg label_arg = Genode::Arg_string::find_arg(args, "label");
-			label_arg.string(label_buf, sizeof(label_buf), "");
-
-			return new (md_alloc()) Log_session_component(label_buf, _log_window);
+			return new (md_alloc())
+				Session_component(label_from_args(args),
+				                  _log_window, _session_cnt);
 		}
 
 	public:
@@ -329,12 +339,11 @@ class Log_root_component : public Genode::Root_component<Log_session_component>
 		/**
 		 * Constructor
 		 */
-		Log_root_component(Genode::Rpc_entrypoint *ep,
-		                   Genode::Allocator      *md_alloc,
-		                   Log_window             *log_window)
+		Root(Entrypoint &ep, Allocator &md_alloc, Log_window &log_window)
 		:
-			Genode::Root_component<Log_session_component>(ep, md_alloc),
-			_log_window(log_window) { }
+			Root_component<Session_component>(ep, md_alloc),
+			_log_window(log_window)
+		{ }
 };
 
 
@@ -342,21 +351,22 @@ class Log_view
 {
 	private:
 
-		Nitpicker::Session_client      &_nitpicker;
-		Nitpicker::Point                _pos;
-		Nitpicker::Area                 _size;
-		Nitpicker::Session::View_handle _handle;
+		Gui::Session_client      &_gui;
+		Gui::Point                _pos;
+		Gui::Area                 _size;
+		Gui::Session::View_handle _handle;
 
-		typedef Nitpicker::Session::Command Command;
+		typedef Gui::Session::Command     Command;
+		typedef Gui::Session::View_handle View_handle;
 
 	public:
 
-		Log_view(Nitpicker::Session_client &nitpicker, Nitpicker::Rect geometry)
+		Log_view(Gui::Session_client &gui, Gui::Rect geometry)
 		:
-			_nitpicker(nitpicker),
+			_gui(gui),
 			_pos(geometry.p1()),
 			_size(geometry.area()),
-			_handle(nitpicker.create_view())
+			_handle(gui.create_view())
 		{
 			move(_pos);
 			top();
@@ -364,108 +374,139 @@ class Log_view
 
 		void top()
 		{
-			_nitpicker.enqueue<Command::To_front>(_handle);
-			_nitpicker.execute();
+			_gui.enqueue<Command::To_front>(_handle, View_handle());
+			_gui.execute();
 		}
 
-		void move(Nitpicker::Point pos)
+		void move(Gui::Point pos)
 		{
 			_pos = pos;
 
-			Nitpicker::Rect rect(_pos, _size);
-			_nitpicker.enqueue<Command::Geometry>(_handle, rect);
-			_nitpicker.execute();
+			Gui::Rect rect(_pos, _size);
+			_gui.enqueue<Command::Geometry>(_handle, rect);
+			_gui.execute();
 		}
 
-		Nitpicker::Point pos() const { return _pos; }
+		Gui::Point pos() const { return _pos; }
 };
 
 
-int main(int argc, char **argv)
+struct Nitlog::Main
 {
-	using namespace Genode;
+	Env &_env;
 
-	/* make sure that we connect to LOG before providing this service by ourself */
-	printf("--- nitlog ---\n");
+	Tff_font::Static_glyph_buffer<4096> _glyph_buffer { };
+
+	Tff_font _font { _binary_mono_tff_start, _glyph_buffer };
 
 	/* calculate size of log view in pixels */
-	int log_win_w = default_font.str_w(" ") * LOG_W + 2;
-	int log_win_h = default_font.str_h(" ") * LOG_H + 2;
+	unsigned const _win_w = _font.bounding_box().w() * LOG_W + 2;
+	unsigned const _win_h = _font.bounding_box().h() * LOG_H + 2;
 
 	/* init sessions to the required external services */
-	static Nitpicker::Connection nitpicker;
-	static     Timer::Connection timer;
+	Gui::Connection   _gui   { _env };
+	Timer::Connection _timer { _env };
 
-	nitpicker.buffer(Framebuffer::Mode(log_win_w, log_win_h,
-	                 Framebuffer::Mode::RGB565), false);
+	void _init_gui_buffer()
+	{
+		_gui.buffer(Framebuffer::Mode { .area = { _win_w, _win_h } }, false);
+	}
 
-	/* initialize entry point that serves the root interface */
-	enum { STACK_SIZE = 4096 };
-	static Cap_connection cap;
-	static Rpc_entrypoint ep(&cap, STACK_SIZE, "nitlog_ep");
+	bool const _gui_buffer_initialized = (_init_gui_buffer(), true);
 
-	/*
-	 * Use sliced heap to allocate each session component at a separate
-	 * dataspace.
-	 */
-	static Sliced_heap sliced_heap(env()->ram_session(), env()->rm_session());
+	Sliced_heap _sliced_heap { _env.ram(), _env.rm() };
 
 	/* create log window */
-	void *addr = env()->rm_session()->attach(nitpicker.framebuffer()->dataspace());
+	Attached_dataspace _fb_ds { _env.rm(), _gui.framebuffer()->dataspace() };
 
-	static Canvas<Pixel_rgb565> canvas((Pixel_rgb565 *)addr,
-	                                          ::Area(log_win_w, log_win_h));
-	static Log_window log_window(canvas);
+	Canvas<Pixel_rgb888> _canvas { _fb_ds.local_addr<Pixel_rgb888>(),
+	                               ::Area(_win_w, _win_h) };
 
-	/*
-	 * We clip a border of one pixel off the canvas. This way, the
-	 * border remains unaffected by the drawing operations and
-	 * acts as an outline for the log window.
-	 */
-	canvas.clip(::Rect(::Point(1, 1), ::Area(log_win_w - 2, log_win_h - 2)));
+	Log_window _log_window { _canvas, _font };
+
+	void _init_canvas()
+	{
+		/*
+		 * We clip a border of one pixel off the canvas. This way, the
+		 * border remains unaffected by the drawing operations and
+		 * acts as an outline for the log window.
+		 */
+		_canvas.clip(::Rect(::Point(1, 1), ::Area(_win_w - 2, _win_h - 2)));
+	}
+
+	bool const _canvas_initialized = (_init_canvas(), true);
 
 	/* create view for log window */
-	Nitpicker::Rect log_view_geometry(Nitpicker::Point(20, 20),
-	                                  Nitpicker::Area(log_win_w, log_win_h));
-	Log_view log_view(nitpicker, log_view_geometry);
+	Gui::Rect const _view_geometry { Gui::Point(20, 20),
+	                                 Gui::Area(_win_w, _win_h) };
+	Log_view _view { _gui, _view_geometry };
 
 	/* create root interface for service */
-	static Log_root_component log_root(&ep, &sliced_heap, &log_window);
+	Root _root { _env.ep(), _sliced_heap, _log_window };
 
-	/* announce service at our parent */
-	env()->parent()->announce(ep.manage(&log_root));
+	Attached_dataspace _ev_ds { _env.rm(), _gui.input()->dataspace() };
 
-	/* handle input events */
-	Input::Event *ev_buf = env()->rm_session()->attach(nitpicker.input()->dataspace());
-	Nitpicker::Point old_mouse_pos;
-	unsigned key_cnt = 0;
-	while (1) {
+	Gui::Point const _initial_mouse_pos { -1, -1 };
 
-		while (!nitpicker.input()->pending()) {
-			if (log_window.draw())
-				nitpicker.framebuffer()->refresh(0, 0, log_win_w, log_win_h);
-			timer.msleep(20);
-		}
+	Gui::Point _old_mouse_pos = _initial_mouse_pos;
 
-		for (int i = 0, num_ev = nitpicker.input()->flush(); i < num_ev; i++) {
+	unsigned _key_cnt = 0;
 
-			Input::Event *ev = &ev_buf[i];
+	Signal_handler<Main> _input_handler {
+		_env.ep(), *this, &Main::_handle_input };
 
-			if (ev->type() == Input::Event::PRESS)   key_cnt++;
-			if (ev->type() == Input::Event::RELEASE) key_cnt--;
+	void _handle_input()
+	{
+		Input::Event const *ev_buf = _ev_ds.local_addr<Input::Event const>();
 
-			Nitpicker::Point mouse_pos(ev->ax(), ev->ay());
+		for (int i = 0, num_ev = _gui.input()->flush(); i < num_ev; i++) {
+
+			Input::Event const &ev = ev_buf[i];
+
+			if (ev.press())   _key_cnt++;
+			if (ev.release()) _key_cnt--;
 
 			/* move view */
-			if (ev->type() == Input::Event::MOTION && key_cnt > 0)
-				log_view.move(log_view.pos() + mouse_pos - old_mouse_pos);
+			ev.handle_absolute_motion([&] (int x, int y) {
+
+				Gui::Point const mouse_pos(x, y);
+
+				if (_key_cnt && _old_mouse_pos != _initial_mouse_pos)
+					_view.move(_view.pos() + mouse_pos - _old_mouse_pos);
+
+				_old_mouse_pos = mouse_pos;
+			});
 
 			/* find selected view and bring it to front */
-			if (ev->type() == Input::Event::PRESS && key_cnt == 1)
-				log_view.top();
+			if (ev.press() && _key_cnt == 1)
+				_view.top();
 
-			old_mouse_pos = mouse_pos;
 		}
 	}
-	return 0;
+
+	Signal_handler<Main> _timer_handler {
+		_env.ep(), *this, &Main::_handle_timer };
+
+	void _handle_timer()
+	{
+		if (_log_window.draw())
+			_gui.framebuffer()->refresh(0, 0, _win_w, _win_h);
+	}
+
+	Main(Env &env) : _env(env)
+	{
+		/* announce service at our parent */
+		_env.parent().announce(_env.ep().manage(_root));
+
+		_timer.sigh(_timer_handler);
+		_timer.trigger_periodic(20*1000);
+
+		_gui.input()->sigh(_input_handler);
+	}
+};
+
+
+void Component::construct(Genode::Env &env)
+{
+	static Nitlog::Main main(env);
 }

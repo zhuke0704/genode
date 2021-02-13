@@ -8,8 +8,6 @@ LIBS += lxip_include
 LX_CONTRIB_DIR := $(call select_from_ports,dde_linux)/src/lib/lxip
 NET_DIR        := $(LX_CONTRIB_DIR)/net
 
-CC_OLEVEL = -O2
-
 SETUP_SUFFIX =
 CC_OPT += -DSETUP_SUFFIX=$(SETUP_SUFFIX)
 
@@ -19,17 +17,18 @@ CC_OPT += -DCONFIG_INET -DCONFIG_BASE_SMALL=0 -DCONFIG_DEBUG_LOCK_ALLOC \
 
 CC_WARN = -Wall -Wno-unused-variable -Wno-uninitialized \
           -Wno-unused-function -Wno-overflow -Wno-pointer-arith \
-          -Wno-sign-compare
+          -Wno-sign-compare -Wno-builtin-declaration-mismatch
 
+CC_C_OPT  += -std=gnu89
 CC_C_OPT  += -Wno-unused-but-set-variable -Wno-pointer-sign
 
 CC_C_OPT  += -include $(LIB_INC_DIR)/lx_emul.h
 CC_CXX_OPT = -fpermissive
 
-SRC_CC = dummies.cc lxcc_emul.cc nic_handler.cc socket_handler.cc \
-         timer_handler.cc
+SRC_CC = dummies.cc lxcc_emul.cc nic_handler.cc \
+         timer_handler.cc random.cc
 
-SRC_CC += malloc.cc printf.cc
+SRC_CC += malloc.cc printf.cc env.cc
 
 SRC_C += driver.c dummies_c.c lxc_emul.c
 
@@ -54,3 +53,5 @@ vpath %.c $(LX_CONTRIB_DIR)
 vpath %.c $(LIB_DIR)
 vpath %.cc $(LIB_DIR)
 vpath %.cc $(REP_DIR)/src/lx_kit
+
+CC_CXX_WARN_STRICT =

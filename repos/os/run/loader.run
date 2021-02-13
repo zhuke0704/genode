@@ -1,31 +1,18 @@
-#
-# Build
-#
-
-set build_components {
-	core init
-	drivers/timer
-	server/nitpicker server/loader
-	test/nitpicker test/loader
-	drivers/framebuffer drivers/input
+create_boot_directory
+import_from_depot [depot_user]/src/[base_src] \
+                  [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/src/init \
+                  [depot_user]/src/nitpicker
+build {
+	server/loader
+	test/loader
+	test/nitpicker
 }
 
-source ${genode_dir}/repos/base/run/platform_drv.inc
-append_platform_drv_build_components
-
-build $build_components
-
-create_boot_directory
-
-#
-# Generate config
-#
-
-append config {
+install_config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -36,70 +23,51 @@ append config {
 	</parent-provides>
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
-	</default-route>}
+	</default-route>
+	<default caps="100"/>
 
-append_platform_drv_config
-
-append_if [have_spec sdl] config {
-	<start name="fb_sdl">
-		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
-		</provides>
-	</start>}
-
-append_if [have_spec framebuffer] config {
-	<start name="fb_drv">
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Framebuffer"/></provides>
-	</start>}
-
-append_if [have_spec ps2] config {
-	<start name="ps2_drv">
-		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Input"/></provides>
-	</start> }
-
-append config {
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
 	</start>
+
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
+		<binary name="init"/>
+		<route>
+			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
 	<start name="nitpicker">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
 			<domain name="" layer="2" /> <default-policy domain=""/>
 		</config>
 	</start>
+
 	<start name="loader">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Loader"/></provides>
+		<config>
+			<policy label_prefix="test-loader">
+				<parent-rom name="testnit"/>
+				<parent-rom name="ld.lib.so"/>
+			</policy>
+		</config>
 	</start>
-	<start name="test-loader">
+	<start name="test-loader" caps="200">
 		<resource name="RAM" quantum="1G"/>
 	</start>
 </config>}
 
-install_config $config
-
-#
-# Boot modules
-#
-
-# generic modules
-set boot_modules { core init timer nitpicker testnit loader test-loader }
-
-# platform-specific modules
-lappend_if [have_spec linux]       boot_modules fb_sdl
-lappend_if [have_spec framebuffer] boot_modules fb_drv
-lappend_if [have_spec ps2]         boot_modules ps2_drv
-
-append_platform_drv_boot_modules
-
-build_boot_image $boot_modules
-
-append qemu_args " -m 256 "
-
+build_boot_image { testnit loader test-loader }
 run_genode_until forever

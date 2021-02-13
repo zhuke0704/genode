@@ -5,250 +5,129 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <base/env.h>
+#include <libc/component.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/log.h>
 #include <base/sleep.h>
-#include <os/attached_rom_dataspace.h>
-#include <os/config.h>
-#include <os/server.h>
+#include <os/reporter.h>
+#include <timer_session/connection.h>
 #include <util/xml_node.h>
-#include <util/string.h>
 
 /* local includes */
-#include "wpa.h"
-
-typedef long long ssize_t;
-
-extern void wifi_init(Server::Entrypoint &, Genode::Lock &);
-extern "C" void wpa_conf_reload(void);
-extern "C" ssize_t wpa_write_conf(char const *, Genode::size_t);
-
-bool config_verbose = false;
-
-static Genode::Lock &wpa_startup_lock()
-{
-	static Genode::Lock _l(Genode::Lock::LOCKED);
-	return _l;
-}
+#include <util.h>
+#include <wpa.h>
+#include <frontend.h>
 
 
-namespace {
-	template <Genode::size_t CAPACITY>
-	class Buffer
-	{
-		private:
-
-			char           _data[CAPACITY] { 0 };
-			Genode::size_t _length { 0 };
-
-		public:
-
-			void            reset()       { _data[0] = 0; _length = 0; }
-			char const      *data() const { return _data; }
-			Genode::size_t length() const { return _length; }
-
-			void append(char const *format, ...)
-			{
-				va_list list;
-				va_start(list, format);
-				Genode::String_console sc(_data + _length, CAPACITY - _length);
-				sc.vprintf(format, list);
-				va_end(list);
-
-				_length += sc.len();
-			}
-	};
-} /* anonymous namespace */
+static Wifi::Frontend *_wifi_frontend = nullptr;
 
 
 /**
- * Generate wpa_supplicant.conf file
+ * Notify front end about command processing
+ *
+ * Called by the CTRL interface after wpa_supplicant has processed
+ * the command.
  */
-static int generate_wpa_supplicant_conf(char const **p, Genode::size_t *len, char const *ssid,
-                       char const *bssid, bool protection = false, char const *psk = 0)
+void wifi_block_for_processing(void)
 {
-	static char const *start_fmt = "network={\n\tscan_ssid=1\n";
-	static char const *ssid_fmt  = "\tssid=\"%s\"\n";
-	static char const *bssid_fmt = "\tbssid=%s\n";
-	static char const *prot_fmt  = "\tkey_mgmt=%s\n";
-	static char const *psk_fmt   = "\tpsk=\"%s\"\n";
-	static char const *end_fmt   = "}\n";
+	if (!_wifi_frontend) {
+		Genode::warning("frontend not available, dropping notification");
+		return;
+	}
 
-	static Buffer<256> buffer;
-	buffer.reset();
+	/*
+	 * Next time we block as long as the front end has not finished
+	 * handling our previous request
+	 */
+	_wifi_frontend->block_for_processing();
 
-	buffer.append(start_fmt);
-
-	if (ssid)
-		buffer.append(ssid_fmt, ssid);
-
-	if (bssid)
-		buffer.append(bssid_fmt, bssid);
-
-	if (protection)
-		buffer.append(psk_fmt, psk);
-
-	buffer.append(prot_fmt, protection ? "WPA-PSK" : "NONE");
-
-	buffer.append(end_fmt);
-
-	*p = buffer.data();
-	*len = buffer.length();
-
-	return 0;
+	/* XXX hack to trick poll() into returning faster */
+	wpa_ctrl_set_fd();
 }
 
 
-struct Wlan_configration
+void wifi_notify_cmd_result(void)
 {
-	Genode::Attached_rom_dataspace               config_rom { "wlan_configuration" };
-	Genode::Signal_rpc_member<Wlan_configration> dispatcher;
-	Genode::Lock                                 update_lock;
-
-	char const     *buffer;
-	Genode::size_t  size;
-
-	/**
-	 * Write configuration buffer to conf file to activate the new configuration.
-	 */
-	void _activate_configuration()
-	{
-		if (wpa_write_conf(buffer, size) == 0) {
-			PINF("reload wpa_supplicant configuration");
-			wpa_conf_reload();
-		}
+	if (!_wifi_frontend) {
+		Genode::warning("frontend not available, dropping notification");
+		return;
 	}
 
-	/**
-	 * Write dummy configuration buffer to conf file to activate the new
-	 * configuration.
-	 */
-	void _active_dummy_configuration()
-	{
-		generate_wpa_supplicant_conf(&buffer, &size, "dummyssid", "00:00:00:00:00:00");
-		_activate_configuration();
+	Genode::Signal_transmitter(_wifi_frontend->result_sigh()).submit();
+}
+
+
+/**
+ * Notify front end about triggered event
+ *
+ * Called by the CTRL interface whenever wpa_supplicant has triggered
+ * a event.
+ */
+void wifi_notify_event(void)
+{
+	if (!_wifi_frontend) {
+		Genode::warning("frontend not available, dropping notification");
+		return;
 	}
 
-	/**
-	 * Update the conf file used by the wpa_supplicant.
-	 */
-	void _update_configuration()
-	{
-		using namespace Genode;
+	Genode::Signal_transmitter(_wifi_frontend->event_sigh()).submit();
+}
 
-		Lock::Guard guard(update_lock);
 
-		config_rom.update();
+/**
+ * Return shared-memory message buffer
+ *
+ * It is used by the wpa_supplicant CTRL interface.
+ */
+void *wifi_get_buffer(void)
+{
+	return _wifi_frontend ? &_wifi_frontend->msg_buffer() : nullptr;
+}
 
-		/**
-		 * We generate a dummy configuration because there is no valid
-		 * configuration yet to fool wpa_supplicant to keep it scanning
-		 * for the non exisiting network.
-		 */
-		if (!config_rom.valid()) {
-			_active_dummy_configuration();
-			return;
-		}
 
-		Xml_node node(config_rom.local_addr<char>(), config_rom.size());
-
-		/**
-		 * Since <selected_accesspoint/> is empty or missing an ssid attribute
-		 * we also generate a dummy configuration.
-		 */
-		if (!node.has_attribute("ssid")) {
-			_active_dummy_configuration();
-			return;
-		}
-
-		/**
-		 * Try to generate a valid configuration.
-		 */
-		enum { MAX_SSID_LENGTH = 32 + 1,
-		       BSSID_LENGTH    = 12 + 5 + 1,
-		       PROT_LENGTH     = 7 + 1,
-		       MIN_PSK_LENGTH  = 8,
-		       MAX_PSK_LENGTH  = 63 + 1};
-
-		String<MAX_SSID_LENGTH> ssid;
-		node.attribute("ssid").value(&ssid);
-
-		bool use_bssid = node.has_attribute("bssid");
-		String<BSSID_LENGTH> bssid;
-		if (use_bssid)
-			node.attribute("bssid").value(&bssid);
-
-		bool use_protection = false;
-		if (node.has_attribute("protection")) {
-			String<PROT_LENGTH> prot;
-			node.attribute("protection").value(&prot);
-			use_protection = (prot == "WPA-PSK");
-		}
-
-		String<MAX_PSK_LENGTH> psk;
-		if (use_protection && node.has_attribute("psk"))
-			node.attribute("psk").value(&psk);
-
-		/* psk must be between 8 and 63 characters long */
-		if (use_protection && (psk.length() < MIN_PSK_LENGTH)) {
-			PERR("error: given psk is too short");
-			_active_dummy_configuration();
-			return;
-		}
-
-		if (generate_wpa_supplicant_conf(&buffer, &size, ssid.string(),
-		                                 use_bssid ? bssid.string() : 0,
-		                                 use_protection, psk.string()) == 0)
-			_activate_configuration();
-	}
-
-	void _handle_update(unsigned) { _update_configuration(); }
-
-	Wlan_configration(Server::Entrypoint &ep)
-	:
-		dispatcher(ep, *this, &Wlan_configration::_handle_update)
-	{
-		config_rom.sigh(dispatcher);
-		_update_configuration();
-	}
-};
+/* exported by wifi.lib.so */
+extern void wifi_init(Genode::Env&,
+                      Genode::Blockade&,
+                      bool,
+                      Genode::Signal_context_capability,
+                      Genode::Nic_driver_mode);
 
 
 struct Main
 {
-	Server::Entrypoint &_ep;
-	Wpa_thread         *_wpa;
+	Genode::Env  &env;
 
-	Wlan_configration   *_wc;
+	Genode::Constructible<Wpa_thread>     _wpa;
+	Genode::Constructible<Wifi::Frontend> _frontend;
 
-	Main(Server::Entrypoint &ep)
-	:
-		_ep(ep)
+	Genode::Blockade _wpa_startup_blockade { };
+
+	Main(Genode::Env &env) : env(env)
 	{
-		Genode::Xml_node config = Genode::config()->xml_node();
-		config_verbose = config.attribute_value("verbose", config_verbose);
+		_frontend.construct(env);
+		_wifi_frontend = &*_frontend;
 
-		_wpa = new (Genode::env()->heap()) Wpa_thread(wpa_startup_lock(), config_verbose);
+		_wpa.construct(env, _wpa_startup_blockade);
 
-		_wpa->start();
-
-		try {
-			_wc = new (Genode::env()->heap()) Wlan_configration(_ep);
-		} catch (...) { PWRN("could not create wlan_configration handler"); }
-
-		wifi_init(ep, wpa_startup_lock());
+		/*
+		 * Forcefully disable 11n but for convenience the attribute is used the
+		 * other way araound.
+		 */
+		bool const disable_11n = !_frontend->use_11n();
+		wifi_init(env, _wpa_startup_blockade, disable_11n,
+		          _frontend->rfkill_sigh(), _frontend->mode());
 	}
 };
 
 
-namespace Server {
-	char const *name()             { return "wifi_drv_ep";   }
-	size_t      stack_size()       { return 32 * 1024 * sizeof(long); }
-	void construct(Entrypoint &ep) { static Main server(ep); }
+void Libc::Component::construct(Libc::Env &env)
+{
+	Libc::with_libc([&] () { static Main server(env); });
 }

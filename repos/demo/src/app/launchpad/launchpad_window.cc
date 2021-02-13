@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <scout/misc_math.h>
@@ -35,14 +35,13 @@ extern unsigned char TITLEBAR_RGBA[];
  ********************************/
 
 template <typename PT>
-Launchpad_window<PT>::Launchpad_window(Graphics_backend &gfx_backend,
+Launchpad_window<PT>::Launchpad_window(Genode::Env &env,
+                                       Graphics_backend &gfx_backend,
                                        Point position, Area size, Area max_size,
                                        unsigned long initial_quota)
 :
-	Launchpad(initial_quota),
+	Launchpad(env, initial_quota),
 	Window(gfx_backend, position, size, max_size, false),
-	_docview(0),
-	_spacer(1, _TH),
 	_info_section("Status", &subsection_font),
 	_launch_section("Launcher", &subsection_font),
 	_kiddy_section("Children", &subsection_font),
@@ -174,4 +173,4 @@ void Launchpad_window<PT>::handle_scroll(int view_pos)
 	ypos_sb(-view_pos, 0);
 }
 
-template class Launchpad_window<Genode::Pixel_rgb565>;
+template class Launchpad_window<Genode::Pixel_rgb888>;

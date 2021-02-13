@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2016 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__HELLO_SESSION_H__CLIENT_H_
@@ -26,14 +26,14 @@ struct Hello::Session_client : Genode::Rpc_client<Session>
 	Session_client(Genode::Capability<Session> cap)
 	: Genode::Rpc_client<Session>(cap) { }
 
-	void say_hello()
+	void say_hello() override
 	{
 		Genode::log("issue RPC for saying hello");
 		call<Rpc_say_hello>();
 		Genode::log("returned from 'say_hello' RPC call");
 	}
 
-	int add(int a, int b)
+	int add(int a, int b) override
 	{
 		return call<Rpc_add>(a, b);
 	}

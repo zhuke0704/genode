@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__CONSTRUCT_AT_H_
 #define _INCLUDE__UTIL__CONSTRUCT_AT_H_
 
 #include <base/stdint.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 namespace Genode {
 
@@ -55,7 +55,7 @@ static inline T * Genode::construct_at(void *at, ARGS &&... args)
 	{
 		Placeable(ARGS &&... args) : T(args...) { }
 
-		void * operator new (size_t, void *ptr) { return ptr; }
+		void * operator new (__SIZE_TYPE__, void *ptr) { return ptr; }
 		void   operator delete (void *, void *) { }
 
 		/**
@@ -68,7 +68,7 @@ static inline T * Genode::construct_at(void *at, ARGS &&... args)
 		 */
 		void  operator delete (void *)
 		{
-			PERR("cxx: Placeable::operator delete (void *) not supported.");
+			error("cxx: Placeable::operator delete (void *) not supported.");
 		}
 	};
 

@@ -7,26 +7,46 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
-
-/* Genode includes */
-#include <base/cap_map.h>
-#include <base/native_types.h>
-
-#include <util/assert.h>
 
 /* base-internal includes */
 #include <base/internal/spin_lock.h>
+#include <base/internal/cap_map.h>
+#include <base/internal/foc_assert.h>
 
 /* kernel includes */
-namespace Fiasco {
-#include <l4/sys/consts.h>
-#include <l4/sys/task.h>
+#include <foc/capability_space.h>
+
+/**
+ * We had to change the sematic of l4_task_cap_equal to return whether two
+ * capabilities point to the same kernel object instead of whether both
+ * capabilities are equal with respect to thier rights. To easily check after
+ * a Fiasco.OC upgrade whether the sematic of the kernel patch still matches
+ * our expectations below macro can be used.
+  */
+#ifdef TEST_KERN_CAP_EQUAL
+inline bool CHECK_CAP_EQUAL(bool equal, Genode::addr_t cap1,
+                                        Genode::addr_t cap2)
+{
+	unsigned long id1 = Foc::l4_debugger_global_id(cap1),
+	              id2 = Foc::l4_debugger_global_id(cap2);
+	ASSERT(((id1 == id2) == equal), "CAPS NOT EQUAL!!!");
+	return equal;
 }
+#else
+inline bool CHECK_CAP_EQUAL(bool equal, Genode::addr_t,
+                                        Genode::addr_t)
+{
+	return equal;
+}
+#endif /* TEST_KERN_CAP_EQUAL */
+
+
+using namespace Genode;
 
 
 /***********************
@@ -36,13 +56,11 @@ namespace Fiasco {
 static volatile int _cap_index_spinlock = SPINLOCK_UNLOCKED;
 
 
-bool Genode::Cap_index::higher(Genode::Cap_index *n) { return n->_id > _id; }
+bool Cap_index::higher(Cap_index *n) { return n->_id > _id; }
 
 
-Genode::Cap_index* Genode::Cap_index::find_by_id(Genode::uint16_t id)
+Cap_index* Cap_index::find_by_id(uint16_t id)
 {
-	using namespace Genode;
-
 	if (_id == id) return this;
 
 	Cap_index *n = Avl_node<Cap_index>::child(id > _id);
@@ -50,31 +68,33 @@ Genode::Cap_index* Genode::Cap_index::find_by_id(Genode::uint16_t id)
 }
 
 
-Genode::addr_t Genode::Cap_index::kcap() {
-	return cap_idx_alloc()->idx_to_kcap(this); }
+addr_t Cap_index::kcap() const
+{
+	return cap_idx_alloc().idx_to_kcap(this);
+}
 
 
-Genode::uint8_t Genode::Cap_index::inc()
+uint8_t Cap_index::inc()
 {
 	/* con't ref-count index that are controlled by core */
-	if (cap_idx_alloc()->static_idx(this))
+	if (cap_idx_alloc().static_idx(this))
 		return 1;
 
 	spinlock_lock(&_cap_index_spinlock);
-	Genode::uint8_t ret = ++_ref_cnt;
+	uint8_t ret = ++_ref_cnt;
 	spinlock_unlock(&_cap_index_spinlock);
 	return ret;
 }
 
 
-Genode::uint8_t Genode::Cap_index::dec()
+uint8_t Cap_index::dec()
 {
 	/* con't ref-count index that are controlled by core */
-	if (cap_idx_alloc()->static_idx(this))
+	if (cap_idx_alloc().static_idx(this))
 		return 1;
 
 	spinlock_lock(&_cap_index_spinlock);
-	Genode::uint8_t ret = --_ref_cnt;
+	uint8_t ret = --_ref_cnt;
 	spinlock_unlock(&_cap_index_spinlock);
 	return ret;
 }
@@ -84,24 +104,22 @@ Genode::uint8_t Genode::Cap_index::dec()
  **  Capability_map class  **
  ****************************/
 
-Genode::Cap_index* Genode::Capability_map::find(int id)
+Cap_index* Capability_map::find(int id)
 {
-	Genode::Lock_guard<Spin_lock> guard(_lock);
+	Lock_guard<Spin_lock> guard(_lock);
 
 	return _tree.first() ? _tree.first()->find_by_id(id) : 0;
 }
 
 
-Genode::Cap_index* Genode::Capability_map::insert(int id)
+Cap_index* Capability_map::insert(int id)
 {
-	using namespace Genode;
-
 	Lock_guard<Spin_lock> guard(_lock);
 
 	ASSERT(!_tree.first() || !_tree.first()->find_by_id(id),
 	       "Double insertion in cap_map()!");
 
-	Cap_index *i = cap_idx_alloc()->alloc_range(1);
+	Cap_index * const i = cap_idx_alloc().alloc_range(1);
 	if (i) {
 		i->id(id);
 		_tree.insert(i);
@@ -110,10 +128,8 @@ Genode::Cap_index* Genode::Capability_map::insert(int id)
 }
 
 
-Genode::Cap_index* Genode::Capability_map::insert(int id, addr_t kcap)
+Cap_index* Capability_map::insert(int id, addr_t kcap)
 {
-	using namespace Genode;
-
 	Lock_guard<Spin_lock> guard(_lock);
 
 	/* remove potentially existent entry */
@@ -121,7 +137,7 @@ Genode::Cap_index* Genode::Capability_map::insert(int id, addr_t kcap)
 	if (i)
 		_tree.remove(i);
 
-	i = cap_idx_alloc()->alloc(kcap);
+	i = cap_idx_alloc().alloc(kcap);
 	if (i) {
 		i->id(id);
 		_tree.insert(i);
@@ -130,10 +146,9 @@ Genode::Cap_index* Genode::Capability_map::insert(int id, addr_t kcap)
 }
 
 
-Genode::Cap_index* Genode::Capability_map::insert_map(int id, addr_t kcap)
+Cap_index* Capability_map::insert_map(int id, addr_t kcap)
 {
-	using namespace Genode;
-	using namespace Fiasco;
+	using namespace Foc;
 
 	Lock_guard<Spin_lock> guard(_lock);
 
@@ -143,7 +158,7 @@ Genode::Cap_index* Genode::Capability_map::insert_map(int id, addr_t kcap)
 	/* if we own the capability already check whether it's the same */
 	if (i) {
 		l4_msgtag_t tag = l4_task_cap_equal(L4_BASE_TASK_CAP, i->kcap(), kcap);
-		if (!l4_msgtag_label(tag)) {
+		if (!CHECK_CAP_EQUAL(l4_msgtag_label(tag), i->kcap(), kcap)) {
 			/*
 			 * they aren't equal, possibly an already revoked cap,
 			 * otherwise it's a fake capability and we return an invalid one
@@ -160,7 +175,7 @@ Genode::Cap_index* Genode::Capability_map::insert_map(int id, addr_t kcap)
 	}
 
 	/* the capability doesn't exists in the map so allocate a new one */
-	i = cap_idx_alloc()->alloc_range(1);
+	i = cap_idx_alloc().alloc_range(1);
 	if (!i)
 		return 0;
 
@@ -176,8 +191,34 @@ Genode::Cap_index* Genode::Capability_map::insert_map(int id, addr_t kcap)
 }
 
 
-Genode::Capability_map* Genode::cap_map()
+Capability_map &Genode::cap_map()
 {
-	static Genode::Capability_map map;
-	return &map;
+	static Capability_map map;
+	return map;
+}
+
+
+/**********************
+ ** Capability_space **
+ **********************/
+
+Foc::l4_cap_idx_t Capability_space::alloc_kcap()
+{
+	return cap_idx_alloc().alloc_range(1)->kcap();
+}
+
+
+void Capability_space::free_kcap(Foc::l4_cap_idx_t kcap)
+{
+	Cap_index *idx = cap_idx_alloc().kcap_to_idx(kcap);
+	cap_idx_alloc().free(idx, 1);
+}
+
+
+Foc::l4_cap_idx_t Capability_space::kcap(Native_capability cap)
+{
+	if (cap.data() == nullptr)
+		raw("Native_capability data is NULL!");
+
+	return cap.data()->kcap();
 }

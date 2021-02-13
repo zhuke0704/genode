@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__CPU_THREAD_COMPONENT_H_
@@ -18,6 +18,7 @@
 #include <util/list.h>
 #include <base/rpc_server.h>
 #include <cpu_thread/cpu_thread.h>
+#include <base/session_label.h>
 
 /* core includes */
 #include <pager.h>
@@ -30,20 +31,21 @@
 namespace Genode { class Cpu_thread_component; }
 
 
-class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
-                                     public List<Cpu_thread_component>::Element,
-                                     public Trace::Source::Info_accessor
+class Genode::Cpu_thread_component : public  Rpc_object<Cpu_thread>,
+                                     private List<Cpu_thread_component>::Element,
+                                     public  Trace::Source::Info_accessor
 {
 	public:
 
-		typedef Trace::Session_label Session_label;
-		typedef Trace::Thread_name   Thread_name;
+		typedef Trace::Thread_name Thread_name;
 
 	private:
 
+		friend class List<Cpu_thread_component>;
+		friend class Cpu_session_component;
+
 		Rpc_entrypoint           &_ep;
 		Pager_entrypoint         &_pager_ep;
-		Capability<Pd_session>    _pd;
 		Region_map_component     &_address_space_region_map;
 		Cpu_session::Weight const _weight;
 		Session_label       const _session_label;
@@ -61,12 +63,12 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 		/**
 		 * Exception handler as defined by 'Cpu_session::exception_sigh'
 		 */
-		Signal_context_capability _session_sigh;
+		Signal_context_capability _session_sigh { };
 
 		/**
 		 * Exception handler as defined by 'Cpu_thread::exception_sigh'
 		 */
-		Signal_context_capability _thread_sigh;
+		Signal_context_capability _thread_sigh { };
 
 		struct Trace_control_slot
 		{
@@ -77,7 +79,7 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 			: trace_control_area(trace_control_area)
 			{
 				if (!trace_control_area.alloc(index))
-					throw Cpu_session::Out_of_metadata();
+					throw Out_of_ram();
 			}
 
 			~Trace_control_slot()
@@ -97,7 +99,20 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 
 		Trace::Source_registry &_trace_sources;
 
-		Weak_ptr<Address_space> _address_space = _platform_thread.address_space();
+		struct Managed_thread_cap
+		{
+			Rpc_entrypoint          &_ep;
+			Cpu_thread_component    &_thread;
+			Thread_capability const  _cap;
+
+			Managed_thread_cap(Rpc_entrypoint &ep, Cpu_thread_component &thread)
+			: _ep(ep), _thread(thread), _cap(_ep.manage(&thread))
+			{ }
+
+			~Managed_thread_cap() { _ep.dissolve(&_thread); }
+
+			Thread_capability cap() const { return _cap; }
+		} const _managed_thread_cap;
 
 		Rm_client _rm_client;
 
@@ -138,7 +153,7 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 		                     unsigned                   priority,
 		                     addr_t                     utcb)
 		:
-			_ep(ep), _pager_ep(pager_ep), _pd(pd.cap()),
+			_ep(ep), _pager_ep(pager_ep),
 			_address_space_region_map(pd.address_space_region_map()),
 			_weight(weight),
 			_session_label(label), _name(name),
@@ -146,24 +161,24 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 			_bound_to_pd(_bind_to_pd(pd)),
 			_trace_control_slot(trace_control_area),
 			_trace_sources(trace_sources),
-			_rm_client(cpu_session_cap, _ep.manage(this),
-			           &_address_space_region_map,
+			_managed_thread_cap(_ep, *this),
+			_rm_client(cpu_session_cap, _managed_thread_cap.cap(),
+			           _address_space_region_map,
 			           _platform_thread.pager_object_badge(),
-			           _address_space, _platform_thread.affinity())
+			           _platform_thread.affinity(),
+			           pd.label(), name)
 		{
-			_address_space_region_map.add_client(_rm_client);
+			_pager_ep.manage(_rm_client);
 
-			/* acquaint thread with its pager object */
-			_pager_ep.manage(&_rm_client);
-			_platform_thread.pager(&_rm_client);
+			_address_space_region_map.add_client(_rm_client);
+			_platform_thread.pager(_rm_client);
 			_trace_sources.insert(&_trace_source);
 		}
 
 		~Cpu_thread_component()
 		{
 			_trace_sources.remove(&_trace_source);
-			_pager_ep.dissolve(&_rm_client);
-			_ep.dissolve(this);
+			_pager_ep.dissolve(_rm_client);
 
 			_address_space_region_map.remove_client(_rm_client);
 		}
@@ -173,7 +188,7 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 		 ** Trace::Source::Info_accessor interface **
 		 ********************************************/
 
-		Trace::Source::Info trace_source_info() const
+		Trace::Source::Info trace_source_info() const override
 		{
 			return { _session_label, _name,
 			         _platform_thread.execution_time(),
@@ -189,8 +204,6 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 		 * Define default exception handler installed for the CPU session
 		 */
 		void session_exception_sigh(Signal_context_capability);
-
-		Capability<Pd_session> pd() const { return _pd; }
 
 		void quota(size_t);
 
@@ -211,7 +224,6 @@ class Genode::Cpu_thread_component : public Rpc_object<Cpu_thread>,
 		void pause() override;
 		void resume() override;
 		void single_step(bool) override;
-		void cancel_blocking() override;
 		Thread_state state() override;
 		void state(Thread_state const &) override;
 		void exception_sigh(Signal_context_capability) override;

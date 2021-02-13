@@ -5,26 +5,31 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
 #include <ipc_pager.h>
 
-namespace Fiasco {
-#include <l4/sys/utcb.h>
-}
+/* Fiasco.OC includes */
+#include <foc/syscall.h>
+
+using namespace Genode;
+
 
 enum Exceptions { EX_REGS = 0xff };
 
 
-void Genode::Ipc_pager::_parse_exception()
+void Ipc_pager::_parse_exception()
 {
-	if (Fiasco::l4_utcb_exc()->trapno == EX_REGS)
-		_type = PAUSE;
-	else
-		_type = EXCEPTION;
+	_type = (Foc::l4_utcb_exc()->trapno == EX_REGS) ? PAUSE : EXCEPTION;
+}
+
+
+bool Ipc_pager::exec_fault() const
+{
+	return ((_pf_addr & 1) && !write_fault());
 }

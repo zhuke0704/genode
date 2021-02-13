@@ -1,15 +1,15 @@
 /*
- * \brief  Lock-guarded allocator interface
+ * \brief  Mutex-guarded allocator interface
  * \author Norman Feske
  * \author Stefan Kalkowski
  * \date   2008-08-05
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__SYNCED_RANGE_ALLOCATOR_H_
@@ -25,7 +25,7 @@ namespace Genode {
 
 
 /**
- * Lock-guarded range allocator
+ * Mutex-guarded range allocator
  *
  * This class wraps the complete 'Range_allocator' interface while
  * preventing concurrent calls to the wrapped allocator implementation.
@@ -39,26 +39,28 @@ class Genode::Synced_range_allocator : public Range_allocator
 
 		friend class Mapped_mem_allocator;
 
-		Lock                          _default_lock;
-		Lock                         &_lock;
-		ALLOC                         _alloc;
-		Synced_interface<ALLOC, Lock> _synced_object;
+		Mutex                          _default_mutex { };
+		Mutex                         &_mutex;
+		ALLOC                          _alloc;
+		Synced_interface<ALLOC, Mutex> _synced_object;
 
 	public:
 
-		using Guard = typename Synced_interface<ALLOC, Lock>::Guard;
+		using Guard = typename Synced_interface<ALLOC, Mutex>::Guard;
 
 		template <typename... ARGS>
-		Synced_range_allocator(Lock &lock, ARGS &&... args)
-		: _lock(lock), _alloc(args...), _synced_object(_lock, &_alloc) { }
+		Synced_range_allocator(Mutex &mutex, ARGS &&... args)
+		: _mutex(mutex), _alloc(args...), _synced_object(_mutex, &_alloc) { }
 
 		template <typename... ARGS>
 		Synced_range_allocator(ARGS &&... args)
-		: _lock(_default_lock), _alloc(args...),
-		_synced_object(_lock, &_alloc) { }
+		: _mutex(_default_mutex), _alloc(args...),
+		_synced_object(_mutex, &_alloc) { }
 
 		Guard operator () ()       { return _synced_object(); }
 		Guard operator () () const { return _synced_object(); }
+
+		void print(Output &out) const { _synced_object()->print(out); }
 
 
 		/*************************

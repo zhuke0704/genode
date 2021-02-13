@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _PACKET_HANDLER_H_
@@ -18,7 +18,6 @@
 #include <base/semaphore.h>
 #include <base/thread.h>
 #include <nic_session/connection.h>
-#include <os/server.h>
 #include <net/ethernet.h>
 #include <net/ipv4.h>
 
@@ -40,13 +39,15 @@ class Net::Packet_handler
 {
 	private:
 
-		Packet_descriptor _packet;
-		Net::Vlan        &_vlan;
+		Packet_descriptor      _packet { };
+		Net::Vlan             &_vlan;
+		Genode::Session_label  _label;
+		bool            const &_verbose;
 
 		/**
 		 * submit queue not empty anymore
 		 */
-		void _ready_to_submit(unsigned);
+		void _ready_to_submit();
 
 		/**
 		 * acknoledgement queue not full anymore
@@ -54,12 +55,12 @@ class Net::Packet_handler
 		 * TODO: by now, we assume ACK and SUBMIT queue to be equally
 		 *       dimensioned. That's why we ignore this signal by now.
 		 */
-		void _ack_avail(unsigned) { }
+		void _ack_avail() { }
 
 		/**
 		 * acknoledgement queue not empty anymore
 		 */
-		void _ready_to_ack(unsigned);
+		void _ready_to_ack();
 
 		/**
 		 * submit queue not full anymore
@@ -67,24 +68,29 @@ class Net::Packet_handler
 		 * TODO: by now, we just drop packets that cannot be transferred
 		 *       to the other side, that's why we ignore this signal.
 		 */
-		void _packet_avail(unsigned) { }
+		void _packet_avail() { }
 
 		/**
 		 * the link-state of changed
 		 */
-		void _link_state(unsigned);
+		void _link_state();
 
 	protected:
 
-		Genode::Signal_rpc_member<Packet_handler> _sink_ack;
-		Genode::Signal_rpc_member<Packet_handler> _sink_submit;
-		Genode::Signal_rpc_member<Packet_handler> _source_ack;
-		Genode::Signal_rpc_member<Packet_handler> _source_submit;
-		Genode::Signal_rpc_member<Packet_handler> _client_link_state;
+		Genode::Signal_handler<Packet_handler> _sink_ack;
+		Genode::Signal_handler<Packet_handler> _sink_submit;
+		Genode::Signal_handler<Packet_handler> _source_ack;
+		Genode::Signal_handler<Packet_handler> _source_submit;
+		Genode::Signal_handler<Packet_handler> _client_link_state;
 
 	public:
 
-		Packet_handler(Server::Entrypoint&, Vlan&);
+		Packet_handler(Genode::Entrypoint&,
+		               Vlan&,
+		               Genode::Session_label const &label,
+		               bool                  const &verbose);
+
+		virtual ~Packet_handler() { }
 
 		virtual Packet_stream_sink< ::Nic::Session::Policy>   * sink()   = 0;
 		virtual Packet_stream_source< ::Nic::Session::Policy> * source() = 0;
@@ -123,8 +129,8 @@ class Net::Packet_handler
 		 * \param eth   ethernet frame containing the ARP packet.
 		 * \param size  ethernet frame's size.
 		 */
-		virtual bool handle_arp(Ethernet_frame *eth,
-		                        Genode::size_t size)   = 0;
+		virtual bool handle_arp(Ethernet_frame &eth,
+		                        Size_guard     &size_guard)   = 0;
 
 		/*
 		 * Handle an IP packet
@@ -132,8 +138,8 @@ class Net::Packet_handler
 		 * \param eth   ethernet frame containing the IP packet.
 		 * \param size  ethernet frame's size.
 		 */
-		virtual bool handle_ip(Ethernet_frame *eth,
-		                       Genode::size_t size)    = 0;
+		virtual bool handle_ip(Ethernet_frame &eth,
+		                       Size_guard     &size_guard)    = 0;
 
 		/*
 		 * Finalize handling of ethernet frame.

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__TRACE__CONTROL_AREA_H_
@@ -16,6 +16,7 @@
 
 #include <base/env.h>
 #include <dataspace/capability.h>
+#include <base/attached_ram_dataspace.h>
 
 /* base-internal includes */
 #include <base/internal/trace_control.h>
@@ -31,67 +32,58 @@ class Genode::Trace::Control_area
 
 	private:
 
-		Ram_dataspace_capability _ds;
-		Trace::Control          *_local_base;
+		Ram_allocator                &_ram;
+		Region_map                   &_rm;
+		Attached_ram_dataspace const  _area;
 
-		static Ram_dataspace_capability _try_alloc(size_t size)
-		{
-			try { return env()->ram_session()->alloc(size); }
-			catch (...) { return Ram_dataspace_capability(); }
-		}
+		bool _index_valid(unsigned const index) const {
+			return index < SIZE / sizeof(Trace::Control); }
 
-		static Trace::Control *_try_attach(Dataspace_capability ds)
-		{
-			try { return env()->rm_session()->attach(ds); }
-			catch (...) { return 0; }
-		}
+		/*
+		 * Noncopyable
+		 */
+		Control_area(Control_area const &);
+		Control_area &operator = (Control_area const &);
 
-		bool _index_valid(int index) const
-		{
-			return (index + 1)*sizeof(Trace::Control) < SIZE;
-		}
+		Trace::Control * _local_base() const {
+			return _area.local_addr<Trace::Control>(); }
 
 	public:
 
-		Control_area()
+		Control_area(Ram_allocator &ram, Region_map &rm)
 		:
-			_ds(_try_alloc(SIZE)),
-			_local_base(_try_attach(_ds))
+			_ram(ram), _rm(rm), _area(ram, rm, SIZE)
 		{ }
 
-		~Control_area()
-		{
-			if (_local_base) env()->rm_session()->detach(_local_base);
-			if (_ds.valid()) env()->ram_session()->free(_ds);
-		}
+		~Control_area() { }
 
-		Dataspace_capability dataspace() const { return _ds; }
+		Dataspace_capability dataspace() const { return _area.cap(); }
 
 		bool alloc(unsigned &index_out)
 		{
 			for (unsigned index = 0; _index_valid(index); index++) {
-				if (!_local_base[index].is_free()) {
+				if (!_local_base()[index].is_free()) {
 					continue;
 				}
 
-				_local_base[index].alloc();
+				_local_base()[index].alloc();
 				index_out = index;
 				return true;
 			}
 
-			PERR("trace-control allocaton failed");
+			error("trace-control allocation failed");
 			return false;
 		}
 
 		void free(unsigned index)
 		{
 			if (_index_valid(index))
-				_local_base[index].reset();
+				_local_base()[index].reset();
 		}
 
 		Trace::Control *at(unsigned index)
 		{
-			return _index_valid(index) ? &_local_base[index] : 0;
+			return _index_valid(index) ? &(_local_base()[index]) : nullptr;
 		}
 };
 

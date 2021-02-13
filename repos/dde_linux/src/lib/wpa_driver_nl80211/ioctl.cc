@@ -1,18 +1,21 @@
-/**
+/*
  * \brief  Ioctl functions
  * \author Josef Soentgen
  * \date   2014-10-02
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
+/* compiler includes */
+#include <stdarg.h>
+
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* libc includes */
 #include <sys/sockio.h>
@@ -40,7 +43,7 @@ int ioctl(int fd, unsigned long request, ...)
 
 	switch (request) {
 	case SIOCGIFADDR:
-		PERR("ioctl: request SIOCGIFADDR not implemented.");
+		Genode::error("ioctl: request SIOCGIFADDR not implemented.");
 		return -1;
 	case SIOCGIFINDEX:
 		ifr->ifr_ifindex = 1;
@@ -50,7 +53,7 @@ int ioctl(int fd, unsigned long request, ...)
 		return 0;
 	}
 
-	PWRN("ioctl: request %lu not handled by switch", request);
+	Genode::warning("ioctl: request ", request, " not handled by switch");
 	return -1;
 }
 
@@ -96,5 +99,9 @@ int linux_br_del_if(int sock, const char *brname, const char *ifname) {
 
 
 int linux_br_get(char *brname, const char *ifname) { return -1; }
+
+
+int linux_master_get(char *master_ifname, const char *ifname) {
+	return -1; }
 
 } /* extern "C" */

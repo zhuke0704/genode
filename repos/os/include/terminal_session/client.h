@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__TERMINAL_SESSION__CLIENT_H_
@@ -17,9 +17,9 @@
 /* Genode includes */
 #include <util/misc_math.h>
 #include <util/string.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/rpc_client.h>
-#include <os/attached_dataspace.h>
+#include <base/attached_dataspace.h>
 
 #include <terminal_session/terminal_session.h>
 
@@ -30,7 +30,7 @@ class Terminal::Session_client : public Genode::Rpc_client<Session>
 {
 	private:
 
-		Genode::Lock _lock;
+		Genode::Mutex _mutex { };
 
 		/**
 		 * Shared-memory buffer used for carrying the payload
@@ -40,19 +40,19 @@ class Terminal::Session_client : public Genode::Rpc_client<Session>
 
 	public:
 
-		Session_client(Genode::Capability<Session> cap)
+		Session_client(Genode::Region_map &local_rm, Genode::Capability<Session> cap)
 		:
 			Genode::Rpc_client<Session>(cap),
-			_io_buffer(call<Rpc_dataspace>())
+			_io_buffer(local_rm, call<Rpc_dataspace>())
 		{ }
 
-		Size size() { return call<Rpc_size>(); }
+		Size size() override { return call<Rpc_size>(); }
 
-		bool avail() { return call<Rpc_avail>(); }
+		bool avail() override { return call<Rpc_avail>(); }
 
-		Genode::size_t read(void *buf, Genode::size_t buf_size)
+		Genode::size_t read(void *buf, Genode::size_t buf_size) override
 		{
-			Genode::Lock::Guard _guard(_lock);
+			Genode::Mutex::Guard _guard(_mutex);
 
 			/* instruct server to fill the I/O buffer */
 			Genode::size_t num_bytes = call<Rpc_read>(buf_size);
@@ -64,9 +64,9 @@ class Terminal::Session_client : public Genode::Rpc_client<Session>
 			return num_bytes;
 		}
 
-		Genode::size_t write(void const *buf, Genode::size_t num_bytes)
+		Genode::size_t write(void const *buf, Genode::size_t num_bytes) override
 		{
-			Genode::Lock::Guard _guard(_lock);
+			Genode::Mutex::Guard _guard(_mutex);
 
 			Genode::size_t     written_bytes = 0;
 			char const * const src           = (char const *)buf;
@@ -74,27 +74,36 @@ class Terminal::Session_client : public Genode::Rpc_client<Session>
 			while (written_bytes < num_bytes) {
 
 				/* copy payload to I/O buffer */
-				Genode::size_t n = Genode::min(num_bytes - written_bytes,
-				                               _io_buffer.size());
+				Genode::size_t payload_bytes = Genode::min(num_bytes - written_bytes,
+				                                           _io_buffer.size());
 				Genode::memcpy(_io_buffer.local_addr<char>(),
-				               src + written_bytes, n);
+				               src + written_bytes, payload_bytes);
 
 				/* tell server to pick up new I/O buffer content */
-				call<Rpc_write>(n);
+				Genode::size_t written_payload_bytes = call<Rpc_write>(payload_bytes);
 
-				written_bytes += n;
+				written_bytes += written_payload_bytes;
+
+				if (written_payload_bytes != payload_bytes)
+					return written_bytes;
+
 			}
-			return num_bytes;
+			return written_bytes;
 		}
 
-		void connected_sigh(Genode::Signal_context_capability cap)
+		void connected_sigh(Genode::Signal_context_capability cap) override
 		{
 			call<Rpc_connected_sigh>(cap);
 		}
 
-		void read_avail_sigh(Genode::Signal_context_capability cap)
+		void read_avail_sigh(Genode::Signal_context_capability cap) override
 		{
 			call<Rpc_read_avail_sigh>(cap);
+		}
+
+		void size_changed_sigh(Genode::Signal_context_capability cap) override
+		{
+			call<Rpc_size_changed_sigh>(cap);
 		}
 
 		Genode::size_t io_buffer_size() const { return _io_buffer.size(); }

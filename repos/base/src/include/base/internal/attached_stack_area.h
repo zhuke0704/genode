@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__ATTACHED_STACK_AREA_H_
@@ -30,7 +30,8 @@ struct Genode::Attached_stack_area : Expanding_region_map_client
 {
 	Attached_stack_area(Parent &parent, Pd_session_capability pd)
 	:
-		Expanding_region_map_client(pd, Pd_session_client(pd).stack_area())
+		Expanding_region_map_client(parent, pd, Pd_session_client(pd).stack_area(),
+		                            Parent::Env::pd())
 	{
 		Region_map_client address_space(Pd_session_client(pd).address_space());
 

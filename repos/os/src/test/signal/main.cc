@@ -1,151 +1,116 @@
 /*
  * \brief  Test for signalling framework
  * \author Norman Feske
+ * \author Martin Stein
  * \date   2008-09-06
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
-#include <base/signal.h>
-#include <base/sleep.h>
+/* Genode includes */
+#include <base/component.h>
+#include <base/heap.h>
 #include <base/thread.h>
+#include <base/registry.h>
 #include <timer_session/connection.h>
-#include <cap_session/connection.h>
-#include <util/misc_math.h>
 
 using namespace Genode;
 
-
 /**
- * Transmit signals in a periodic fashion
+ * A thread that submits a signal context in a periodic fashion
  */
-class Sender : Thread_deprecated<4096>
+class Sender : Thread
 {
 	private:
 
+		Timer::Connection  _timer;
 		Signal_transmitter _transmitter;
-		Timer::Connection  _timer;        /* timer connection for local use           */
-		unsigned           _interval_ms;  /* interval between signals in milliseconds */
-		bool               _stop;         /* state for destruction protocol           */
-		unsigned           _submit_cnt;   /* statistics                               */
-		bool               _idle;         /* suppress the submission of signals       */
-		bool               _verbose;      /* print activities                         */
+		uint64_t const     _interval_ms;
+		bool     const     _verbose;
+		bool     volatile  _stop       { false };
+		unsigned           _submit_cnt { 0 };
+		bool     volatile  _idle       { false };
 
-		/**
-		 * Sender thread submits signals every '_interval_ms' milliseconds
-		 */
-		void entry()
+		void entry() override
 		{
 			while (!_stop) {
-
 				if (!_idle) {
 					_submit_cnt++;
-
-					if (_verbose)
-						printf("submit signal %d\n", _submit_cnt);
+					if (_verbose) {
+						log("submit signal ", _submit_cnt); }
 
 					_transmitter.submit();
-
-					if (_interval_ms)
-						_timer.msleep(_interval_ms);
-				} else
-					_timer.msleep(100);
+					if (_interval_ms) {
+						_timer.msleep(_interval_ms); }
+				} else {
+					_timer.msleep(100); }
 			}
 		}
 
 	public:
 
-		/**
-		 * Constructor
-		 *
-		 * \param context      signal destination
-		 * \param interval_ms  interval between signals
-		 * \param verbose      print status information
-		 */
-		Sender(Signal_context_capability context,
-		       unsigned interval_ms, bool verbose = true)
+		Sender(Env                       &env,
+		       Signal_context_capability  context,
+		       uint64_t                   interval_ms,
+		       bool                       verbose)
 		:
-			Thread_deprecated("sender"),
-			_transmitter(context),
-			_interval_ms(interval_ms),
-			_stop(false),
-			_submit_cnt(0),
-			_idle(0),
-			_verbose(verbose)
+			Thread(env, "sender", 16*1024), _timer(env),
+			_transmitter(context), _interval_ms(interval_ms), _verbose(verbose)
 		{
-			/* start thread at 'entry' function */
-			start();
+			Thread::start();
 		}
 
-		/**
-		 * Destructor
-		 */
 		~Sender()
 		{
-			/* tell thread to stop iterating */
-			_stop = true;
-
-			/* wait for current 'msleep' call of the thread to finish */
-			_timer.msleep(0);
+			if (!_stop && Thread::myself() != this) {
+				_stop = true;
+				join();
+			}
 		}
 
-		/**
-		 * Suppress the transmission of further signals
-		 */
-		void idle(bool idle = true) { _idle = idle; }
+		/***************
+		 ** Accessors **
+		 ***************/
 
-		/**
-		 * Return total number of submitted notifications
-		 */
-		unsigned submit_cnt() { return _submit_cnt; }
+		void     idle(bool idle)    { _idle = idle; }
+		unsigned submit_cnt() const { return _submit_cnt; }
 };
 
-
 /**
- * Signal handler receives signals and takes some time to handle each
+ * A thread that receives signals and takes some time to handle each
  */
-class Handler : Thread_deprecated<4096>
+class Handler : Thread
 {
 	private:
 
-		unsigned         _dispatch_ms;      /* time needed for dispatching a signal         */
-		unsigned         _id;               /* unique ID of signal handler for debug output */
-		static unsigned  _id_cnt;           /* counter for producing unique IDs             */
-		Signal_receiver *_receiver;         /* signal endpoint                              */
-		Timer::Connection _timer;           /* timer connection for local use               */
-		bool              _stop;            /* state for destruction protocol               */
-		unsigned          _receive_cnt;     /* number of received notifications             */
-		unsigned          _activation_cnt;  /* number of invocations of the signal handler  */
-		bool              _idle;            /* suppress the further handling of signals     */
-		bool              _verbose;         /* print status information                     */
+		Timer::Connection  _timer;
+		uint64_t const     _dispatch_ms;
+		unsigned const     _id;
+		bool     const     _verbose;
+		Signal_receiver   &_receiver;
+		bool               _stop           { false };
+		unsigned           _receive_cnt    { 0 };
+		unsigned           _activation_cnt { 0 };
+		bool               _idle           { false };
 
-		/**
-		 * Signal handler needs '_dispatch_ms' milliseconds for each signal
-		 */
-		void entry()
+		void entry() override
 		{
 			while (!_stop) {
-
 				if (!_idle) {
-					Signal signal = _receiver->wait_for_signal();
-
+					Signal signal = _receiver.wait_for_signal();
 					if (_verbose)
-						printf("handler %d got %u signal%s with context %p\n",
-						       _id,
-						       signal.num(),
-						       signal.num() == 1 ? "" : "s",
-						       signal.context());
+						log("handler ", _id, " got ", signal.num(), " "
+						    "signal", (signal.num() == 1 ? "" : "s"), " "
+						    "with context ", signal.context());
 
 					_receive_cnt += signal.num();
 					_activation_cnt++;
 				}
-
 				if (_dispatch_ms)
 					_timer.msleep(_dispatch_ms);
 			}
@@ -153,493 +118,595 @@ class Handler : Thread_deprecated<4096>
 
 	public:
 
-		/**
-		 * Constructor
-		 *
-		 * \param receiver     receiver to request signals from
-		 * \param dispatch_ms  duration of signal-handler activity
-		 * \param verbose      print status information
-		 */
-		Handler(Signal_receiver *receiver, unsigned dispatch_ms, bool verbose = true)
+		Handler(Env             &env,
+		        Signal_receiver &receiver,
+		        uint64_t         dispatch_ms,
+		        bool             verbose,
+		        unsigned         id)
 		:
-			Thread_deprecated("handler"),
-			_dispatch_ms(dispatch_ms),
-			_id(++_id_cnt),
-			_receiver(receiver),
-			_stop(false),
-			_receive_cnt(0),
-			_activation_cnt(0),
-			_idle(0),
-			_verbose(verbose)
+			Thread(env, "handler", 16*1024), _timer(env),
+			_dispatch_ms(dispatch_ms), _id(id), _verbose(verbose),
+			_receiver(receiver)
 		{
-			start();
+			Thread::start();
 		}
 
-		/**
-		 * Destructor
-		 */
 		~Handler()
 		{
-			/* tell thread to stop iterating */
-			_stop = true;
+			Signal_context            context;
+			Signal_context_capability context_cap { _receiver.manage(&context) };
 
-			/* wait for current 'msleep' call of the thread to finish */
-			_timer.msleep(0);
+			_stop = true;
+			Signal_transmitter(context_cap).submit();
+			Thread::join();
+			_receiver.dissolve(&context);
 		}
 
-		/**
-		 * Suppress the handling of further signals
-		 */
-		void idle(bool idle = true) { _idle = idle; }
+		void print(Output &output) const { Genode::print(output, "handler ", _id); }
 
-		/**
-		 * Return total number of received notifications
-		 */
-		unsigned receive_cnt() const { return _receive_cnt; }
+		/***************
+		 ** Accessors **
+		 ***************/
 
-		/**
-		 * Return total number of signal-handler activations
-		 */
+		void     idle(bool idle)        { _idle = idle; }
+		unsigned receive_cnt()    const { return _receive_cnt; }
 		unsigned activation_cnt() const { return _activation_cnt; }
 };
 
-
 /**
- * Counter for generating unique signal-handler IDs
+ * Base of all signalling tests
  */
-unsigned Handler::_id_cnt = 0;
-
-
-/**
- * Counter for enumerating the tests
- */
-static unsigned test_cnt = 0;
-
-
-/**
- * Timer connection to be used by the main program
- */
-static Timer::Connection timer;
-
-
-/**
- * Connection to CAP service used for allocating signal-context capabilities
- */
-static Genode::Cap_connection cap;
-
-
-/**
- * Symbolic error codes
- */
-class Test_failed { };
-class Test_failed_with_unequal_sent_and_received_signals : public Test_failed { };
-class Test_failed_with_unequal_activation_of_handlers    : public Test_failed { };
-
-
-class Id_signal_context : public Signal_context
+struct Signal_test
 {
-	private:
+	enum { SPEED = 10 };
 
-		int _id;
+	int id;
 
-	public:
+	Signal_test(int id, char const *brief) : id(id) {
+		log("\nTEST ", id, ": ", brief, "\n"); }
 
-		Id_signal_context(int id) : _id(id) { }
-
-		int id() const { return _id; }
+	~Signal_test() { log("\nTEST ", id, " finished\n"); }
 };
 
-
-/**
- * Test for reliable notification delivery
- *
- * For this test, the produce more notification than that can be handled.
- * Still, the total number of notifications gets transmitted because of the
- * batching of notifications in one signal. This test fails if the number of
- * submitted notifications on the sender side does not match the number of
- * notifications received at the signal handler.
- */
-static void fast_sender_test()
+struct Fast_sender_test : Signal_test
 {
-	enum { SPEED            = 10 };
-	enum { TEST_DURATION    = 50*SPEED };
-	enum { HANDLER_INTERVAL = 10*SPEED };
-	enum { SENDER_INTERVAL  = 2*SPEED };
-	enum { FINISH_IDLE_TIME = 2*HANDLER_INTERVAL };
+	static constexpr char const *brief =
+		"reliable delivery if the sender is faster than the handlers";
 
-	printf("\n");
-	printf("TEST %d: one sender, one handler, sender is faster than handler\n", ++test_cnt);
-	printf("\n");
+	enum { HANDLER_INTERVAL_MS = 10 * SPEED,
+	       SENDER_INTERVAL_MS  = 2  * SPEED,
+	       DURATION_MS         = 50 * SPEED,
+	       FINISH_IDLE_MS      = 2  * HANDLER_INTERVAL_MS };
 
-	Signal_receiver receiver;
-	Id_signal_context context_123(123);
+	struct Unequal_sent_and_received_signals : Exception { };
 
-	Handler *handler = new (env()->heap()) Handler(&receiver, HANDLER_INTERVAL, false);
-	Sender  *sender  = new (env()->heap()) Sender(receiver.manage(&context_123),
-	                                              SENDER_INTERVAL, false);
+	Env               &env;
+	Timer::Connection  timer    { env };
+	Signal_context     context  { };
+	Signal_receiver    receiver { };
+	Handler            handler  { env, receiver, HANDLER_INTERVAL_MS, false, 1 };
+	Sender             sender   { env, receiver.manage(&context),
+	                              SENDER_INTERVAL_MS, false };
 
-	timer.msleep(TEST_DURATION);
-
-	/* stop emitting signals */
-	printf("deactivate sender\n");
-	sender->idle();
-	timer.msleep(FINISH_IDLE_TIME);
-
-	printf("\n");
-	printf("sender submitted a total of %d signals\n", sender->submit_cnt());
-	printf("handler received a total of %d signals\n", handler->receive_cnt());
-	printf("\n");
-
-	if (sender->submit_cnt() != handler->receive_cnt())
-		throw Test_failed();
-
-	receiver.dissolve(&context_123);
-
-	destroy(env()->heap(), sender);
-	destroy(env()->heap(), handler);
-
-	printf("TEST %d FINISHED\n", test_cnt);
-}
-
-
-/**
- * Fairness test if multiple signal-handler threads are present at one receiver
- *
- * We expect that all handler threads get activated in a fair manner. The test
- * fails if the number of activations per handler differs by more than one.
- * Furthermore, if operating in non-descrete mode, the total number of sent and
- * handled notifications is checked.
- */
-static void multiple_handlers_test()
-{
-	enum { SPEED            = 10 };
-	enum { TEST_DURATION    = 50*SPEED };
-	enum { HANDLER_INTERVAL = 8*SPEED };
-	enum { SENDER_INTERVAL  = 1*SPEED };
-	enum { FINISH_IDLE_TIME = 2*HANDLER_INTERVAL };
-	enum { NUM_HANDLERS     = 4 };
-
-	printf("\n");
-	printf("TEST %d: one busy sender, %d handlers\n",
-	       ++test_cnt, NUM_HANDLERS);
-	printf("\n");
-
-	Signal_receiver receiver;
-
-	Handler *handler[NUM_HANDLERS];
-	for (int i = 0; i < NUM_HANDLERS; i++)
-		handler[i] = new (env()->heap()) Handler(&receiver, HANDLER_INTERVAL);
-
-	Id_signal_context context_123(123);
-	Sender *sender = new (env()->heap()) Sender(receiver.manage(&context_123), SENDER_INTERVAL);
-
-	timer.msleep(TEST_DURATION);
-
-	/* stop emitting signals */
-	printf("stop generating new notifications\n");
-	sender->idle();
-	timer.msleep(FINISH_IDLE_TIME);
-
-	/* let handlers settle down */
-	for (int i = 0; i < NUM_HANDLERS; i++)
-		handler[i]->idle();
-	timer.msleep(FINISH_IDLE_TIME);
-
-	/* print signal delivery statistics */
-	printf("\n");
-	printf("sender submitted a total of %d signals\n",
-	        sender->submit_cnt());
-	unsigned total_receive_cnt = 0;
-	for (int i = 0; i < NUM_HANDLERS; i++) {
-		printf("handler %d received a total of %d signals\n",
-		       i, handler[i]->receive_cnt());
-		total_receive_cnt += handler[i]->receive_cnt();
-	}
-	printf("all handlers received a total of %d signals\n",
-	       total_receive_cnt);
-
-	/* check if number of sent notifications match the received ones */
-	if (sender->submit_cnt() != total_receive_cnt)
-		throw Test_failed_with_unequal_sent_and_received_signals();
-
-	/* print activation statistics */
-	printf("\n");
-	for (int i = 0; i < NUM_HANDLERS; i++)
-		printf("handler %d was activated %d times\n",
-		       i, handler[i]->activation_cnt());
-	printf("\n");
-
-	/* check if handlers had been activated equally (tolerating a difference of one) */
-	for (int i = 0; i < NUM_HANDLERS; i++) {
-
-		int diff = handler[0]->activation_cnt()
-		         - handler[(i + 1)/NUM_HANDLERS]->activation_cnt();
-
-		if (abs(diff) > 1)
-			throw Test_failed_with_unequal_activation_of_handlers();
-	}
-
-	/* cleanup */
-	receiver.dissolve(&context_123);
-	destroy(env()->heap(), sender);
-	for (int i = 0; i < NUM_HANDLERS; i++)
-		destroy(env()->heap(), handler[i]);
-
-	printf("TEST %d FINISHED\n", test_cnt);
-}
-
-
-/**
- * Stress test to estimate signal throughput
- *
- * For this test, we disable status output and any simulated wait times.
- * We produce and handle notifications as fast as possible via spinning
- * loops at the sender and handler side.
- */
-static void stress_test()
-{
-	enum { SPEED            = 10 };
-	enum { DURATION_SECONDS = 5  };
-	enum { FINISH_IDLE_TIME = 100*SPEED };
-
-	printf("\n");
-	printf("TEST %d: stress test, busy signal transmission and handling\n", ++test_cnt);
-	printf("\n");
-
-	Signal_receiver receiver;
-	Id_signal_context context_123(123);
-
-	Handler *handler = new (env()->heap()) Handler(&receiver, 0, false);
-	Sender  *sender  = new (env()->heap()) Sender(receiver.manage(&context_123),
-	                                              0, false);
-
-	for (int i = 1; i <= DURATION_SECONDS; i++) {
-		printf("%d/%d\n", i, DURATION_SECONDS);
-		timer.msleep(1000);
-	}
-
-	/* stop emitting signals */
-	printf("deactivate sender\n");
-	sender->idle();
-
-	while (handler->receive_cnt() < sender->submit_cnt()) {
-		printf("waiting for signals still in flight...");
-		timer.msleep(FINISH_IDLE_TIME);
-	}
-
-	printf("\n");
-	printf("sender submitted a total of %d signals\n", sender->submit_cnt());
-	printf("handler received a total of %d signals\n", handler->receive_cnt());
-	printf("\n");
-	printf("processed %d notifications per second\n",
-	       (handler->receive_cnt())/DURATION_SECONDS);
-	printf("handler was activated %d times per second\n",
-	       (handler->activation_cnt())/DURATION_SECONDS);
-	printf("\n");
-
-	if (sender->submit_cnt() != handler->receive_cnt())
-		throw Test_failed_with_unequal_sent_and_received_signals();
-
-	receiver.dissolve(&context_123);
-	destroy(env()->heap(), sender);
-	destroy(env()->heap(), handler);
-
-	printf("TEST %d FINISHED\n", test_cnt);
-}
-
-
-static void lazy_receivers_test()
-{
-	printf("\n");
-	printf("TEST %d: lazy and out-of-order signal reception test\n", ++test_cnt);
-	printf("\n");
-
-	Signal_receiver rec_1, rec_2;
-	Signal_context rec_context_1, rec_context_2;
-
-	Signal_transmitter transmitter_1(rec_1.manage(&rec_context_1));
-	Signal_transmitter transmitter_2(rec_2.manage(&rec_context_2));
-
-	printf("submit and receive signals with multiple receivers in order\n");
-	transmitter_1.submit();
-	transmitter_2.submit();
-
+	Fast_sender_test(Env &env, int id) : Signal_test(id, brief), env(env)
 	{
-		Signal signal = rec_1.wait_for_signal();
-		printf("returned from wait_for_signal for receiver 1\n");
+		timer.msleep(DURATION_MS);
 
-		signal = rec_2.wait_for_signal();
-		printf("returned from wait_for_signal for receiver 2\n");
+		/* stop emitting signals */
+		log("deactivate sender");
+		sender.idle(true);
+		timer.msleep(FINISH_IDLE_MS);
+		log("sender submitted a total of ", sender.submit_cnt(), " signals");
+		log("handler received a total of ", handler.receive_cnt(), " signals");
+
+		if (sender.submit_cnt() != handler.receive_cnt()) {
+			throw Unequal_sent_and_received_signals(); }
 	}
+};
 
-	printf("submit and receive signals with multiple receivers out of order\n");
-	transmitter_1.submit();
-	transmitter_2.submit();
-
-	{
-		Signal signal = rec_2.wait_for_signal();
-		printf("returned from wait_for_signal for receiver 2\n");
-
-		signal = rec_1.wait_for_signal();
-		printf("returned from wait_for_signal for receiver 1\n");
-	}
-
-	rec_1.dissolve(&rec_context_1);
-	rec_2.dissolve(&rec_context_2);
-
-	printf("TEST %d FINISHED\n", test_cnt);
-}
-
-
-/**
- * Try correct initialization and cleanup of receiver/context
- */
-static void check_context_management()
+struct Stress_test : Signal_test
 {
-	Id_signal_context         *context;
-	Signal_receiver           *rec;
-	Signal_context_capability  cap;
+	static constexpr char const *brief =
+		"throughput when submitting/handling as fast as possible";
 
-	/* setup receiver side */
-	context = new (env()->heap()) Id_signal_context(321);
-	rec     = new (env()->heap()) Signal_receiver;
-	cap     = rec->manage(context);
+	enum { DURATION_SEC = 5 };
 
-	/* spawn sender */
-	Sender *sender = new (env()->heap()) Sender(cap, 500);
+	struct Unequal_sent_and_received_signals : Exception { };
 
-	/* stop sender after timeout */
-	timer.msleep(1000);
-	printf("suspend sender\n");
-	sender->idle();
+	Env               &env;
+	Timer::Connection  timer    { env };
+	Signal_context     context  { };
+	Signal_receiver    receiver { };
+	Handler            handler  { env, receiver, 0, false, 1 };
+	Sender             sender   { env, receiver.manage(&context), 0, false };
 
-	/* collect pending signals and dissolve context from receiver */
+	Stress_test(Env &env, int id) : Signal_test(id, brief), env(env)
 	{
-		Signal signal = rec->wait_for_signal();
-		printf("got %d signal(s) from %p\n", signal.num(), signal.context());
+		for (unsigned i = 1; i <= DURATION_SEC; i++) {
+			log(i, "/", (unsigned)DURATION_SEC);
+			timer.msleep(1000);
+		}
+		log("deactivate sender");
+		sender.idle(true);
+
+		while (handler.receive_cnt() < sender.submit_cnt()) {
+			log("waiting for signals still in flight...");
+			timer.msleep(1000);
+		}
+		log("");
+		log("sender submitted a total of ", sender.submit_cnt(), " signals");
+		log("handler received a total of ", handler.receive_cnt(), " signals");
+		log("");
+		log("handler received ",      handler.receive_cnt() / DURATION_SEC, " signals per second");
+		log("handler was activated ", handler.activation_cnt() / DURATION_SEC, " times per second");
+		log("");
+
+		if (sender.submit_cnt() != handler.receive_cnt())
+			throw Unequal_sent_and_received_signals();
 	}
-	rec->dissolve(context);
+};
 
-	/* let sender spin for some time */
-	printf("resume sender\n");
-	sender->idle(false);
-	timer.msleep(1000);
-	printf("suspend sender\n");
-	sender->idle();
-
-	printf("destroy sender\n");
-	destroy(env()->heap(), sender);
-
-	destroy(env()->heap(), context);
-	destroy(env()->heap(), rec);
-}
-
-
-/**
- * Test if 'Signal_receiver::dissolve()' blocks as long as the signal context
- * is still referenced by one or more 'Signal' objects
- */
-
-static Lock signal_context_destroyer_lock(Lock::LOCKED);
-static bool signal_context_destroyed = false;
-
-class Signal_context_destroyer : public Thread_deprecated<4096>
+struct Lazy_receivers_test : Signal_test
 {
-	private:
+	static constexpr char const *brief = "lazy and out-of-order signal reception";
 
-		Signal_receiver *_receiver;
-		Signal_context  *_context;
+	Signal_context     context_1  { }, context_2  { };
+	Signal_receiver    receiver_1 { }, receiver_2 { };
+	Signal_transmitter transmitter_1 { receiver_1.manage(&context_1) };
+	Signal_transmitter transmitter_2 { receiver_2.manage(&context_2) };
 
-	public:
-
-		Signal_context_destroyer(Signal_receiver *receiver, Signal_context *context)
-		: Thread_deprecated("signal_context_destroyer"),
-		  _receiver(receiver), _context(context) { }
-
-		void entry()
+	Lazy_receivers_test(Env &, int id) : Signal_test(id, brief)
+	{
+		log("submit and receive signals with multiple receivers in order");
+		transmitter_1.submit();
+		transmitter_2.submit();
 		{
-			signal_context_destroyer_lock.lock();
-			_receiver->dissolve(_context);
-			signal_context_destroyed = true;
-			destroy(env()->heap(), _context);
+			Signal signal = receiver_1.wait_for_signal();
+			log("returned from wait_for_signal for receiver 1");
+
+			signal = receiver_2.wait_for_signal();
+			log("returned from wait_for_signal for receiver 2");
 		}
-};
+		log("submit and receive signals with multiple receivers out of order");
+		transmitter_1.submit();
+		transmitter_2.submit();
+		{
+			Signal signal = receiver_2.wait_for_signal();
+			log("returned from wait_for_signal for receiver 2");
 
-
-static void synchronized_context_destruction_test()
-{
-	Signal_receiver receiver;
-
-	Signal_context *context = new (env()->heap()) Signal_context;
-
-	Signal_transmitter transmitter(receiver.manage(context));
-	transmitter.submit();
-
-	Signal_context_destroyer signal_context_destroyer(&receiver, context);
-	signal_context_destroyer.start();
-
-	/* The signal context destroyer thread should not be able to destroy the
-	 * signal context during the 'Signal' objects life time. */
-	{
-		Signal signal = receiver.wait_for_signal();
-
-		/* let the signal context destroyer thread try to destroy the signal context */
-		signal_context_destroyer_lock.unlock();
-		timer.msleep(1000);
-
-		Signal signal_copy = signal;
-		Signal signal_copy2 = signal;
-
-		signal_copy = signal_copy2;
-
-		if (signal_context_destroyed) {
-			PERR("signal context destroyed too early");
-			sleep_forever();
+			signal = receiver_1.wait_for_signal();
+			log("returned from wait_for_signal for receiver 1");
 		}
 	}
+};
 
-	signal_context_destroyer.join();
-	signal_context_destroyed = false;
-}
-
-
-static void many_managed_contexts()
+struct Context_management_test : Signal_test
 {
-	for (unsigned round = 0; round < 10; ++round) {
+	static constexpr char const *brief =
+		"correct initialization and cleanup of receiver and context";
 
-		unsigned const num_contexts = 200 + 5*round;
-		printf("round %u: create and manage %u contexts\n", round, num_contexts);
+	Env                       &env;
+	Timer::Connection          timer       { env };
+	Signal_context             context     { };
+	Signal_receiver            receiver    { };
+	Signal_context_capability  context_cap { receiver.manage(&context) };
+	Sender                     sender      { env, context_cap, 500, true };
 
-		Signal_receiver rec;
+	Context_management_test(Env &env, int id) : Signal_test(id, brief), env(env)
+	{
+		/* stop sender after timeout */
+		timer.msleep(1000);
+		log("suspend sender");
+		sender.idle(true);
 
-		for (unsigned i = 0; i < num_contexts; ++i) {
-			Id_signal_context *context = new (env()->heap()) Id_signal_context(i);
-			if (!rec.manage(context).valid()) {
-				PERR("failed to manage signal context");
-				sleep_forever();
+		/* collect pending signals and dissolve context from receiver */
+		{
+			Signal signal = receiver.wait_for_signal();
+			log("got ", signal.num(), " signal(s) from ", signal.context());
+		}
+		receiver.dissolve(&context);
+
+		/* let sender spin for some time */
+		log("resume sender");
+		sender.idle(false);
+		timer.msleep(1000);
+		log("suspend sender");
+		sender.idle(true);
+		log("destroy sender");
+	}
+};
+
+struct Synchronized_destruction_test : private Signal_test, Thread
+{
+	static constexpr char const *brief =
+		"does 'dissolve' block as long as the signal context is referenced?";
+
+	struct Failed : Exception { };
+
+	Env                &env;
+	Timer::Connection   timer       { env };
+	Heap                heap        { env.ram(), env.rm() };
+	Signal_context     &context     { *new (heap) Signal_context };
+	Signal_receiver     receiver    { };
+	Signal_transmitter  transmitter { receiver.manage(&context) };
+	bool                destroyed   { false };
+
+	void entry() override
+	{
+		receiver.dissolve(&context);
+		log("dissolve finished");
+		destroyed = true;
+		destroy(heap, &context);
+	}
+
+	Synchronized_destruction_test(Env &env, int id)
+	: Signal_test(id, brief), Thread(env, "destroyer", 8*1024), env(env)
+	{
+		transmitter.submit();
+		{
+			Signal signal = receiver.wait_for_signal();
+			log("start dissolving");
+			Thread::start();
+			timer.msleep(2000);
+			Signal signal_copy_1 = signal;
+			Signal signal_copy_2 = signal;
+			signal_copy_1        = signal_copy_2;
+			if (destroyed) {
+				throw Failed(); }
+			log("destruct signal");
+		}
+		Thread::join();
+	}
+};
+
+struct Many_contexts_test : Signal_test
+{
+	static constexpr char const *brief = "create and manage many contexts";
+
+	struct Manage_failed : Exception { };
+
+	Env                                   &env;
+	Heap                                   heap { env.ram(), env.rm() };
+	Registry<Registered<Signal_context> >  contexts { };
+
+	Many_contexts_test(Env &env, int id) : Signal_test(id, brief), env(env)
+	{
+		for (unsigned round = 0; round < 10; round++) {
+
+			unsigned const nr_of_contexts = 200 + 5 * round;
+			log("round ", round, ": manage ", nr_of_contexts, " contexts");
+
+			Signal_receiver receiver;
+			for (unsigned i = 0; i < nr_of_contexts; i++) {
+				if (!receiver.manage(new (heap) Registered<Signal_context>(contexts)).valid()) {
+					throw Manage_failed(); }
+			}
+			contexts.for_each([&] (Registered<Signal_context> &context) {
+				receiver.dissolve(&context);
+				destroy(heap, &context);
+			});
+		}
+	}
+};
+
+/**
+ * Test 'wait_and_dispatch_one_io_signal' implementation for entrypoints
+ *
+ * Normally Genode signals are delivered by a signal thread, which blocks for
+ * incoming signals and is woken up when a signals arrives, the thread then
+ * sends an RPC to an entrypoint that, in turn, processes the signal.
+ * 'wait_and_dispatch_one_io_signal' allows an entrypoint to receive I/O-level
+ * signals directly, by taking advantage of the same code as the signal thread.
+ * This leaves the problem that at this point two entities (the signal thread
+ * and the entrypoint) may wait for signals to arrive. It is not decidable
+ * which entity is woken up on signal arrival. If the signal thread is woken up
+ * and tries to deliver the signal RPC, system may dead lock when no additional
+ * signal arrives to pull the entrypoint out of the signal waiting code. This
+ * test triggers this exact situation. We also test nesting with the same
+ * signal context of 'wait_and_dispatch_one_io_signal' here, which also caused
+ * dead locks in the past. Also, the test verifies application-level signals
+ * are deferred during 'wait_and_dispatch_one_io_signal'.
+ */
+struct Nested_test : Signal_test
+{
+	static constexpr char const *brief = "wait and dispatch signals at entrypoint";
+
+	struct Test_interface : Interface
+	{
+		GENODE_RPC(Rpc_test_io_dispatch,  void, test_io_dispatch);
+		GENODE_RPC(Rpc_test_app_dispatch, void, test_app_dispatch);
+		GENODE_RPC_INTERFACE(Rpc_test_io_dispatch, Rpc_test_app_dispatch);
+	};
+
+	struct Test_component : Rpc_object<Test_interface, Test_component>
+	{
+		Nested_test &test;
+
+		Test_component(Nested_test &test) : test(test) { }
+
+		void test_io_dispatch()
+		{
+			log("1/8: [ep] wait for I/O-level signal during RPC from [outside]");
+			while (!test.io_done) test.ep.wait_and_dispatch_one_io_signal();
+			log("6/8: [ep] I/O completed");
+		}
+
+		void test_app_dispatch()
+		{
+			if (!test.app_done)
+				error("8/8: [ep] application-level signal was not dispatched");
+			else
+				log("8/8: [ep] success");
+		}
+	};
+
+	struct Sender_thread : Thread
+	{
+		Nested_test       &test;
+		Timer::Connection  timer;
+
+		Sender_thread(Env &env, Nested_test &test)
+		:
+			Thread(env, "sender_thread", 8*1024),
+			test(test), timer(env)
+		{ }
+
+		void entry() override
+		{
+			timer.msleep(1000);
+
+			log("2/8: [outside] submit application-level signal (should be deferred)");
+			Signal_transmitter(test.nop_handler).submit();
+			Signal_transmitter(test.app_handler).submit();
+			Signal_transmitter(test.nop_handler).submit();
+
+			log("3/8: [outside] submit I/O-level signal");
+			Signal_transmitter(test.io_handler).submit();
+			Signal_transmitter(test.nop_handler).submit();
+		}
+	};
+
+	Env &env;
+	Entrypoint ep { env, 2048 * sizeof(long), "wait_dispatch_ep", Affinity::Location() };
+
+	Signal_handler<Nested_test>   app_handler { ep, *this, &Nested_test::handle_app };
+	Signal_handler<Nested_test>   nop_handler { ep, *this, &Nested_test::handle_nop };
+	Io_signal_handler<Nested_test> io_handler { ep, *this, &Nested_test::handle_io };
+
+	Test_component             wait     { *this };
+	Capability<Test_interface> wait_cap { ep.manage(wait) };
+	Sender_thread              thread   { env, *this };
+	bool                       nested   { false };
+	bool volatile              app_done { false };
+	bool volatile              io_done  { false };
+
+	Timer::Connection timer { env };
+
+	Nested_test(Env &env, int id) : Signal_test(id, brief), env(env)
+	{
+		thread.start();
+		wait_cap.call<Test_interface::Rpc_test_io_dispatch>();
+
+		/* grant the ep some time for application-signal handling */
+		timer.msleep(1000);
+		wait_cap.call<Test_interface::Rpc_test_app_dispatch>();
+	}
+
+	~Nested_test()
+	{
+		ep.dissolve(wait);
+	}
+
+	void handle_app()
+	{
+		if (!io_done)
+			error("7/8: [ep] application-level signal was not deferred");
+		else
+			log("7/8: [ep] application-level signal received");
+
+		app_done = true;
+	}
+
+	void handle_nop() { }
+
+	void handle_io()
+	{
+		if (nested) {
+			log("5/8: [ep] nested I/O-level signal received");
+			io_done = true;
+			return;
+		}
+
+		log("4/8: [ep] I/O-level signal received - sending nested signal");
+		nested = true;
+		Signal_transmitter(io_handler).submit();
+		ep.wait_and_dispatch_one_io_signal();
+	}
+};
+
+/**
+ * Stress-test 'wait_and_dispatch_one_io_signal' implementation for entrypoints
+ *
+ * Let multiple entrypoints directly wait and dispatch signals in a
+ * highly nested manner and with multiple stressful senders.
+ */
+struct Nested_stress_test : Signal_test
+{
+	static constexpr char const *brief = "stressful wait and dispatch signals at entrypoint";
+
+	enum {
+		COUNTER_GOAL          = 300,
+		UNWIND_COUNT_MOD_LOG2 = 5,
+		POLLING_PERIOD_US     = 1000000,
+	};
+
+	struct Sender : Thread
+	{
+		Signal_transmitter transmitter;
+		bool volatile      destruct { false };
+
+		Sender(Env &env, char const *name, Signal_context_capability cap)
+		: Thread(env, name, 8*1024), transmitter(cap) { }
+
+		void entry() override
+		{
+			/* send signals as fast as possible */
+			while (!destruct) { transmitter.submit(); }
+		}
+	};
+
+	struct Receiver
+	{
+		Entrypoint ep;
+
+		String<64> const name;
+
+		unsigned count { 0 };
+		unsigned level { 0 };
+
+		bool volatile destruct              { false };
+		bool volatile ready_for_destruction { false };
+
+		Io_signal_handler<Receiver> handler { ep, *this, &Receiver::handle };
+
+		Receiver(Env &env, char const *name)
+		: ep(env, 3 * 1024 * sizeof(long), name, Affinity::Location()),
+		  name(name) { }
+
+		void handle()
+		{
+			/*
+			 * We have to get out of the nesting if the host wants to destroy
+			 * us to avoid a deadlock at the lock in the signal handler.
+			 */
+			if (destruct) {
+				if (level == 0)
+					ready_for_destruction = true;
+				return;
+			}
+
+			/* raise call counter */
+			count++;
+
+			/*
+			 * Open a new nesting level with each signal until count module X
+			 * gives zero, then unwind the whole nesting and start afresh.
+			 */
+			if ((count & ((1 << UNWIND_COUNT_MOD_LOG2) - 1)) != 0) {
+				level ++;
+				ep.wait_and_dispatch_one_io_signal();
+				level --;
 			}
 		}
+	};
+
+	Env                &env;
+	Timer::Connection   timer      { env };
+	Receiver            receiver_1 { env, "receiver-1" };
+	Receiver            receiver_2 { env, "receiver-2" };
+	Receiver            receiver_3 { env, "receiver-3" };
+	Sender              sender_1   { env, "sender-1", receiver_1.handler };
+	Sender              sender_2   { env, "sender-2", receiver_2.handler };
+	Sender              sender_3   { env, "sender-3", receiver_3.handler };
+	Signal_transmitter  done;
+
+	Io_signal_handler<Nested_stress_test> poll {
+		env.ep(), *this, &Nested_stress_test::handle_poll };
+
+	Nested_stress_test(Env &env, int id, Signal_context_capability done)
+	: Signal_test(id, brief), env(env), done(done)
+	{
+		/* let senders start sending signals like crazy */
+		sender_1.start();
+		sender_2.start();
+		sender_3.start();
+
+		/* initialize polling for the receiver counts */
+		timer.sigh(poll);
+		timer.trigger_periodic(POLLING_PERIOD_US);
 	}
 
-	printf("many contexts finished\n");
-}
+	~Nested_stress_test()
+	{
+		/* tell timer not to send any signals anymore. */
+		timer.sigh(Timer::Session::Signal_context_capability());
 
+		/* let receivers unwind their nesting and stop with the next signal */
+		receiver_1.destruct = true;
+		receiver_2.destruct = true;
+		receiver_3.destruct = true;
 
-/**
- * Main program
- */
-int main(int, char **)
+		/*
+		 * Wait until receiver threads get out of
+		 * wait_and_dispatch_one_io_signal, otherwise we may (dead)lock forever
+		 * during destruction of the Io_signal_handler.
+		 */
+		log("waiting for receivers");
+
+		while (!receiver_1.ready_for_destruction) { }
+		while (!receiver_2.ready_for_destruction) { }
+		while (!receiver_3.ready_for_destruction) { }
+
+		/* let senders stop burning our CPU time */
+		sender_1.destruct = true;
+		sender_2.destruct = true;
+		sender_3.destruct = true;
+
+		log ("waiting for senders");
+
+		/* wait until threads joined */
+		sender_1.join(); sender_2.join(), sender_3.join();
+
+		log("destructing ...");
+	}
+
+	void handle_poll()
+	{
+		/* print counter status */
+		log(receiver_1.name, " received ", receiver_1.count, " times");
+		log(receiver_2.name, " received ", receiver_2.count, " times");
+		log(receiver_3.name, " received ", receiver_3.count, " times");
+
+		/* request to end the test if receiver counts are all high enough */
+		if (receiver_1.count > COUNTER_GOAL &&
+		    receiver_2.count > COUNTER_GOAL &&
+		    receiver_3.count > COUNTER_GOAL)
+		{ done.submit(); }
+	}
+};
+
+struct Main
 {
-	printf("--- signalling test ---\n");
+	Env                  &env;
+	Signal_handler<Main>  test_8_done { env.ep(), *this, &Main::handle_test_8_done };
 
-	fast_sender_test();
-	multiple_handlers_test();
-	stress_test();
-	lazy_receivers_test();
-	check_context_management();
-	synchronized_context_destruction_test();
-	many_managed_contexts();
+	Constructible<Fast_sender_test>              test_1 { };
+	Constructible<Stress_test>                   test_2 { };
+	Constructible<Lazy_receivers_test>           test_3 { };
+	Constructible<Context_management_test>       test_4 { };
+	Constructible<Synchronized_destruction_test> test_5 { };
+	Constructible<Many_contexts_test>            test_6 { };
+	Constructible<Nested_test>                   test_7 { };
+	Constructible<Nested_stress_test>            test_8 { };
 
-	printf("--- signalling test finished ---\n");
-	return 0;
-}
+	void handle_test_8_done()
+	{
+		test_8.destruct();
+		log("--- Signalling test finished ---");
+	}
+
+	Main(Env &env) : env(env)
+	{
+		log("--- Signalling test ---");
+		test_1.construct(env, 1); test_1.destruct();
+		test_2.construct(env, 2); test_2.destruct();
+		test_3.construct(env, 3); test_3.destruct();
+		test_4.construct(env, 4); test_4.destruct();
+		test_5.construct(env, 5); test_5.destruct();
+		test_6.construct(env, 6); test_6.destruct();
+		test_7.construct(env, 7); test_7.destruct();
+		test_8.construct(env, 8, test_8_done);
+	}
+};
+
+void Component::construct(Genode::Env &env) { static Main main(env); }

@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__LOADER_SESSION__LOADER_SESSION_H_
@@ -18,7 +18,8 @@
 #include <base/rpc.h>
 #include <base/rpc_args.h>
 #include <dataspace/capability.h>
-#include <nitpicker_session/client.h>
+#include <gui_session/client.h>
+#include <pd_session/pd_session.h>
 #include <base/signal.h>
 #include <session/session.h>
 #include <util/geometry.h>
@@ -31,6 +32,8 @@ namespace Loader {
 
 	using Genode::Dataspace_capability;
 	using Genode::Signal_context_capability;
+	using Genode::Ram_quota;
+	using Genode::Cap_quota;
 
 	struct Session;
 }
@@ -54,7 +57,12 @@ struct Loader::Session : Genode::Session
 	typedef Genode::Rpc_in_buffer<64>  Name;
 	typedef Genode::Rpc_in_buffer<128> Path;
 
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Loader"; }
+
+	enum { CAP_QUOTA = 2 };
 
 	virtual ~Session() { }
 
@@ -88,6 +96,11 @@ struct Loader::Session : Genode::Session
 	virtual void commit_rom_module(Name const &name) = 0;
 
 	/**
+	 * Define capability quota assigned to the subsystem
+	 */
+	virtual void cap_quota(Cap_quota) = 0;
+
+	/**
 	 * Define RAM quota assigned to the subsystem
 	 *
 	 * The quantum specified must be in the bounds of the quota attached
@@ -99,7 +112,7 @@ struct Loader::Session : Genode::Session
 	 * If 'ram_quota' is not called prior calling 'start', all available
 	 * session resources will be assigned to the subsystem.
 	 */
-	virtual void ram_quota(size_t quantum) = 0;
+	virtual void ram_quota(Ram_quota quantum) = 0;
 
 	/**
 	 * Constrain size of the nitpicker buffer used by the subsystem
@@ -115,7 +128,7 @@ struct Loader::Session : Genode::Session
 	 * If 'parent_view' is not called prior calling 'start', the
 	 * subsystem's view will not have a parent view.
 	 */
-	virtual void parent_view(Nitpicker::View_capability view) = 0;
+	virtual void parent_view(Gui::View_capability view) = 0;
 
 	/**
 	 * Register signal handler notified at creation time of the first view
@@ -164,9 +177,10 @@ struct Loader::Session : Genode::Session
 	GENODE_RPC_THROW(Rpc_commit_rom_module, void, commit_rom_module,
 	                 GENODE_TYPE_LIST(Rom_module_does_not_exist),
 	                 Name const &);
-	GENODE_RPC(Rpc_ram_quota, void, ram_quota, size_t);
+	GENODE_RPC(Rpc_cap_quota, void, cap_quota, Cap_quota);
+	GENODE_RPC(Rpc_ram_quota, void, ram_quota, Ram_quota);
 	GENODE_RPC(Rpc_constrain_geometry, void, constrain_geometry, Area);
-	GENODE_RPC(Rpc_parent_view, void, parent_view, Nitpicker::View_capability);
+	GENODE_RPC(Rpc_parent_view, void, parent_view, Gui::View_capability);
 	GENODE_RPC(Rpc_view_ready_sigh, void, view_ready_sigh, Signal_context_capability);
 	GENODE_RPC(Rpc_fault_sigh, void, fault_sigh, Signal_context_capability);
 	GENODE_RPC_THROW(Rpc_start, void, start,
@@ -179,7 +193,7 @@ struct Loader::Session : Genode::Session
 	                 GENODE_TYPE_LIST(View_does_not_exist));
 
 	GENODE_RPC_INTERFACE(Rpc_alloc_rom_module, Rpc_commit_rom_module,
-	                     Rpc_ram_quota, Rpc_constrain_geometry,
+	                     Rpc_cap_quota, Rpc_ram_quota, Rpc_constrain_geometry,
 	                     Rpc_parent_view, Rpc_view_ready_sigh, Rpc_fault_sigh,
 	                     Rpc_start, Rpc_view_geometry, Rpc_view_size);
 };

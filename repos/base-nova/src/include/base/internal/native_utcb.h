@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__NATIVE_UTCB_H_
@@ -36,6 +36,10 @@ class Genode::Native_utcb
 		 * dataspace but provided by the kernel.
 		 */
 		addr_t _utcb[UTCB_SIZE/sizeof(addr_t)];
+
+	public:
+
+		Native_utcb() { }
 };
 
 #endif /* _INCLUDE__BASE__INTERNAL__NATIVE_UTCB_H_ */

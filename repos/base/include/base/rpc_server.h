@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__RPC_SERVER_H_
@@ -18,10 +18,10 @@
 #include <base/thread.h>
 #include <base/ipc.h>
 #include <base/object_pool.h>
-#include <base/lock.h>
-#include <base/printf.h>
+#include <base/blockade.h>
+#include <base/log.h>
 #include <base/trace/events.h>
-#include <cap_session/cap_session.h>
+#include <pd_session/pd_session.h>
 
 namespace Genode {
 
@@ -31,6 +31,8 @@ namespace Genode {
 	class Rpc_object_base;
 	template <typename, typename> struct Rpc_object;
 	class Rpc_entrypoint;
+
+	class Signal_receiver;
 }
 
 
@@ -63,15 +65,44 @@ class Genode::Rpc_dispatcher : public RPC_INTERFACE
 	protected:
 
 		template <typename ARG_LIST>
-		void _read_args(Ipc_unmarshaller &msg, ARG_LIST &args)
+		ARG_LIST _read_args(Ipc_unmarshaller &msg,
+		                    Meta::Overload_selector<ARG_LIST>)
 		{
-			if (Trait::Rpc_direction<typename ARG_LIST::Head>::Type::IN)
-				msg.extract(args._1);
+			typename Trait::Rpc_direction<typename ARG_LIST::Head>::Type direction;
+			typedef typename ARG_LIST::Stored_head Arg;
+			Arg arg = _read_arg<Arg>(msg, direction);
 
-			_read_args(msg, args._2);
+			Meta::Overload_selector<typename ARG_LIST::Tail> tail_selector;
+			typename ARG_LIST::Tail subsequent_args = _read_args(msg,
+			                                                     tail_selector);
+
+			ARG_LIST args { arg, subsequent_args };
+			return args;
 		}
 
-		void _read_args(Ipc_unmarshaller &, Meta::Empty) { }
+		Meta::Empty _read_args(Ipc_unmarshaller &,
+		                       Meta::Overload_selector<Meta::Empty>)
+		{
+			return Meta::Empty();
+		}
+
+		template <typename ARG>
+		ARG _read_arg(Ipc_unmarshaller &msg, Rpc_arg_in)
+		{
+			return msg.extract(Meta::Overload_selector<ARG>());
+		}
+
+		template <typename ARG>
+		ARG _read_arg(Ipc_unmarshaller &msg, Rpc_arg_inout)
+		{
+			return _read_arg<ARG>(msg, Rpc_arg_in());
+		}
+
+		template <typename ARG>
+		ARG _read_arg(Ipc_unmarshaller &, Rpc_arg_out)
+		{
+			return ARG();
+		}
 
 		template <typename ARG_LIST>
 		void _write_results(Msgbuf_base &msg, ARG_LIST &args)
@@ -85,28 +116,34 @@ class Genode::Rpc_dispatcher : public RPC_INTERFACE
 		void _write_results(Msgbuf_base &, Meta::Empty) { }
 
 		template <typename RPC_FUNCTION, typename EXC_TL>
-		Rpc_exception_code _do_serve(typename RPC_FUNCTION::Server_args &args,
-		                             typename RPC_FUNCTION::Ret_type    &ret,
-		                             Meta::Overload_selector<RPC_FUNCTION, EXC_TL>)
+		typename RPC_FUNCTION::Ret_type
+		_do_serve(typename RPC_FUNCTION::Server_args &args,
+		           Meta::Overload_selector<RPC_FUNCTION, EXC_TL>)
 		{
 			enum { EXCEPTION_CODE = Rpc_exception_code::EXCEPTION_BASE
 			                      - Meta::Length<EXC_TL>::Value };
 			try {
 				typedef typename EXC_TL::Tail Exc_tail;
-				return _do_serve(args, ret,
+				return _do_serve(args,
 				                 Meta::Overload_selector<RPC_FUNCTION, Exc_tail>());
 			} catch (typename EXC_TL::Head) {
-				return Rpc_exception_code(EXCEPTION_CODE);
+				/**
+				 * By passing the exception code through an exception we ensure that
+				 * a return value is only returned if it exists. This way, the return
+				 * type does not have to be default-constructible.
+				 */
+				throw Rpc_exception_code(EXCEPTION_CODE);
 			}
 		}
 
 		template <typename RPC_FUNCTION>
-		Rpc_exception_code _do_serve(typename RPC_FUNCTION::Server_args &args,
-		                             typename RPC_FUNCTION::Ret_type    &ret,
-		                             Meta::Overload_selector<RPC_FUNCTION, Meta::Empty>)
+		typename RPC_FUNCTION::Ret_type
+		_do_serve(typename RPC_FUNCTION::Server_args &args,
+		          Meta::Overload_selector<RPC_FUNCTION, Meta::Empty>)
 		{
-			RPC_FUNCTION::serve(*static_cast<SERVER *>(this), args, ret);
-			return Rpc_exception_code(Rpc_exception_code::SUCCESS);
+			typedef typename RPC_FUNCTION::Ret_type Ret_type;
+			SERVER *me = static_cast<SERVER *>(this);
+			return RPC_FUNCTION::template serve<SERVER, Ret_type>(*me, args);
 		}
 
 		template <typename RPC_FUNCTIONS_TO_CHECK>
@@ -120,10 +157,10 @@ class Genode::Rpc_dispatcher : public RPC_INTERFACE
 
 			if (opcode.value == Index_of<Rpc_functions, This_rpc_function>::Value) {
 
-				typename This_rpc_function::Server_args args{};
-
 				/* read arguments from incoming message */
-				_read_args(in, args);
+				typedef typename This_rpc_function::Server_args Server_args;
+				Meta::Overload_selector<Server_args> arg_selector;
+				Server_args args = _read_args(in, arg_selector);
 
 				{
 					Trace::Rpc_dispatch trace_event(This_rpc_function::name());
@@ -134,21 +171,28 @@ class Genode::Rpc_dispatcher : public RPC_INTERFACE
 				 * 'This_rpc_function' and the list of its exceptions to
 				 * select the overload.
 				 */
-				typedef typename This_rpc_function::Exceptions Exceptions;
 
-				typename This_rpc_function::Ret_type ret { };
-				Rpc_exception_code
-					exc(_do_serve(args, ret,
-					              Overload_selector<This_rpc_function, Exceptions>()));
+				typedef typename This_rpc_function::Ret_type Ret_type;
+				Rpc_exception_code exc(Rpc_exception_code::SUCCESS);
+				try {
+					typedef typename This_rpc_function::Exceptions Exceptions;
+					Overload_selector<This_rpc_function, Exceptions> overloader;
+					Ret_type ret = _do_serve(args, overloader);
 
-				out.insert(ret);
+					_write_results(out, args);
+					out.insert(ret);
+				} catch (Rpc_exception_code thrown) {
+					/**
+					 * Output arguments may be modified although an exception was thrown.
+					 * However, a return value does not exist. So we do not insert one.
+					 */
+					_write_results(out, args);
+					exc = thrown;
+				}
 
 				{
 					Trace::Rpc_reply trace_event(This_rpc_function::name());
 				}
-
-				/* write results to outgoing message */
-				_write_results(out, args);
 
 				return exc;
 			}
@@ -161,14 +205,14 @@ class Genode::Rpc_dispatcher : public RPC_INTERFACE
 		                                Ipc_unmarshaller &, Msgbuf_base &,
 		                                Meta::Overload_selector<Meta::Empty>)
 		{
-			PERR("invalid opcode %ld\n", opcode.value);
+			error("invalid opcode ", opcode.value);
 			return Rpc_exception_code(Rpc_exception_code::INVALID_OPCODE);
 		}
 
 		/**
 		 * Handle corner case of having an RPC interface with no RPC functions
 		 */
-		Rpc_exception_code _do_dispatch(Rpc_opcode opcode,
+		Rpc_exception_code _do_dispatch(Rpc_opcode,
 		                                Ipc_unmarshaller &, Msgbuf_base &,
 		                                Meta::Overload_selector<Meta::Type_list<> >)
 		{
@@ -221,11 +265,9 @@ class Genode::Rpc_object_base : public Object_pool<Rpc_object_base>::Entry
 template <typename RPC_INTERFACE, typename SERVER = RPC_INTERFACE>
 struct Genode::Rpc_object : Rpc_object_base, Rpc_dispatcher<RPC_INTERFACE, SERVER>
 {
-	/*****************************
-	 ** Server-object interface **
-	 *****************************/
+	struct Capability_guard;
 
-	Rpc_exception_code dispatch(Rpc_opcode opcode, Ipc_unmarshaller &in, Msgbuf_base &out)
+	Rpc_exception_code dispatch(Rpc_opcode opcode, Ipc_unmarshaller &in, Msgbuf_base &out) override
 	{
 		return Rpc_dispatcher<RPC_INTERFACE, SERVER>::dispatch(opcode, in, out);
 	}
@@ -241,27 +283,31 @@ struct Genode::Rpc_object : Rpc_object_base, Rpc_dispatcher<RPC_INTERFACE, SERVE
  * RPC entrypoint serving RPC objects
  *
  * The entrypoint's thread will initialize its capability but will not
- * immediately enable the processing of requests. This way, the
- * activation-using server can ensure that it gets initialized completely
- * before the first capability invocations come in. Once the server is
- * ready, it must enable the entrypoint explicitly by calling the
- * 'activate()' method. The 'start_on_construction' argument is a
- * shortcut for the common case where the server's capability is handed
- * over to other parties _after_ the server is completely initialized.
+ * immediately enable the processing of requests. The server's capability must
+ * be handed over to other parties _after_ the server is completely
+ * initialized.
  */
 class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 {
+	/**
+	 * This is only needed because in 'base-hw' we need the Thread
+	 * pointer of the entrypoint to cancel its next signal blocking.
+	 * Remove it as soon as signal dispatching in 'base-hw' doesn't need
+	 * multiple threads anymore.
+	 */
+	friend class Signal_receiver;
+
 	private:
 
 		/**
 		 * Prototype capability to derive capabilities for RPC objects
 		 * from.
 		 */
-		Untyped_capability _cap;
+		Untyped_capability _cap { };
 
 		enum { SND_BUF_SIZE = 1024, RCV_BUF_SIZE = 1024 };
-		Msgbuf<SND_BUF_SIZE> _snd_buf;
-		Msgbuf<RCV_BUF_SIZE> _rcv_buf;
+		Msgbuf<SND_BUF_SIZE> _snd_buf { };
+		Msgbuf<RCV_BUF_SIZE> _rcv_buf { };
 
 		/**
 		 * Hook to let low-level thread init code access private members
@@ -270,7 +316,7 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		 */
 		static void _activation_entry();
 
-		struct Exit
+		struct Exit : Genode::Interface
 		{
 			GENODE_RPC(Rpc_exit, void, _exit);
 			GENODE_RPC_INTERFACE(Rpc_exit);
@@ -287,13 +333,12 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 
 	protected:
 
-		Native_capability _caller;
-		Lock              _cap_valid;      /* thread startup synchronization        */
-		Lock              _delay_start;    /* delay start of request dispatching    */
-		Lock              _delay_exit;     /* delay destructor until server settled */
-		Pd_session       &_pd_session;     /* for creating capabilities             */
-		Exit_handler      _exit_handler;
-		Capability<Exit>  _exit_cap;
+		Native_capability _caller       { };
+		Blockade          _cap_valid    { };  /* thread startup synchronization        */
+		Blockade          _delay_exit   { };  /* delay destructor until server settled */
+		Pd_session       &_pd_session;        /* for creating capabilities             */
+		Exit_handler      _exit_handler { };
+		Capability<Exit>  _exit_cap     { };
 
 		/**
 		 * Access to kernel-specific part of the PD session interface
@@ -301,7 +346,7 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		 * Some kernels like NOVA need a special interface for creating RPC
 		 * object capabilities.
 		 */
-		Capability<Pd_session::Native_pd> _native_pd_cap;
+		Capability<Pd_session::Native_pd> _native_pd_cap { };
 
 		/**
 		 * Back end used to associate RPC object with the entry point
@@ -347,14 +392,14 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		 *
 		 * \noapi
 		 */
-		void entry();
+		void entry() override;
 
 	public:
 
 		/**
 		 * Constructor
 		 *
-		 * \param cap_session  'Cap_session' for creating capabilities
+		 * \param pd_session   'Pd_session' for creating capabilities
 		 *                     for the RPC objects managed by this entry
 		 *                     point
 		 * \param stack_size   stack size of entrypoint thread
@@ -362,8 +407,7 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		 * \param location     CPU affinity
 		 */
 		Rpc_entrypoint(Pd_session *pd_session, size_t stack_size,
-		               char const *name, bool start_on_construction = true,
-		               Affinity::Location location = Affinity::Location());
+		               char const *name, Affinity::Location location);
 
 		~Rpc_entrypoint();
 
@@ -385,11 +429,6 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		{
 			_dissolve(obj);
 		}
-
-		/**
-		 * Activate entrypoint, start processing RPC requests
-		 */
-		void activate();
 
 		/**
 		 * Request reply capability for current call
@@ -442,6 +481,19 @@ class Genode::Rpc_entrypoint : Thread, public Object_pool<Rpc_object_base>
 		 * This method is solely needed on Linux.
 		 */
 		bool is_myself() const;
+};
+
+
+template <typename IF, typename SERVER>
+struct Genode::Rpc_object<IF, SERVER>::Capability_guard
+{
+	Rpc_entrypoint &_ep;
+	Rpc_object     &_obj;
+
+	Capability_guard(Rpc_entrypoint &ep, Rpc_object &obj)
+	: _ep(ep), _obj(obj) { _ep.manage(&_obj); }
+
+	~Capability_guard() { _ep.dissolve(&_obj); }
 };
 
 #endif /* _INCLUDE__BASE__RPC_SERVER_H_ */

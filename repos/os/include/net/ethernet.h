@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _NET__ETHERNET_H_
@@ -17,11 +17,18 @@
 /* Genode includes */
 #include <base/exception.h>
 #include <util/string.h>
-
+#include <util/construct_at.h>
 #include <util/endian.h>
-#include <net/netaddress.h>
+#include <net/mac_address.h>
+#include <net/size_guard.h>
 
-namespace Net { class Ethernet_frame; }
+namespace Net
+{
+	class Ethernet_frame;
+
+	template <Genode::size_t DATA_SIZE>
+	class Ethernet_frame_sized;
+}
 
 
 /**
@@ -43,139 +50,120 @@ class Net::Ethernet_frame
 			ADDR_LEN  = 6, /* MAC address length in bytes */
 		};
 
-		typedef Network_address<ADDR_LEN> Mac_address;
-
-		static const Mac_address BROADCAST;  /* broadcast address */
+		static Mac_address broadcast() { return Mac_address((Genode::uint8_t)0xff); }
 
 	private:
 
-		Genode::uint8_t  _dst_mac[ADDR_LEN]; /* destination mac address */
-		Genode::uint8_t  _src_mac[ADDR_LEN]; /* source mac address */
-		Genode::uint16_t _type;              /* encapsulated protocol */
-		unsigned         _data[0];           /* encapsulated data */
+		Genode::uint8_t  _dst[ADDR_LEN]; /* destination mac address */
+		Genode::uint8_t  _src[ADDR_LEN]; /* source mac address */
+		Genode::uint16_t _type;          /* encapsulated protocol */
+		unsigned         _data[0];       /* encapsulated data */
 
 	public:
 
-		class No_ethernet_frame : Genode::Exception {};
-
+		enum { MIN_SIZE = 64 };
 
 		/**
 		 * Id representing encapsulated protocol.
 		 */
-		enum Ether_type {
-			IPV4              = 0x0800,
-			ARP               = 0x0806,
-			WAKE_ON_LAN       = 0x0842,
-			SYN3              = 0x1337,
-			RARP              = 0x8035,
-			APPLETALK         = 0x809B,
-			AARP              = 0x80F3,
-			VLAN_TAGGED       = 0x8100,
-			IPX               = 0x8137,
-			NOVELL            = 0x8138,
-			IPV6              = 0x86DD,
-			MAC_CONTROL       = 0x8808,
-			SLOW              = 0x8809,
-			COBRANET          = 0x8819,
-			MPLS_UNICAST      = 0x8847,
-			MPLS_MULTICAST    = 0x8848,
-			PPPOE_DISCOVERY   = 0x8863,
-			PPPOE_STAGE       = 0x8864,
-			NLB               = 0x886F,
-			JUMBO_FRAMES      = 0x8870,
-			EAP               = 0x888E,
-			PROFINET          = 0x8892,
-			HYPERSCSI         = 0x889A,
-			ATAOE             = 0x88A2,
-			ETHERCAT          = 0x88A4,
-			PROVIDER_BRIDGING = 0x88A8,
-			POWERLINK         = 0x88AB,
-			LLDP              = 0x88CC,
-			SERCOS_III        = 0x88CD,
-			CESOE             = 0x88D8,
-			HOMEPLUG          = 0x88E1,
-			MAC_SEC           = 0x88E5,
-			PRECISION_TIME    = 0x88F7,
-			CFM               = 0x8902,
-			FCOE              = 0x8906,
-			FCOE_Init         = 0x8914,
-			Q_IN_Q            = 0x9100,
-			LLT               = 0xCAFE
+		enum class Type : Genode::uint16_t {
+			IPV4 = 0x0800,
+			ARP  = 0x0806,
 		};
 
+		template <typename T>
+		T const &data(Size_guard &size_guard) const
+		{
+			size_guard.consume_head(sizeof(T));
+			T const &obj = *(T *)(_data);
 
-		/*****************
-		 ** Constructor **
-		 *****************/
+			/* Ethernet may have a tail whose size must be considered */
+			Genode::size_t const unconsumed = size_guard.unconsumed();
+			size_guard.consume_tail(unconsumed + sizeof(T) -
+			                        obj.size(unconsumed));
+			return obj;
+		}
 
-		Ethernet_frame(Genode::size_t size) {
-			/* at least, frame header needs to fit in */
-			if (size < sizeof(Ethernet_frame))
-				throw No_ethernet_frame();
+		template <typename T>
+		T &data(Size_guard &size_guard)
+		{
+			size_guard.consume_head(sizeof(T));
+			T &obj = *(T *)(_data);
+
+			/* Ethernet may have a tail whose size must be considered */
+			Genode::size_t const max_obj_sz = size_guard.unconsumed() + sizeof(T);
+			size_guard.consume_tail(max_obj_sz - obj.size(max_obj_sz));
+			return obj;
+		}
+
+		template <typename T>
+		T &construct_at_data(Size_guard &size_guard)
+		{
+			size_guard.consume_head(sizeof(T));
+			return *Genode::construct_at<T>(_data);
+		}
+
+		static Ethernet_frame &construct_at(void       *base,
+		                                    Size_guard &size_guard)
+		{
+			size_guard.consume_head(sizeof(Ethernet_frame));
+			return *Genode::construct_at<Ethernet_frame>(base);
+		}
+
+		static Ethernet_frame &cast_from(void       *base,
+		                                 Size_guard &size_guard)
+		{
+			size_guard.consume_head(sizeof(Ethernet_frame));
+			return *(Ethernet_frame *)base;
 		}
 
 
-		/***********************************
-		 ** Ethernet field read-accessors **
-		 ***********************************/
-
-		/**
-		 * \return destination MAC address of frame.
-		 */
-		Mac_address dst() { return Mac_address(&_dst_mac); }
-
-		/**
-		 * \return source MAC address of frame.
-		 */
-		Mac_address src() { return Mac_address(&_src_mac); }
-
-		/**
-		 * \return EtherType - type of encapsulated protocol.
-		 */
-		Genode::uint16_t type() { return host_to_big_endian(_type); }
-
-		/**
-		 * \return payload data.
-		 */
-		template <typename T> T *       data()       { return (T *)(_data); }
-		template <typename T> T const * data() const { return (T const *)(_data); }
-
-
-		/***********************************
-		 ** Ethernet field write-accessors **
-		 ***********************************/
-
-		/**
-		 * Set the destination MAC address of this frame.
-		 *
-		 * \param mac  MAC address to be set.
-		 */
-		void dst(Mac_address mac) { mac.copy(&_dst_mac); }
-
-		/**
-		 * Set the source MAC address of this frame.
-		 *
-		 * \param mac  MAC address to be set.
-		 */
-		void src(Mac_address mac) { mac.copy(&_src_mac); }
-
-		/**
-		 * Set type of encapsulated protocol.
-		 *
-		 * \param type  the EtherType to be set.
-		 */
-		void type(Genode::uint16_t type) { _type = host_to_big_endian(type); }
-
-
 		/***************
-		 ** Operators **
+		 ** Accessors **
 		 ***************/
 
-		/**
-		 * Placement new operator.
-		 */
-		void * operator new(Genode::size_t size, void* addr) {
-			return addr; }
+		Mac_address dst()  const { return Mac_address((void *)_dst); }
+		Mac_address src()  const { return Mac_address((void *)_src); }
+		Type        type() const { return (Type)host_to_big_endian(_type); }
+
+		void dst(Mac_address v) { v.copy(&_dst); }
+		void src(Mac_address v) { v.copy(&_src); }
+		void type(Type type)    { _type = host_to_big_endian((Genode::uint16_t)type); }
+
+
+		/*********
+		 ** log **
+		 *********/
+
+		void print(Genode::Output &output) const;
+
+} __attribute__((packed));
+
+
+template <Genode::size_t DATA_SIZE>
+class Net::Ethernet_frame_sized : public Ethernet_frame
+{
+	private:
+
+		enum {
+			HS = sizeof(Ethernet_frame),
+			DS = DATA_SIZE + HS >= MIN_SIZE ? DATA_SIZE : MIN_SIZE - HS,
+		};
+
+		Genode::uint8_t  _data[DS];
+		Genode::uint32_t _checksum;
+
+	public:
+
+		Ethernet_frame_sized(Mac_address dst_in, Mac_address src_in,
+		                     Type type_in)
+		:
+			Ethernet_frame()
+		{
+			dst(dst_in);
+			src(src_in);
+			type(type_in);
+		}
 
 } __attribute__((packed));
 

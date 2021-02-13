@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BLOCK__DRIVER_H_
@@ -19,53 +19,69 @@
 #include <base/exception.h>
 #include <base/stdint.h>
 #include <base/signal.h>
-
-#include <ram_session/ram_session.h>
+#include <base/ram_allocator.h>
 #include <block_session/rpc_object.h>
 
 namespace Block {
+	class Driver_session_base;
 	class Driver_session;
 	class Driver;
 	struct Driver_factory;
 };
 
 
-class Block::Driver_session : public Block::Session_rpc_object
+struct Block::Driver_session_base : Genode::Interface
+{
+	/**
+	 * Acknowledges a packet processed by the driver to the client
+	 *
+	 * \param packet   the packet to acknowledge
+	 * \param success  indicated whether the processing was successful
+	 *
+	 * \throw Ack_congestion
+	 */
+	virtual void ack_packet(Packet_descriptor &packet,
+	                        bool success) = 0;
+};
+
+
+class Block::Driver_session : public Driver_session_base,
+                              public Block::Session_rpc_object
 {
 	public:
 
 		/**
 		 * Constructor
 		 *
+		 * \param rm     region map of local address space, used to attach
+		 *               the packet-stream buffer to the local address space
 		 * \param tx_ds  dataspace used as communication buffer
 		 *               for the tx packet stream
 		 * \param ep     entry point used for packet-stream channel
 		 */
-		Driver_session(Genode::Dataspace_capability tx_ds,
-		               Genode::Rpc_entrypoint &ep)
-		: Session_rpc_object(tx_ds, ep) { }
-
-		/**
-		 * Acknowledges a packet processed by the driver to the client
-		 *
-		 * \param packet   the packet to acknowledge
-		 * \param success  indicated whether the processing was successful
-		 *
-		 * \throw Ack_congestion
-		 */
-		virtual void ack_packet(Packet_descriptor &packet,
-		                        bool success) = 0;
+		Driver_session(Genode::Region_map           &rm,
+		               Genode::Dataspace_capability  tx_ds,
+		               Genode::Rpc_entrypoint       &ep)
+		: Session_rpc_object(rm, tx_ds, ep) { }
 };
 
 
 /**
  * Interface to be implemented by the device-specific driver code
  */
-class Block::Driver
+class Block::Driver : Genode::Interface
 {
 	private:
 
-		Driver_session *_session = nullptr;
+		/*
+		 * Noncopyable
+		 */
+		Driver(Driver const &);
+		Driver &operator = (Driver const &);
+
+		Genode::Ram_allocator &_ram;
+
+		Driver_session_base *_session = nullptr;
 
 	public:
 
@@ -76,24 +92,19 @@ class Block::Driver
 		class Request_congestion : public ::Genode::Exception { };
 
 		/**
+		 * Constructor
+		 */
+		Driver(Genode::Ram_allocator &ram) : _ram(ram) { }
+
+		/**
 		 * Destructor
 		 */
 		virtual ~Driver() { }
 
 		/**
-		 * Request block size for driver and medium
+		 * Request block-device information
 		 */
-		virtual Genode::size_t block_size() = 0;
-
-		/**
-		 * Request capacity of medium in blocks
-		 */
-		virtual Block::sector_t block_count() = 0;
-
-		/**
-		 * Request operations supported by the device
-		 */
-		virtual Session::Operations ops() = 0;
+		virtual Session::Info info() const = 0;
 
 		/**
 		 * Read from medium
@@ -107,10 +118,10 @@ class Block::Driver
 		 *
 		 * Note: should be overridden by DMA non-capable devices
 		 */
-		virtual void read(sector_t           block_number,
-		                  Genode::size_t     block_count,
-		                  char *             buffer,
-		                  Packet_descriptor &packet) {
+		virtual void read(sector_t            /* block_number */,
+		                  Genode::size_t      /* block_count */,
+		                  char *              /* buffer */,
+		                  Packet_descriptor & /* packet */) {
 			throw Io_error(); }
 
 		/**
@@ -125,10 +136,10 @@ class Block::Driver
 		 *
 		 * Note: should be overridden by DMA non-capable, non-ROM devices
 		 */
-		virtual void write(sector_t           block_number,
-		                   Genode::size_t     block_count,
-		                   const char *       buffer,
-		                   Packet_descriptor &packet) {
+		virtual void write(sector_t            /* block_number */,
+		                   Genode::size_t      /* block_count */,
+		                   const char *        /* buffer */,
+		                   Packet_descriptor & /* packet */) {
 			throw Io_error(); }
 
 		/**
@@ -143,10 +154,10 @@ class Block::Driver
 		 *
 		 * Note: should be overridden by DMA capable devices
 		 */
-		virtual void read_dma(sector_t           block_number,
-		                      Genode::size_t     block_count,
-		                      Genode::addr_t     phys,
-		                      Packet_descriptor &packet) {
+		virtual void read_dma(sector_t            /* block_number */,
+		                      Genode::size_t      /* block_count */,
+		                      Genode::addr_t      /* phys */,
+		                      Packet_descriptor & /* packet */) {
 			throw Io_error(); }
 
 		/**
@@ -161,10 +172,10 @@ class Block::Driver
 		 *
 		 * Note: should be overridden by DMA capable, non-ROM devices
 		 */
-		virtual void write_dma(sector_t           block_number,
-		                       Genode::size_t     block_count,
-		                       Genode::addr_t     phys,
-		                       Packet_descriptor &packet) {
+		virtual void write_dma(sector_t            /* block_number */,
+		                       Genode::size_t      /* block_count */,
+		                       Genode::addr_t      /* phys */,
+		                       Packet_descriptor & /* packet */) {
 			throw Io_error(); }
 
 		/**
@@ -183,7 +194,7 @@ class Block::Driver
 		 */
 		virtual Genode::Ram_dataspace_capability
 		alloc_dma_buffer(Genode::size_t size) {
-			return Genode::env()->ram_session()->alloc(size); }
+			return _ram.alloc(size); }
 
 		/**
 		 * Free buffer which is suitable for DMA.
@@ -191,7 +202,7 @@ class Block::Driver
 		 * Note: has to be overriden by DMA-capable devices
 		 */
 		virtual void free_dma_buffer(Genode::Ram_dataspace_capability c) {
-			return Genode::env()->ram_session()->free(c); }
+			return _ram.free(c); }
 
 		/**
 		 * Synchronize with device.
@@ -214,7 +225,7 @@ class Block::Driver
 		 *
 		 * Session might get used to acknowledge requests.
 		 */
-		void session(Driver_session *session) {
+		void session(Driver_session_base *session) {
 			if (!(_session = session)) session_invalidated(); }
 
 		/**
@@ -230,7 +241,7 @@ class Block::Driver
 /**
  * Interface for constructing the driver object
  */
-struct Block::Driver_factory
+struct Block::Driver_factory : Genode::Interface
 {
 	/**
 	 * Construct new driver

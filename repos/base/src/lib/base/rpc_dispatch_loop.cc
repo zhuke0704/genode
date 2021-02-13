@@ -5,16 +5,15 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <util/retry.h>
 #include <base/rpc_server.h>
-#include <base/printf.h>
 
 /* base-internal includes */
 #include <base/internal/ipc_server.h>
@@ -28,6 +27,12 @@ using namespace Genode;
 
 Untyped_capability Rpc_entrypoint::_manage(Rpc_object_base *obj)
 {
+	/* don't manage RPC object twice */
+	if (obj->cap().valid()) {
+		warning("attempt to manage RPC object twice");
+		return obj->cap();
+	}
+
 	Untyped_capability new_obj_cap = _alloc_rpc_cap(_pd_session, _cap);
 
 	/* add server object to object pool */
@@ -43,16 +48,7 @@ void Rpc_entrypoint::entry()
 {
 	Ipc_server srv;
 	_cap = srv;
-	_cap_valid.unlock();
-
-	/*
-	 * Now, the capability of the server activation is initialized
-	 * an can be passed around. However, the processing of capability
-	 * invocations should not happen until activation-using server
-	 * is completely initialized. Thus, we wait until the activation
-	 * gets explicitly unblocked by calling 'Rpc_entrypoint::activate()'.
-	 */
-	_delay_start.lock();
+	_cap_valid.wakeup();
 
 	Rpc_exception_code exc = Rpc_exception_code(Rpc_exception_code::INVALID_OBJECT);
 
@@ -82,5 +78,5 @@ void Rpc_entrypoint::entry()
 	ipc_reply(_caller, Rpc_exception_code(Rpc_exception_code::SUCCESS), snd_buf);
 
 	/* defer the destruction of 'Ipc_server' until '~Rpc_entrypoint' is ready */
-	_delay_exit.lock();
+	_delay_exit.block();
 }

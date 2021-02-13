@@ -1,18 +1,18 @@
-/**
+/*
  * \brief  Dummy functions
  * \author Sebastian Sumpf
  * \date   2013-08-26
  */
 
 /*
- * Copyright (C) 2013-2016 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/sleep.h>
 
 
@@ -28,40 +28,50 @@ enum {
 
 #define DUMMY(retval, name) \
 	DUMMY name(void) { \
-	if (SHOW_DUMMY) \
-		PDBG( #name " called (from %p) not implemented", __builtin_return_address(0)); \
-	return retval; \
-}
+		if (SHOW_DUMMY) \
+			Genode::log(__func__, ": " #name " called " \
+			            "(from ", __builtin_return_address(0), ") " \
+			            "not implemented"); \
+		return retval; \
+	}
 
 #define DUMMY_SKIP(retval, name) \
 	DUMMY name(void) { \
 		if (SHOW_SKIP) \
-			PLOG( #name " called (from %p) skipped", __builtin_return_address(0)); \
-	return retval; \
-}
+			Genode::log(__func__, ": " #name " called " \
+			            "(from ", __builtin_return_address(0), ") " \
+			            "skipped"); \
+		return retval; \
+	}
 
 #define DUMMY_RET(retval, name) \
 	DUMMY name(void) { \
 		if (SHOW_RET) \
-			PWRN( #name " called (from %p) return %d", __builtin_return_address(0), retval); \
-	return retval; \
-}
+			Genode::log(__func__, ": " #name " called " \
+			            "(from ", __builtin_return_address(0), ") " \
+			            "return ", retval); \
+		return retval; \
+	}
 
 #define DUMMY_SHOW(retval, name) \
 	DUMMY name(void) { \
 		if (SHOW_SHOW) \
-			PWRN( #name " called (from %p) return %d", __builtin_return_address(0), retval); \
-	return retval; \
-}
+			Genode::log(__func__, ": " #name " called " \
+			            "(from ", __builtin_return_address(0), ") " \
+			            "return ", retval); \
+		return retval; \
+	}
 
 #define DUMMY_STOP(retval, name) \
 	DUMMY name(void) { \
 		do { \
-			PWRN( #name " called (from %p) stopped", __builtin_return_address(0)); \
+			Genode::warning(__func__, ": " #name " called " \
+			               "(from ", __builtin_return_address(0), ") " \
+			               "stopped"); \
 			Genode::sleep_forever(); \
 		} while (0); \
 		return retval; \
-}
+	}
 
 
 /*
@@ -82,7 +92,6 @@ DUMMY_RET(0, nla_put)
 DUMMY_RET(1, ns_capable)
 DUMMY_RET(1, num_possible_cpus)
 DUMMY_RET(0, read_seqretry)
-DUMMY_RET(0, poll_does_not_wait)
 DUMMY_RET(0, secpath_exists)
 DUMMY_RET(0, security_inet_conn_request)
 DUMMY_RET(0, security_sk_alloc)
@@ -165,7 +174,6 @@ DUMMY_SKIP(-1, wake_up)
 DUMMY_SKIP(-1, rtmsg_ifinfo)
 DUMMY_RET(0, rtnl_is_locked)
 DUMMY_SKIP(-1, rtnl_lock)
-DUMMY(-1, rtnl_notify)
 DUMMY(-1, rtnl_set_sk_err)
 DUMMY_SKIP(-1, rtnl_unlock)
 DUMMY_RET(0, rtnetlink_put_metrics)
@@ -200,7 +208,6 @@ DUMMY(-1, cancel_delayed_work_sync)
 DUMMY(-1, capable)
 DUMMY(-1, cipso_v4_validate)
 DUMMY(-1, __clear_bit)
-DUMMY(-1, clamp)
 DUMMY(-1, clear_bit)
 DUMMY(-1, cond_resched)
 DUMMY(-1, cond_resched_softirq)
@@ -285,8 +292,6 @@ DUMMY(-1, init_user_ns)
 DUMMY(-1, init_waitqueue_head)
 DUMMY(-1, INIT_WORK)
 DUMMY(-1, in_softirq)
-DUMMY(-1, ip4_datagram_connect)
-DUMMY(-1, ip4_datagram_release_cb)
 DUMMY(-1, ip_check_mc_rcu)
 DUMMY(-1, ip_mc_destroy_dev)
 DUMMY(-1, ip_mc_down)
@@ -307,7 +312,6 @@ DUMMY(-1, ipv4_is_local_multicast)
 DUMMY(-1, irqs_disabled)
 DUMMY(-1, is_vlan_dev)
 DUMMY(-1, kernel_sendmsg)
-DUMMY(-1, kmem_cache_destroy)
 DUMMY(-1, kobject_put)
 DUMMY(-1, kobject_uevent)
 DUMMY(-1, krealloc)
@@ -325,8 +329,6 @@ DUMMY(-1, linkwatch_init_dev)
 DUMMY(-1, linkwatch_run_queue)
 DUMMY(-1, local_softirq_pending)
 DUMMY(-1, lockdep_rtnl_is_held)
-DUMMY(-1, min)
-DUMMY_STOP(-1, mod_delayed_work)
 DUMMY(-1, module_put)
 DUMMY(-1, move_addr_to_kernel)
 DUMMY(-1, mq_qdisc_ops)
@@ -393,14 +395,10 @@ DUMMY(-1, release_net)
 DUMMY(-1, remove_proc_entry)
 DUMMY(-1, remove_wait_queue)
 DUMMY(-1, request_module)
-DUMMY(-1, round_jiffies)
-DUMMY(-1, round_jiffies_relative)
-DUMMY(-1, round_jiffies_up)
 DUMMY(-1, rt_genid_bump)
 DUMMY(-1, rtnetlink_init)
 DUMMY(-1, __rtnl_unlock)
 DUMMY_STOP(-1, schedule)
-DUMMY_STOP(-1, schedule_delayed_work)
 DUMMY_STOP(-1, schedule_timeout_interruptible)
 DUMMY_STOP(-1, schedule_work)
 DUMMY(-1, scm_destroy)
@@ -457,6 +455,7 @@ DUMMY(-1, static_key_enabled)
 DUMMY(-1, static_key_slow_dec)
 DUMMY(-1, static_key_slow_inc)
 DUMMY(-1, strcat)
+DUMMY(-1, strsep)
 DUMMY(-1, strncpy_from_user)
 DUMMY(-1, synchronize_rcu_expedited)
 DUMMY(-1, sysctl_igmp_max_msf)
@@ -599,8 +598,6 @@ DUMMY(0, raw_seqcount_begin)
 DUMMY(0, read_seqcount_retry)
 DUMMY(0, reciprocal_scale)
 DUMMY(0, round_down)
-DUMMY(0, rt_genid_bump_ipv4)
-DUMMY(0, rt_genid_ipv4)
 DUMMY(0, rtmsg_ifinfo_build_skb)
 DUMMY(0, rtmsg_ifinfo_send)
 DUMMY_SKIP(0, sched_annotate_sleep)

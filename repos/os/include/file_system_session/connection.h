@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2016 Genode Labs GmbH
+ * Copyright (C) 2012-2018 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__FILE_SYSTEM_SESSION__CONNECTION_H_
@@ -26,35 +26,32 @@ namespace File_system {
 
 	/* recommended packet transmission buffer size */
 	enum { DEFAULT_TX_BUF_SIZE = 128*1024 };
-
 }
 
 
 /**
  * The base implementation of a File_system connection
  */
-struct File_system::Connection_base : Genode::Connection<Session>, Session_client
+struct File_system::Connection : Genode::Connection<Session>, Session_client
 {
 	/**
-	 * Issue session request
+	 * Extend session quota on demand while calling an RPC function
 	 *
 	 * \noapi
 	 */
-	Capability<File_system::Session> _session(Genode::Parent &parent,
-	                                          char     const *label,
-	                                          char     const *root,
-	                                          bool            writeable,
-	                                          size_t          tx_buf_size)
+	template <typename FUNC>
+	auto _retry(FUNC func) -> decltype(func())
 	{
-		return session(parent,
-		               "ram_quota=%zd, "
-		               "tx_buf_size=%zd, "
-		               "label=\"%s\", "
-		               "root=\"%s\", "
-		               "writeable=%d",
-		               8*1024*sizeof(long) + tx_buf_size,
-		               tx_buf_size,
-		               label, root, writeable);
+		enum { UPGRADE_ATTEMPTS = ~0U };
+		return Genode::retry<Out_of_ram>(
+			[&] () {
+				return Genode::retry<Out_of_caps>(
+					[&] () { return func(); },
+					[&] () { File_system::Connection::upgrade_caps(2); },
+					UPGRADE_ATTEMPTS);
+			},
+			[&] () { File_system::Connection::upgrade_ram(8*1024); },
+			UPGRADE_ATTEMPTS);
 	}
 
 	/**
@@ -67,87 +64,56 @@ struct File_system::Connection_base : Genode::Connection<Session>, Session_clien
 	 * \param writeable        session is writable
 	 * \param tx_buf_size      size of transmission buffer in bytes
 	 */
-	Connection_base(Genode::Env             &env,
-	                Genode::Range_allocator &tx_block_alloc,
-	                char const              *label       = "",
-	                char const              *root        = "/",
-	                bool                     writeable   = true,
-	                size_t                   tx_buf_size = DEFAULT_TX_BUF_SIZE)
+	Connection(Genode::Env             &env,
+	           Genode::Range_allocator &tx_block_alloc,
+	           char const              *label       = "",
+	           char const              *root        = "/",
+	           bool                     writeable   = true,
+	           size_t                   tx_buf_size = DEFAULT_TX_BUF_SIZE)
 	:
-		Genode::Connection<Session>(env, _session(env.parent(), label, root,
-		                                          writeable, tx_buf_size)),
-		Session_client(cap(), tx_block_alloc)
+		Genode::Connection<Session>(env,
+			session(env.parent(),
+			        "ram_quota=%ld, "
+			        "cap_quota=%ld, "
+			        "tx_buf_size=%ld, "
+			        "label=\"%s\", "
+			        "root=\"%s\", "
+			        "writeable=%d",
+			        8*1024*sizeof(long) + tx_buf_size,
+			        CAP_QUOTA,
+			        tx_buf_size,
+			        label, root, writeable)),
+		Session_client(cap(), tx_block_alloc, env.rm())
 	{ }
-
-	/**
-	 * Constructor
-	 *
-	 * \noapi
-	 * \deprecated  Use the constructor with 'Env &' as first
-	 *              argument instead
-	 */
-	Connection_base(Genode::Range_allocator &tx_block_alloc,
-	                size_t                   tx_buf_size = DEFAULT_TX_BUF_SIZE,
-	                char const              *label       = "",
-	                char const              *root        = "/",
-	                bool                     writeable   = true)
-	:
-		Genode::Connection<Session>(_session(*Genode::env()->parent(), label,
-		                                     root, writeable, tx_buf_size)),
-		Session_client(cap(), tx_block_alloc)
-	{ }
-};
-
-
-/**
- * A File_system connection that upgrades its RAM quota
- */
-struct File_system::Connection : File_system::Connection_base
-{
-	/* reuse constructor */
-	using Connection_base::Connection_base;
-
-	/**
-	 * Upgrade the session quota in response to Out_of_metadata
-	 */
-	void upgrade_ram()
-	{
-		PWRN("upgrading File_system session");
-		Genode::env()->parent()->upgrade(cap(), "ram=8K");
-	}
-
-	enum { UPGRADE_ATTEMPTS = 2 };
 
 	Dir_handle dir(Path const &path, bool create) override
 	{
-		return Genode::retry<Out_of_metadata>(
-			[&] () { return Session_client::dir(path, create); },
-			[&] () { upgrade_ram(); },
-			UPGRADE_ATTEMPTS);
+		return _retry([&] () {
+			return Session_client::dir(path, create); });
 	}
 
 	File_handle file(Dir_handle dir, Name const &name, Mode mode, bool create) override
 	{
-		return Genode::retry<Out_of_metadata>(
-			[&] () { return Session_client::file(dir, name, mode, create); },
-			[&] () { upgrade_ram(); },
-			UPGRADE_ATTEMPTS);
+		return _retry([&] () {
+			return Session_client::file(dir, name, mode, create); });
 	}
 
 	Symlink_handle symlink(Dir_handle dir, Name const &name, bool create) override
 	{
-		return Genode::retry<Out_of_metadata>(
-			[&] () { return Session_client::symlink(dir, name, create); },
-			[&] () { upgrade_ram(); },
-			UPGRADE_ATTEMPTS);
+		return _retry([&] () {
+			return Session_client::symlink(dir, name, create); });
 	}
 
 	Node_handle node(Path const &path) override
 	{
-		return Genode::retry<Out_of_metadata>(
-			[&] () { return Session_client::node(path); },
-			[&] () { upgrade_ram(); },
-			UPGRADE_ATTEMPTS);
+		return _retry([&] () {
+			return Session_client::node(path); });
+	}
+
+	Watch_handle watch(Path const &path) override
+	{
+		return _retry([&] () {
+			return Session_client::watch(path); });
 	}
 };
 

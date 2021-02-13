@@ -17,9 +17,6 @@ $(MAKECMDGOALS) default:
 ARGUMENT  := $(MAKECMDGOALS)
 PORT_NAME := $(firstword $(ARGUMENT))
 
-# compound directory where all 3rd-party source codes are installed
-CONTRIB_DIR ?= $(GENODE_DIR)/contrib
-
 # list of all repositories located at '<genode-dir>/repos/'
 REPOSITORIES ?= $(shell find $(GENODE_DIR)/repos -follow -mindepth 1 -maxdepth 1 -type d)
 

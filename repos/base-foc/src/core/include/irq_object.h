@@ -7,17 +7,16 @@
  */
 
 /*
- * Copyright (C) 2007-2015 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IRQ_OBJECT_H_
 #define _CORE__INCLUDE__IRQ_OBJECT_H_
 
 /* Genode includes */
-#include <base/printf.h>
 #include <irq_session/irq_session.h>
 #include <cap_index.h>
 
@@ -28,17 +27,23 @@ class Genode::Irq_object
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Irq_object(Irq_object const &);
+		Irq_object &operator = (Irq_object const &);
+
 		Cap_index             *_cap;
 		Irq_session::Trigger   _trigger;  /* interrupt trigger */
 		Irq_session::Polarity  _polarity; /* interrupt polarity */
 
 		unsigned               _irq;
-		Genode::addr_t         _msi_addr;
-		Genode::addr_t         _msi_data;
+		addr_t                 _msi_addr;
+		addr_t                 _msi_data;
 
-		Signal_context_capability _sig_cap;
+		Signal_context_capability _sig_cap { };
 
-		Fiasco::l4_cap_idx_t _capability() const { return _cap->kcap(); }
+		Foc::l4_cap_idx_t _capability() const { return _cap->kcap(); }
 
 	public:
 

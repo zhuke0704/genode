@@ -8,27 +8,25 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/string.h>
 #include <cpu_session/cpu_session.h>
 
 /* core includes */
 #include <platform_thread.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
-#include <l4/sys/syscalls.h>
-#include <l4/sys/utcb.h>
-#include <l4/sys/kdebug.h>
-}
+/* base-internal includes */
+#include <base/internal/capability_space_tpl.h>
+
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Genode;
 using namespace Fiasco;
@@ -38,7 +36,9 @@ int Platform_thread::start(void *ip, void *sp)
 {
 	l4_umword_t dummy, old_eflags;
 	l4_threadid_t thread      = _l4_thread_id;
-	l4_threadid_t pager       = _pager ? _pager->cap().dst() : L4_INVALID_ID;
+	l4_threadid_t pager       = _pager
+	                          ? Capability_space::ipc_cap_data(_pager->cap()).dst
+	                          : L4_INVALID_ID;
 	l4_threadid_t preempter   = L4_INVALID_ID;
 	l4_threadid_t cap_handler = L4_INVALID_ID;
 
@@ -47,30 +47,31 @@ int Platform_thread::start(void *ip, void *sp)
 	                      &old_eflags, &dummy, &dummy,
 	                      0, l4_utcb_get());
 	if (old_eflags == ~0UL)
-		PWRN("old eflags == ~0 on ex_regs %x.%x", (int)thread.id.task, (int)thread.id.lthread);
+		warning("old eflags == ~0 on ex_regs ",
+		        Hex(thread.id.task), ".", Hex(thread.id.lthread));
 
-	fiasco_register_thread_name(thread, _name);
+	fiasco_register_thread_name(thread, _name.string());
 	return 0;
 }
 
 
 void Platform_thread::pause()
 {
-	PDBG("not implemented");
+	warning(__func__, " not implemented");
 }
 
 
 void Platform_thread::resume()
 {
-	PDBG("not implemented");
+	warning(__func__, " not implemented");
 }
 
 
-void Platform_thread::bind(int thread_id, l4_threadid_t l4_thread_id, Platform_pd *pd)
+void Platform_thread::bind(int thread_id, l4_threadid_t l4_thread_id, Platform_pd &pd)
 {
 	_thread_id    = thread_id;
 	_l4_thread_id = l4_thread_id;
-	_platform_pd  = pd;
+	_platform_pd  = &pd;
 }
 
 
@@ -94,7 +95,8 @@ void Platform_thread::unbind()
 	                      &old_eflags, &dummy, &dummy,
 	                      0, l4_utcb_get());
 	if (old_eflags == ~0UL)
-		PWRN("old eflags == ~0 on ex_regs %x.%x", (int)thread.id.task, (int)thread.id.lthread);
+		warning("old eflags == ~0 on ex_regs ",
+		        Hex(thread.id.task), ".", Hex(thread.id.lthread));
 
 	_thread_id    = THREAD_INVALID;
 	_l4_thread_id = L4_INVALID_ID;
@@ -102,9 +104,9 @@ void Platform_thread::unbind()
 }
 
 
-void Platform_thread::state(Thread_state s)
+void Platform_thread::state(Thread_state)
 {
-	PDBG("Not implemented");
+	warning(__func__, " not implemented");
 	throw Cpu_thread::State_access_failed();
 }
 
@@ -124,7 +126,8 @@ Thread_state Platform_thread::state()
 	                      &old_eflags, &ip, &sp,
 	                      L4_THREAD_EX_REGS_NO_CANCEL, l4_utcb_get());
 	if (old_eflags == ~0UL)
-		PWRN("old eflags == ~0 on ex_regs %x.%x", (int)thread.id.task, (int)thread.id.lthread);
+		warning("old eflags == ~0 on ex_regs ",
+		        Hex(thread.id.task), ".", Hex(thread.id.lthread));
 
 	/* fill thread state structure */
 	s.ip = ip;
@@ -134,30 +137,13 @@ Thread_state Platform_thread::state()
 }
 
 
-void Platform_thread::cancel_blocking()
-{
-	l4_umword_t   dummy;
-	l4_threadid_t invalid = L4_INVALID_ID;
-
-	l4_inter_task_ex_regs(_l4_thread_id, ~0UL, ~0UL,
-	                      &invalid, &invalid, &invalid,
-	                      &dummy, &dummy, &dummy, 0, l4_utcb_get());
-}
-
-
-Weak_ptr<Address_space> Platform_thread::address_space()
-{
-	return _platform_pd->Address_space::weak_ptr();
-}
-
-
 Platform_thread::Platform_thread(size_t, const char *name, unsigned,
-                                 Affinity::Location, addr_t,
-                                 int thread_id)
-: _thread_id(thread_id), _l4_thread_id(L4_INVALID_ID), _pager(0)
-{
-	strncpy(_name, name, sizeof(_name));
-}
+                                 Affinity::Location, addr_t)
+: _l4_thread_id(L4_INVALID_ID), _name(name) { }
+
+
+Platform_thread::Platform_thread(const char *name)
+: _l4_thread_id(L4_INVALID_ID), _name(name) { }
 
 
 Platform_thread::~Platform_thread()
@@ -167,5 +153,5 @@ Platform_thread::~Platform_thread()
 	 * Thread::unbind()
 	 */
 	if (_platform_pd)
-		_platform_pd->unbind_thread(this);
+		_platform_pd->unbind_thread(*this);
 }

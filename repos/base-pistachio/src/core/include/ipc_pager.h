@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IPC_PAGER_H_
@@ -16,7 +16,6 @@
 
 /* Genode includes */
 #include <base/cache.h>
-#include <base/native_types.h>
 #include <base/ipc.h>
 #include <base/stdint.h>
 #include <util/touch.h>
@@ -47,8 +46,8 @@ namespace Genode {
 			 */
 			Mapping(addr_t dst_addr, addr_t src_addr,
 			        Cache_attribute, bool io_mem,
-			        unsigned l2size = Pistachio::get_page_size_log2(),
-			        bool rw = true, bool grant = false);
+			        unsigned l2size,
+			        bool rw, bool executable);
 
 			/**
 			 * Construct invalid mapping
@@ -169,6 +168,11 @@ namespace Genode {
 			 * Return true if last fault was a write fault
 			 */
 			bool write_fault() const { return (_flags & 2); }
+
+			/**
+			 * Return true if last fault was a executable fault
+			 */
+			bool exec_fault() const { return false; }
 
 			/**
 			 * Return true if last fault was an exception

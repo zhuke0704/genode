@@ -5,14 +5,16 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__AFFINITY_H_
 #define _INCLUDE__BASE__AFFINITY_H_
+
+#include <util/xml_node.h>
 
 namespace Genode { class Affinity; }
 
@@ -84,7 +86,13 @@ class Genode::Affinity
 				 * case, the x and y coordinates are wrapped by the bounds
 				 * of the space.
 				 */
-				inline Location location_of_index(int index);
+				inline Location location_of_index(int index) const;
+
+				static Space from_xml(Xml_node const &node)
+				{
+					return Affinity::Space(node.attribute_value("width",  0U),
+					                       node.attribute_value("height", 0U));
+				}
 		};
 
 
@@ -95,15 +103,15 @@ class Genode::Affinity
 		{
 			private:
 
-				int      _xpos,  _ypos;
-				unsigned _width, _height;
+				int      _xpos  = 0,  _ypos  = 0;
+				unsigned _width = 0, _height = 0;
 
 			public:
 
 				/**
 				 * Default constructor creates invalid location
 				 */
-				Location() : _xpos(0), _ypos(0), _width(0), _height(0) { }
+				Location() { }
 
 				/**
 				 * Constructor to express the affinity to a single CPU
@@ -133,12 +141,21 @@ class Genode::Affinity
 				{
 					return Location(_xpos + dx, _ypos + dy, _width, _height);
 				}
+
+				static Location from_xml(Xml_node const &node)
+				{
+					return Location(node.attribute_value("xpos",   0U),
+					                node.attribute_value("ypos",   0U),
+					                node.attribute_value("width",  0U),
+					                node.attribute_value("height", 0U));
+				}
+
 		};
 
 	private:
 
-		Space    _space;
-		Location _location;
+		Space    _space    { };
+		Location _location { };
 
 	public:
 
@@ -149,6 +166,21 @@ class Genode::Affinity
 
 		Space    space()    const { return _space; }
 		Location location() const { return _location; }
+
+		static Affinity from_xml(Xml_node const &node)
+		{
+			Affinity::Space    space    { };
+			Affinity::Location location { };
+
+			node.with_sub_node("affinity", [&] (Xml_node const &node) {
+				node.with_sub_node("space", [&] (Xml_node const &node) {
+					space = Space::from_xml(node); });
+				node.with_sub_node("location", [&] (Xml_node const &node) {
+					location = Location::from_xml(node); });
+			});
+
+			return Affinity(space, location);
+		}
 
 		/**
 		 * Return location scaled to specified affinity space
@@ -183,7 +215,7 @@ class Genode::Affinity
 };
 
 
-Genode::Affinity::Location Genode::Affinity::Space::location_of_index(int index)
+Genode::Affinity::Location Genode::Affinity::Space::location_of_index(int index) const
 {
 	return Location(index % _width, (index / _width) % _height, 1, 1);
 }

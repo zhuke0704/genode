@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__REGISTER_H_
@@ -16,7 +16,6 @@
 
 /* Genode includes */
 #include <base/stdint.h>
-#include <base/printf.h>
 
 namespace Genode {
 
@@ -55,45 +54,30 @@ namespace Genode { namespace Trait {
 			 * Access widths wich are dividers to the compound type width
 			 */
 			template <unsigned long _DIVISOR_WIDTH> struct Divisor;
-
-			static inline void print_hex(bool const v) {
-				printf("%01x", v); }
 		};
 
 		template <> struct Uint_width<8> : Uint_width<1>
 		{
 			typedef uint8_t Type;
 			enum { WIDTH_LOG2 = 3 };
-
-			static inline void print_hex(uint8_t const v) {
-				printf("%02x", v); }
 		};
 
 		template <> struct Uint_width<16> : Uint_width<8>
 		{
 			typedef uint16_t Type;
 			enum { WIDTH_LOG2 = 4 };
-
-			static inline void print_hex(uint16_t const v) {
-				printf("%04x", v); }
 		};
 
 		template <> struct Uint_width<32> : Uint_width<16>
 		{
 			typedef uint32_t Type;
 			enum { WIDTH_LOG2 = 5 };
-
-			static inline void print_hex (uint32_t const v) {
-				printf("%08x", v); }
 		};
 
 		template <> struct Uint_width<64> : Uint_width<32>
 		{
 			typedef uint64_t Type;
 			enum { WIDTH_LOG2 = 6 };
-
-			static inline void print_hex(uint64_t const v) {
-				printf("%016llx", v); }
 		};
 
 		template <> struct Uint_width<1>::Divisor<1>   { enum { WIDTH_LOG2 = 0 }; };

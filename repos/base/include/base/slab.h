@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__SLAB_H_
@@ -19,17 +19,7 @@
 
 namespace Genode { class Slab; }
 
-/**
- * Transitional type definition, for API compatibility only
- *
- * \deprecated  To be removed once all Slab users are updated.
- */
-namespace Genode { typedef void Slab_block; }
 
-
-/**
- * Slab allocator
- */
 class Genode::Slab : public Allocator
 {
 	private:
@@ -52,7 +42,7 @@ class Genode::Slab : public Allocator
 		 */
 		Block *_curr_sb = nullptr;
 
-		Allocator   *_backing_store;
+		Allocator *_backing_store;
 
 		/**
 		 * Allocate and initialize new slab block
@@ -83,6 +73,12 @@ class Genode::Slab : public Allocator
 		 */
 		void _free(void *addr);
 
+		/*
+		 * Noncopyable
+		 */
+		Slab(Slab const &);
+		Slab &operator = (Slab const &);
+
 	public:
 
 		/**
@@ -100,6 +96,19 @@ class Genode::Slab : public Allocator
 		 * Destructor
 		 */
 		~Slab();
+
+		/**
+		 * Return number of bytes consumed per slab entry
+		 *
+		 * The function takes the slab-internal meta-data needs and the actual
+		 * slab entry into account.
+		 */
+		static size_t entry_costs(size_t slab_size, size_t block_size);
+
+		/**
+		 * Return number of unused slab entries
+		 */
+		size_t avail_entries() const { return _total_avail; }
 
 		/**
 		 * Add new slab block as backing store

@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__PACKET_ALLOCATOR__
@@ -31,23 +31,34 @@ class Genode::Packet_allocator : public Genode::Range_allocator
 {
 	private:
 
-		Allocator      *_md_alloc;   /* meta-data allocator                 */
-		size_t          _block_size; /* granularity of packet allocations   */
-		void           *_bits;       /* memory chunk containing the bits    */
-		Bit_array_base *_array;      /* bit array managing available blocks */
-		addr_t          _base;       /* allocation base                     */
-		addr_t          _next;       /* next free bit index                 */
+		/*
+		 * Noncopyable
+		 */
+		Packet_allocator(Packet_allocator const &);
+		Packet_allocator &operator = (Packet_allocator const &);
+
+		Allocator      *_md_alloc;         /* meta-data allocator                 */
+		size_t          _block_size;       /* granularity of packet allocations   */
+		addr_t         *_bits  = nullptr;  /* memory chunk containing the bits    */
+		Bit_array_base *_array = nullptr;  /* bit array managing available blocks */
+		addr_t          _base = 0;         /* allocation base                     */
+		addr_t          _next = 0;         /* next free bit index                 */
 
 		/*
-		 * Returns the count of blocks fitting the given size
-		 *
-		 * The block count returned is aligned to the bit count
-		 * of a machine word to fit the needs of the used bit array.
+		 * Returns the count of bits required to use the internal bit
+		 * array to track the allocations. The bit count is rounded up/aligned
+		 * to the natural machine word bit size.
 		 */
-		inline size_t _block_cnt(size_t bytes)
+		inline size_t _bits_cnt(size_t const size)
 		{
-			bytes /= _block_size;
-			return bytes - (bytes % (sizeof(addr_t)*8));
+			size_t const bits = sizeof(addr_t)*8;
+			size_t const cnt = size / _block_size;
+
+			size_t bits_aligned = cnt / bits;
+			if (cnt % bits)
+				bits_aligned += 1;
+
+			return bits_aligned * bits;
 		}
 
 	public:
@@ -59,23 +70,30 @@ class Genode::Packet_allocator : public Genode::Range_allocator
 		 * \param block_size     Granularity of packets in stream
 		 */
 		Packet_allocator(Allocator *md_alloc, size_t block_size)
-		: _md_alloc(md_alloc), _block_size(block_size), _bits(0),
-		  _array(nullptr), _base(0) {}
+		: _md_alloc(md_alloc), _block_size(block_size) { }
 
 
 		/*******************************
 		 ** Range-allocator interface **
 		 *******************************/
 
-		int add_range(addr_t base, size_t size) override
+		int add_range(addr_t const base, size_t const size) override
 		{
 			if (_base || _array) return -1;
 
-			_base  = base;
-			_bits  = _md_alloc->alloc(_block_cnt(size)/8);
-			_array = new (_md_alloc) Bit_array_base(_block_cnt(size),
-			                                        (addr_t*)_bits,
-			                                        true);
+			size_t const bits_cnt = _bits_cnt(size);
+
+			_base = base;
+			_bits = (addr_t *)_md_alloc->alloc(bits_cnt / 8);
+			memset(_bits, 0, bits_cnt / 8);
+
+			_array = new (_md_alloc) Bit_array_base(bits_cnt, _bits);
+
+			/* reserve bits which are unavailable */
+			size_t const max_cnt = size / _block_size;
+			if (bits_cnt > max_cnt)
+				_array->set(max_cnt, bits_cnt - max_cnt);
+
 			return 0;
 		}
 
@@ -83,8 +101,18 @@ class Genode::Packet_allocator : public Genode::Range_allocator
 		{
 			if (_base != base) return -1;
 
-			if (_array) destroy(_md_alloc, _array);
-			if (_bits)  _md_alloc->free(_bits, _block_cnt(size)/8);
+			_base = _next = 0;
+
+			if (_array) {
+				destroy(_md_alloc, _array);
+				_array = nullptr;
+			}
+
+			if (_bits)  {
+				_md_alloc->free(_bits, _bits_cnt(size)/8);
+				_bits = nullptr;
+			}
+
 			return 0;
 		}
 
@@ -139,7 +167,7 @@ class Genode::Packet_allocator : public Genode::Range_allocator
 		 *************/
 
 		bool need_size_for_free() const override { return false; }
-		void free(void *addr) override { }
+		void free(void *) override { }
 		size_t overhead(size_t) const override {  return 0;}
 		size_t avail() const override { return 0; }
 		bool valid_addr(addr_t) const override { return 0; }

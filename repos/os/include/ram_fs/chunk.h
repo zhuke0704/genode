@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2015 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__RAM_FS__CHUNK_H_
@@ -28,8 +28,8 @@ namespace File_system {
 
 	class Chunk_base;
 
-	template <unsigned>           class Chunk;
-	template <unsigned, typename> class Chunk_index;
+	template <size_t>           class Chunk;
+	template <size_t, typename> class Chunk_index;
 }
 
 
@@ -97,7 +97,7 @@ class File_system::Chunk_base : Noncopyable
 /**
  * Chunk of bytes used as leaf in hierarchy of chunk indices
  */
-template <unsigned CHUNK_SIZE>
+template <Genode::size_t CHUNK_SIZE>
 class File_system::Chunk : public Chunk_base
 {
 	private:
@@ -177,7 +177,7 @@ class File_system::Chunk : public Chunk_base
 };
 
 
-template <unsigned NUM_ENTRIES, typename ENTRY_TYPE>
+template <Genode::size_t NUM_ENTRIES, typename ENTRY_TYPE>
 class File_system::Chunk_index : public Chunk_base
 {
 	public:
@@ -188,6 +188,12 @@ class File_system::Chunk_index : public Chunk_base
 		       SIZE       = ENTRY_SIZE*NUM_ENTRIES };
 
 	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Chunk_index(Chunk_index const &);
+		Chunk_index &operator = (Chunk_index const &);
 
 		Allocator &_alloc;
 

@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REGION_MAP__CLIENT_H_
@@ -35,7 +35,7 @@ class Genode::Region_map_client : public Rpc_client<Region_map>
 		 *
 		 * On all other base platforms, this member variable remains unused.
 		 */
-		Dataspace_capability _rm_ds_cap;
+		Dataspace_capability _rm_ds_cap { };
 
 	public:
 
@@ -44,7 +44,8 @@ class Genode::Region_map_client : public Rpc_client<Region_map>
 		Local_addr attach(Dataspace_capability ds, size_t size = 0,
 		                  off_t offset = 0, bool use_local_addr = false,
 		                  Local_addr local_addr = (void *)0,
-		                  bool executable = false) override;
+		                  bool executable = false,
+		                  bool writeable = true) override;
 
 		void                 detach(Local_addr)                       override;
 		void                 fault_handler(Signal_context_capability) override;

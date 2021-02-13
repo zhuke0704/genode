@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__MAPPED_IO_MEM_RANGE_H_
@@ -26,7 +26,7 @@ namespace Lx {
 
 	void *ioremap(addr_t, unsigned long, Cache_attribute);
 	void  iounmap(volatile void*);
-	Dataspace_capability ioremap_lookup(addr_t, size_t);
+	Dataspace_capability ioremap_lookup(addr_t, Genode::size_t);
 }
 
 

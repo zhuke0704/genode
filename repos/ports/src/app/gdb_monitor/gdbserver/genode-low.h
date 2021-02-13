@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /*
@@ -42,5 +42,8 @@ int genode_write_memory (CORE_ADDR memaddr, const unsigned char *myaddr, int len
 int genode_fetch_register(int regno, unsigned long *reg_content);
 void genode_store_register(int regno, unsigned long reg_content);
 unsigned char genode_read_memory_byte(void *addr);
+
+/* interface for cpu_thread_component.cc */
+void genode_set_initial_breakpoint_at(unsigned long addr);
 
 #endif /* GENODE_LOW_H */

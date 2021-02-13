@@ -46,10 +46,6 @@ proc build {targets} {
 
 	if {[get_cmd_switch --skip-build]} return
 
-	if {[info exists run_boot_dir_hook]} {
-		run_boot_dir_hook
-	}
-
 	regsub -all {\s\s+} $targets " " targets
 	puts "building targets: $targets"
 	set timeout 10000
@@ -76,9 +72,9 @@ proc create_boot_directory { } {
 ##
 # Append string to variable only if 'condition' is satisfied
 #
-proc append_if {condition var string} {
+proc append_if {condition var args} {
 	upvar $var up_var
-	if {$condition} { append up_var $string }
+	if {$condition} { append up_var [join $args ""] }
 }
 
 
@@ -110,14 +106,116 @@ proc check_xml_syntax {xml_file} {
 
 
 ##
-# Install content of specfied variable as init config file
+# Validate configuration file to match an XML schema using xmllint
 #
-proc install_config {config} {
-	set fh [open "[run_dir]/genode/config" "WRONLY CREAT TRUNC"]
-	puts $fh $config
-	close $fh
+# \param bin              binary name of the component behind the config
+# \param xml_file         configuration file
+# \param xsd_file         configuration schema file
+# \param avail_xsd_files  list of xsd files that might be used for
+#                         configurations of children of the component
+# \param nesting_level    level of recursive calls of this procedure
+#
+proc check_config {bin xml_file xsd_file label avail_xsd_files xsd_inc nesting_level} {
 
-	check_xml_syntax [run_dir]/genode/config
+	# check prerequisites if this is not a recursive call
+	if {$nesting_level == 0} {
+		if {![have_installed xmllint]} {
+			puts ""
+			puts "Warning: cannot validate config syntax\
+			      (please install xmllint)"
+			puts ""
+			exit 1
+		}
+	}
+
+	# check the given component configuration itself
+	puts "  CHECK $label"
+	if {[catch {exec xmllint --noout --path $xsd_inc -schema $xsd_file $xml_file} result]} {
+
+		if {$result != "$xml_file validates"} {
+
+			puts stderr "$result"
+			puts stderr "Error: Invalid XML syntax"
+			exit 1
+		}
+	}
+
+	#
+	# If this is no instance of Genodes Init component, we can skip checking
+	# for potential child configurations.
+	#
+	if {$bin != "init"} {
+		return
+	}
+
+	#
+	# The names of the available XSD files tell us for which binaries we
+	# can do a check. So iterate through the XSD files and try to find
+	# corresponding child instances.
+	#
+	foreach child_xsd_file $avail_xsd_files {
+
+		set child_bin [file tail [file rootname $child_xsd_file]]
+		for {set child_instance 1} {1} {incr child_instance} {
+
+			#
+			# Try to find a child instance that uses this binary. We start
+			# with selecting the first matching start node, than the
+			# second, and so on. As soon as xmlscarlet returns an empty
+			# string, we know that there is no further matching start node.
+			#
+			set xpath_start_cond "child::binary\[@name=\'$child_bin\'\] or \
+			                      not(child::binary) and @name=\'$child_bin\'"
+
+			set xpath "string(/config/start\[$xpath_start_cond\]\[$child_instance\]/@name)"
+			set select_xpath "xmllint --xpath \"$xpath\" $xml_file"
+			if {[catch {exec {*}$select_xpath} child_name]} {
+
+				#
+				# No further child instance that uses this binary.
+				# Proceed with next binary.
+				#
+				break
+			}
+
+			#
+			# If the child has a config, check it with a recursive
+			# call to this procedure.
+			#
+			set xpath "/config/start\[$xpath_start_cond\]\[$child_instance\]/config"
+			set select_xpath "xmllint --xpath \"$xpath\" $xml_file"
+			if {[catch {exec {*}$select_xpath} child_xml]} {
+
+				# the child has no config
+				break
+			}
+
+			# write child config to temporary file
+			set child_xml_file ".config_$nesting_level.xml.tmp"
+			set child_xml_fd [open $child_xml_file w]
+			puts $child_xml_fd $child_xml
+			close $child_xml_fd
+
+			# call this procedure again on the child config file
+			set child_label "$label -> $child_name"
+			check_config $child_bin $child_xml_file $child_xsd_file \
+			             $child_label $avail_xsd_files $xsd_inc \
+			             [expr $nesting_level+1]
+
+			# clean up
+			exec rm -f $child_xml_file
+		}
+	}
+}
+
+
+##
+# Install content of specified variable as init config file
+#
+proc install_config { args } {
+	set fh [open "[run_dir]/genode/config" "WRONLY CREAT TRUNC"]
+	puts $fh [join $args {}]
+	close $fh
 }
 
 
@@ -128,11 +226,45 @@ proc install_config {config} {
 #                  '<build-dir>/bin/' directory
 #
 proc build_boot_image {binaries} {
+
+	check_for_missing_depot_archives
+
+	# lookup XSD files in the run-script-specific folder
+	set xsd_files ""
+	if {[catch {exec find [run_dir]/genode -name *.xsd} find_stdout] == 0} {
+		set xsd_files [split "$find_stdout" "\n"]
+	}
+	# lookup XSD files in the binaries folder
+	foreach binary $binaries {
+		if {[file exists "bin/$binary.xsd"]} {
+			lappend xsd_files "bin/$binary.xsd"
+		}
+	}
+	# determine which XSD file to use for the init config
+	foreach xsd_file $xsd_files {
+		set filename [file tail $xsd_file]
+		if {$filename == "init.xsd"} {
+			set init_xsd_file $xsd_file
+		}
+	}
+	# determine include directories that can be used by the XSD files
+	global repositories;
+	set xsd_inc ""
+	foreach repo $repositories {
+		if {[file exists $repo/xsd]} {
+			append xsd_inc "$repo/xsd " }
+	}
+	# check configurations of init and its children
+	puts "checking configuration syntax"
+	check_config init [run_dir]/genode/config $init_xsd_file init $xsd_files $xsd_inc 0
+
 	run_boot_dir $binaries
 }
 
+
 # set expect match-buffer size
 match_max -d 40000
+
 
 ##
 # Execute Genode
@@ -161,15 +293,23 @@ proc run_genode_until {{wait_for_re forever} {timeout_value 0} {running_spawn_id
 	set retry 3
 	while { $retry != 0 } {
 
-		run_power_on
+		#
+		# Depending an the used run module, a reset can include
+		# shutting the power off and turning it on again.
+		#
+		if (![run_power_cycle]) {
+			puts "Power cycle step failed, retry."
+			sleep 3
+			incr retry -1;
+			continue
+		}
 
 		if {![run_load]} {
 			puts "Load step failed, retry."
 
 			# kill the spawned load process if there is one
 			if {[load_spawn_id] != -1} {
-				set pid [exp_pid -i [load_spawn_id]]
-				exec kill -9 $pid
+				kill_spawned [load_spawn_id]
 			}
 
 			incr retry -1;
@@ -187,6 +327,17 @@ proc run_genode_until {{wait_for_re forever} {timeout_value 0} {running_spawn_id
 
 	puts stderr "Boot process failed 3 times in series. I give up!";
 	exit -1;
+}
+
+
+##
+# "Safely" kill spawned process
+#
+proc kill_spawned {spawn_id} {
+	set pid [exp_pid -i $spawn_id]
+	close -i $spawn_id
+	exec kill -9 $pid
+	wait -i $spawn_id
 }
 
 
@@ -335,6 +486,7 @@ proc get_cmd_arg { arg_name default_value } {
 	return $result
 }
 
+
 ##
 # Return command-line argument value
 #
@@ -360,6 +512,7 @@ set run_name         [get_cmd_arg --name       "noname"]
 set genode_dir       [get_cmd_arg --genode-dir       ""]
 set cross_dev_prefix [get_cmd_arg --cross-dev-prefix ""]
 set specs            [get_cmd_arg --specs            ""]
+set board_var        [get_cmd_arg --board            ""]
 set repositories     [get_cmd_arg --repositories     ""]
 
 
@@ -379,18 +532,41 @@ proc have_spec {spec} { global specs; return [expr [lsearch $specs $spec] != -1]
 # Return true if specified program is installed
 #
 proc have_installed {program} {
-	if {[catch { exec which $program }]} { return false; }
-	return true
+	if {[catch { exec which $program }] == 0} { return true; }
+	if {[catch { exec which "/sbin/$program" }] == 0} { return true; }
+	if {[catch { exec which "/usr/sbin/$program" }] == 0} { return true; }
+	if {[catch { exec which "/usr/local/bin/$program" }] == 0} { return true; }
+
+	return false;
 }
 
 
 ##
-# Return true if specified program is installed on the host platform
+# Check if a shell command is installed
 #
-proc requires_installation_of {program} {
-	if {![have_installed $program]} {
-		puts "Run script aborted because $program is not installed"; exit
+# \param  command  name of the command to search
+#
+# \return absolute path of command if found, or exists if not
+#
+proc installed_command {command} {
+	if { [catch {set path [exec which $command]}] == 0} {
+		return $path
 	}
+
+	set dir { /sbin /usr/sbin /usr/local/bin }
+
+	foreach location $dir  {
+		append location / $command
+
+		if { [file exists $location] == 1} {
+			return $location
+		}
+	}
+
+	puts stderr "Error: '$command' command could be not found. Please make sure to install the"
+	puts stderr "        packet containing '$command', or make it available in your PATH variable.\n"
+
+	exit 1
 }
 
 
@@ -443,15 +619,38 @@ proc kernel_location_from_config_file { config_file default_location } {
 
 
 ##
-# Copy the specified binaries from the 'bin/' directory to the run
-# directory and try to strip executables.
+# Return name of kernel-specific binary for a given generic name
 #
-proc copy_and_strip_genode_binaries_to_run_dir { binaries } {
+# The boot_dir plugin may provide functions named 'binary_name_<binary>'
+# where '<binary>' stands for a generic name like "timer" or "nic". The
+# function returns the name of the binary to integrate into the boot
+# directory under the name '<binary>'.
+#
+# If no such function exists, it returns the argument as is. This is the
+# case for regular binaries that appear in the boot directory under their
+# original name.
+#
+proc kernel_specific_binary { binary {silent ""} } {
+
+	regsub -all {\.} $binary "_" function_suffix
+	set function_name "binary_name_$function_suffix"
+
+	if {[info procs $function_name] == $function_name} {
+		set binary_name [$function_name]
+		if {$silent != "silent"} {
+			puts "using '$binary_name' as '$binary'"
+		}
+		return [$function_name]
+	}
+
+	return $binary
+}
+
+
+proc copy_genode_binaries_to_run_dir { binaries } {
 
 	foreach binary $binaries {
-		exec cp bin/$binary [run_dir]/genode
-		catch {
-			exec [cross_dev_prefix]strip [run_dir]/genode/$binary || true }
+		file copy -force bin/[kernel_specific_binary $binary] [run_dir]/genode/$binary
 	}
 }
 
@@ -491,18 +690,34 @@ proc wait_for_output { wait_for_re timeout_value running_spawn_id } {
 
 
 ##
+# Remove 'genode' directory in 'run_dir' unless --preserve-genode-dir is present
+# in RUN_OPT
+#
+proc remove_genode_dir { } {
+	global env
+
+	if {![get_cmd_switch --preserve-genode-dir]} {
+		exec rm -rf [run_dir]/genode
+	}
+}
+
+
+##
 ## Fall-back implementations of all run module procedures
 ##
 
 ##
 # Dummy boot_string procedure
+#
 proc run_boot_string { } { return ""; }
+
 
 ##
 # Fall-back boot_dir module
 #
 # If this function is called someone forgot to include an appropriate boot_dir
 # module. So, we exit with an error.
+#
 proc run_boot_dir { binaries } {
 	puts stderr "Error: boot_dir module missing, e.g., '--include boot_dir/hw'"
 	exit 1
@@ -542,6 +757,39 @@ proc run_power_off { } { return true; }
 
 
 ##
+# Default power cycle fallback procedure
+#
+proc run_power_cycle { } {
+	#
+	# On targets that are directly connected to a socket,
+	# turn the socket off and on again. On targets that
+	# use a module were that is not required, e.g. softreset,
+	# power_off is a NOP. Note, we give the target some time
+	# to effectively drain energy before switching it on again.
+	#
+	run_power_off
+	sleep 1
+	return [run_power_on]
+}
+
+
+##
+# Default core linker options
+#
+proc core_ld_opts { } {
+	set ret { -Wl,-T }
+	lappend ret "-Wl,[genode_dir]/repos/base/src/ld/genode.ld"
+	return $ret
+}
+
+
+##
+# Default core link address
+#
+proc core_link_address { } { return "0x01000000" }
+
+
+##
 # Check if a specific file is included
 #
 proc have_include { name } {
@@ -576,11 +824,26 @@ proc exit {{status 0}} {
 #
 proc terminal { } {
 	global env
-	if {[info exists env(COLORTERM)]} {
-		return $env(COLORTERM)
-	}
-	return $env(TERM)
+	return x-terminal-emulator
 }
+
+
+##
+# Return the board to build for
+#
+proc board { } {
+	global board_var
+	if {$board_var eq ""} {
+		puts "Unknown platform no BOARD variable set"
+		exit 1
+	}
+	return $board_var
+}
+
+##
+# Return whether the board equals to the given string
+#
+proc have_board {board} { global board_var; return [expr {$board_var} eq {$board}] }
 
 
 ##
@@ -590,40 +853,191 @@ proc gdb { } {
 	if {[have_installed "[cross_dev_prefix]gdb"]} {
 		return "[cross_dev_prefix]gdb" }
 
-	if {[have_installed gdb]} {
-		return "gdb" }
-
-	requires_installation_of gdb
+	return [installed_command gdb]
 }
 
 
 ##
-# Check if a shell command is installed
+# Generate assembly code aggregating boot-module data from specified files.
 #
-# \param  command  name of the command to search
-#
-# \return absolute path of command if found, or exists if not
-#
-proc check_installed {command} {
-	if { [catch {set path [exec which $command]}] == 0} {
-		return $path
+proc generate_boot_modules_asm {path modules} {
+
+	# architecture dependent definitions
+	if {[have_spec "64bit"]} { set address_type ".quad"
+	} else                   { set address_type ".long" }
+
+	# header
+	set asm_src {}
+	append asm_src ".set MIN_PAGE_SIZE_LOG2, 12\n"
+	append asm_src ".set DATA_ACCESS_ALIGNM_LOG2, 3\n"
+	append asm_src "\n"
+	append asm_src ".section .data\n"
+	append asm_src "\n"
+	append asm_src ".p2align DATA_ACCESS_ALIGNM_LOG2\n"
+	append asm_src ".global _boot_modules_headers_begin\n"
+	append asm_src "_boot_modules_headers_begin:\n"
+	append asm_src "\n"
+
+	# module list
+	set i 0
+	foreach module $modules {
+		incr i
+		append asm_src "${address_type} _boot_module_${i}_name\n"
+		append asm_src "${address_type} _boot_module_${i}_begin\n"
+		append asm_src "${address_type} _boot_module_${i}_end -"
+		append asm_src " _boot_module_${i}_begin\n"
+		append asm_src "\n"
+	}
+	append asm_src ".global _boot_modules_headers_end\n"
+	append asm_src "_boot_modules_headers_end:\n"
+	append asm_src "\n"
+
+	# module names
+	set i 0
+	foreach module $modules {
+	        incr i
+		append asm_src ".p2align DATA_ACCESS_ALIGNM_LOG2\n"
+		append asm_src "_boot_module_${i}_name:\n"
+		append asm_src ".string \"${module}\"\n"
+		append asm_src ".byte 0\n"
+		append asm_src "\n"
 	}
 
-	set dir { /sbin /usr/sbin /usr/local/bin }
+	# header end
+	append asm_src ".section .data.boot_modules_binaries\n"
+	append asm_src "\n"
+	append asm_src ".global _boot_modules_binaries_begin\n"
+	append asm_src "_boot_modules_binaries_begin:\n"
+	append asm_src "\n"
 
-	foreach location $dir  {
-		append location / $command
-
-		if { [file exists $location] == 1} {
-			return $location
-		}
+	# module data
+	set i 0
+	foreach module $modules {
+		incr i
+		append asm_src ".p2align MIN_PAGE_SIZE_LOG2\n"
+		append asm_src "_boot_module_${i}_begin:\n"
+		append asm_src ".incbin \"${path}/${module}\"\n"
+		append asm_src "_boot_module_${i}_end:\n"
+		append asm_src "\n"
 	}
 
-	puts stderr "Error: '$command' command could be not found. Please make sure to install the"
-	puts stderr "        packet containing '$command', or make it available in your PATH variable.\n"
+	append asm_src ".p2align MIN_PAGE_SIZE_LOG2\n"
+	append asm_src ".global _boot_modules_binaries_end\n"
+	append asm_src "_boot_modules_binaries_end:\n"
 
-	exit 1
+	return $asm_src
 }
+
+
+##
+# Link core image containing given modules
+#
+proc build_core {lib modules target link_address} {
+
+	# generate assembly code aggregating the modules data
+	set asm_src [generate_boot_modules_asm [run_dir]/genode $modules]
+
+	# architecture dependent definitions
+	set arch {}
+	if {[have_spec "x86_64"]} { set arch { -m64 -mcmodel=large } }
+	if {[have_spec "x86_32"]} { set arch -m32 }
+
+	# determine the libgcc
+	set libgcc [exec [cross_dev_prefix]gcc -print-libgcc-file-name {*}$arch]
+
+	# compile the boot modules into one object file
+	exec [cross_dev_prefix]gcc {*}$arch -c -x assembler -o [run_dir].boot_modules.o - << $asm_src
+
+	# link final image
+	exec [cross_dev_prefix]g++ {*}$arch -nostdlib {*}[core_ld_opts] \
+	                           -Wl,-z -Wl,max-page-size=0x1000 \
+	                           -Wl,-Ttext=$link_address -Wl,-gc-sections \
+	                           -Wl,-nostdlib -Wl,--whole-archive -Wl,--start-group \
+	                           $lib [run_dir].boot_modules.o -Wl,--no-whole-archive \
+	                           -Wl,--end-group $libgcc -o $target
+}
+
+
+##
+# Return kernel-specific files to be excluded from the core image
+#
+proc kernel_files { } { return { } }
+
+
+##
+# Generate bootable core image containing all boot-modules
+#
+proc build_core_image { modules } {
+
+	set core_obj [kernel_specific_binary core.o]
+
+	# replace 'core' with actual core-object name in 'modules' list
+	if {[lsearch $modules "core"] != -1} {
+		set idx [lsearch $modules "core"]
+		set modules [lreplace $modules $idx $idx]
+		lappend modules $core_obj
+	}
+
+	copy_genode_binaries_to_run_dir $modules
+
+	# create core binary without modules for debugging
+	if {[file exists debug/$core_obj]} {
+		build_core debug/$core_obj {} [run_dir].core [core_link_address]
+	}
+
+	# determine modules to be incorporated into the core image
+	set modules [glob -nocomplain -tails -directory [run_dir]/genode/ *]
+	set excluded_modules [kernel_files]
+	lappend excluded_modules $core_obj
+	foreach excluded $excluded_modules {
+		set modules [lsearch -inline -not -all $modules $excluded] }
+
+	# check syntax of all boot modules named *.config
+	foreach file [glob -nocomplain [run_dir]/genode/*.config] {
+		check_xml_syntax $file }
+
+	# create core binary containing the boot modules
+	build_core [run_dir]/genode/$core_obj $modules [run_dir]/image.elf [core_link_address]
+	exec [cross_dev_prefix]strip [run_dir]/image.elf
+
+	# Save config part of the image.elf for easy inspection
+	exec cp -f [run_dir]/genode/config [run_dir].config
+}
+
+
+proc build_initrd { modules } {
+
+	copy_genode_binaries_to_run_dir $modules
+
+	set modules [glob -nocomplain -tails -directory [run_dir]/genode/ *]
+	set excluded_modules [kernel_files]
+
+	foreach file [glob -nocomplain [run_dir]/genode/*.config] {
+		check_xml_syntax $file }
+
+	exec cp -f [run_dir]/genode/config [run_dir].config
+
+	set here [pwd]
+	cd [run_dir]
+	puts "generating initrd"
+	exec cp genode/initramfs init
+	exec mkdir tmp
+	exec mkdir dev
+	set files "init\ntmp\ndev\ngenode\n"
+	append files [exec find genode -type f,l -printf "genode/%f\n"]
+	exec -ignorestderr echo $files | [installed_command cpio] -o -L -H newc > initrd
+
+	#workaround because cpio fails to compress broken links sometimes
+	exec touch dev/platform_info
+	cd genode
+	exec ln -s ../dev/platform_info platform_info
+	cd ..
+	exec -ignorestderr echo "genode/platform_info" | [installed_command cpio] -o -A -H newc -O initrd
+	cd ${here}
+}
+
+source [genode_dir]/tool/run/depot.inc
+source [genode_dir]/tool/run/qemu.inc
 
 
 ##
@@ -649,14 +1063,15 @@ foreach include_name [get_cmd_arg --include ""] {
 		continue
 	}
 
-	# if it is relative, check run modules
-	set run_path [genode_dir]/tool/run
-	set dir { etc }
-	lappend dir $run_path
+	# if it is relative, check repositories and tool directory for run modules
+	set search_dirs {}
+	foreach rep_dir $repositories {
+		lappend search_dirs [file join $rep_dir tool run] }
+	lappend search_dirs [genode_dir]/tool/run
 
 	set found 0
-	foreach location $dir {
-		set include_file $location/$include_name
+	foreach dir $search_dirs {
+		set include_file $dir/$include_name
 		if {[file exists $include_file] == 1} {
 			puts "including $include_file"
 			lappend include_list $include_name
@@ -664,7 +1079,6 @@ foreach include_name [get_cmd_arg --include ""] {
 
 			set found 1
 			break
-		} else {
 		}
 	}
 

@@ -5,16 +5,15 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <rm_session/rm_session.h>
-#include <ram_session/ram_session.h>
-#include <base/printf.h>
+#include <base/ram_allocator.h>
 #include <base/thread.h>
 
 /* base-internal includes */
@@ -43,10 +42,9 @@ class Stack_area_region_map : public Genode::Region_map
 		/**
 		 * Attach backing store to stack area
 		 */
-		Local_addr attach(Genode::Dataspace_capability ds_cap,
-		                  Genode::size_t size, Genode::off_t offset,
-		                  bool use_local_addr, Local_addr local_addr,
-		                  bool executable)
+		Local_addr attach(Genode::Dataspace_capability, Genode::size_t size,
+		                  Genode::off_t, bool, Local_addr local_addr, bool,
+		                  bool) override
 		{
 			using namespace Genode;
 
@@ -64,53 +62,46 @@ class Stack_area_region_map : public Genode::Region_map
 			return local_addr;
 		}
 
-		void detach(Local_addr local_addr) {
-			PWRN("stack area detach from 0x%p - not implemented", (void *)local_addr); }
+		void detach(Local_addr local_addr) override
+		{
+			Genode::warning("stack area detach from ", (void*)local_addr,
+			                " - not implemented");
+		}
 
-		void fault_handler(Genode::Signal_context_capability) { }
+		void fault_handler(Genode::Signal_context_capability) override { }
 
-		State state() { return State(); }
+		State state() override { return State(); }
 
-		Genode::Dataspace_capability dataspace() {
+		Genode::Dataspace_capability dataspace() override {
 			return Genode::Dataspace_capability(); }
 };
 
 
-class Stack_area_ram_session : public Genode::Ram_session
+struct Stack_area_ram_allocator : Genode::Ram_allocator
 {
-	public:
+	Genode::Ram_dataspace_capability alloc(Genode::size_t,
+	                                       Genode::Cache_attribute) override {
+		return Genode::Ram_dataspace_capability(); }
 
-		Genode::Ram_dataspace_capability alloc(Genode::size_t size,
-		                                       Genode::Cache_attribute) {
-			return Genode::Ram_dataspace_capability(); }
+	void free(Genode::Ram_dataspace_capability) override { }
 
-		void free(Genode::Ram_dataspace_capability) { }
-
-		int ref_account(Genode::Ram_session_capability) { return 0; }
-
-		int transfer_quota(Genode::Ram_session_capability, Genode::size_t) { return 0; }
-
-		size_t quota() { return 0; }
-
-		size_t used() { return 0; }
+	Genode::size_t dataspace_size(Genode::Ram_dataspace_capability) const override { return 0; }
 };
 
 
 /**
  * Return single instance of the stack-area RM and RAM session
  */
-namespace Genode {
 
-	Region_map  *env_stack_area_region_map;
-	Ram_session *env_stack_area_ram_session;
+Genode::Region_map    *Genode::env_stack_area_region_map;
+Genode::Ram_allocator *Genode::env_stack_area_ram_allocator;
 
-	void init_stack_area()
-	{
-		static Stack_area_region_map rm_inst;
-		env_stack_area_region_map = &rm_inst;
+void Genode::init_stack_area()
+{
+	static Stack_area_region_map rm_inst;
+	env_stack_area_region_map = &rm_inst;
 
-		static Stack_area_ram_session ram_inst;
-		env_stack_area_ram_session = &ram_inst;
-	}
+	static Stack_area_ram_allocator ram_inst;
+	env_stack_area_ram_allocator = &ram_inst;
 }
 

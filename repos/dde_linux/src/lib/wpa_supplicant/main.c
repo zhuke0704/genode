@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /*
@@ -30,13 +30,13 @@
 /* local includes */
 #include "includes.h"
 #include "common.h"
+#include "eloop.h"
 #include "wpa_supplicant_i.h"
+#include "driver_i.h"
+#include "scan.h"
 
 
-static char const *conf_file = "/config/wpa_supplicant.conf";
-
-
-int wpa_main(int debug_msg)
+int wpa_main(void)
 {
 	struct wpa_interface iface;
 	int exitcode = 0;
@@ -45,7 +45,9 @@ int wpa_main(int debug_msg)
 
 	memset(&params, 0, sizeof(params));
 
-	params.wpa_debug_level = debug_msg ? MSG_DEBUG : MSG_INFO;
+	// TODO use CTRL interface for setting debug level
+	params.wpa_debug_level = 1 ? MSG_DEBUG : MSG_INFO;
+	params.ctrl_interface = "GENODE";
 
 	global = wpa_supplicant_init(&params);
 	if (global == NULL)
@@ -54,9 +56,10 @@ int wpa_main(int debug_msg)
 	memset(&iface, 0, sizeof(iface));
 
 	iface.ifname   = "wlan0";
-	iface.confname = conf_file;
+	iface.confname = 0;
+	iface.ctrl_interface = "GENODE";
 
-	if (wpa_supplicant_add_iface(global, &iface) == NULL)
+	if (wpa_supplicant_add_iface(global, &iface, NULL) == NULL)
 		exitcode = -1;
 
 	if (exitcode == 0)
@@ -65,25 +68,4 @@ int wpa_main(int debug_msg)
 	wpa_supplicant_deinit(global);
 
 	return exitcode;
-}
-
-
-void eloop_handle_signal(int);
-void wpa_conf_reload(void)
-{
-	/* (ab)use POSIX signal to trigger reloading the conf file */
-	eloop_handle_signal(SIGHUP);
-}
-
-
-int wpa_write_conf(char const *buffer, size_t len)
-{
-	int fd = open(conf_file, O_TRUNC|O_WRONLY);
-	if (fd == -1)
-		return -1;
-
-	ssize_t n = write(fd, buffer, len);
-	close(fd);
-
-	return n > 0 ? 0 : -1;
 }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REPORT_ROM__ROM_SERVICE_H_
@@ -20,7 +20,6 @@
 #include <rom_session/rom_session.h>
 #include <root/component.h>
 #include <report_rom/rom_registry.h>
-#include <os/session_policy.h>
 
 namespace Rom {
 	class Session_component;
@@ -36,6 +35,9 @@ class Rom::Session_component : public Genode::Rpc_object<Genode::Rom_session>,
 {
 	private:
 
+		Genode::Ram_allocator &_ram;
+		Genode::Region_map    &_rm;
+
 		Registry_for_reader &_registry;
 
 		Genode::Session_label const _label;
@@ -44,13 +46,12 @@ class Rom::Session_component : public Genode::Rpc_object<Genode::Rom_session>,
 
 		Readable_module &_init_module(Genode::Session_label const &label)
 		{
-			try {
-				return _registry.lookup(*this, label.string()); }
+			try { return _registry.lookup(*this, label.string()); }
 			catch (Registry_for_reader::Lookup_failed) {
-				throw Genode::Root::Invalid_args(); }
+				throw Genode::Service_denied(); }
 		}
 
-		Lazy_volatile_object<Genode::Attached_ram_dataspace> _ds;
+		Constructible<Genode::Attached_ram_dataspace> _ds { };
 
 		size_t _content_size = 0;
 
@@ -60,7 +61,7 @@ class Rom::Session_component : public Genode::Rpc_object<Genode::Rom_session>,
 		 */
 		bool _valid = false;
 
-		Genode::Signal_context_capability _sigh;
+		Genode::Signal_context_capability _sigh { };
 
 		void _notify_client()
 		{
@@ -70,9 +71,11 @@ class Rom::Session_component : public Genode::Rpc_object<Genode::Rom_session>,
 
 	public:
 
-		Session_component(Registry_for_reader &registry,
+		Session_component(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+		                  Registry_for_reader &registry,
 		                  Genode::Session_label const &label)
 		:
+			_ram(ram), _rm(rm),
 			_registry(registry), _label(label), _module(_init_module(label))
 		{ }
 
@@ -89,7 +92,7 @@ class Rom::Session_component : public Genode::Rpc_object<Genode::Rom_session>,
 
 				/* replace dataspace by new one */
 				/* XXX we could keep the old dataspace if the size fits */
-				_ds.construct(env()->ram_session(), _module.size());
+				_ds.construct(_ram, _rm, _module.size());
 
 				/* fill dataspace content with report contained in module */
 				_content_size =
@@ -161,6 +164,7 @@ class Rom::Root : public Genode::Root_component<Session_component>
 {
 	private:
 
+		Genode::Env         &_env;
 		Registry_for_reader &_registry;
 
 	protected:
@@ -170,17 +174,17 @@ class Rom::Root : public Genode::Root_component<Session_component>
 			using namespace Genode;
 
 			return new (md_alloc())
-				Session_component(_registry, Session_label(args));
+				Session_component(_env.ram(), _env.rm(), _registry, label_from_args(args));
 		}
 
 	public:
 
-		Root(Server::Entrypoint   &ep,
+		Root(Genode::Env          &env,
 		     Genode::Allocator    &md_alloc,
 		     Registry_for_reader  &registry)
 		:
-			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
-			_registry(registry)
+			Genode::Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _registry(registry)
 		{ }
 };
 

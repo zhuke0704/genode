@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _FRAMEBUFFER_WINDOW_H_
@@ -32,6 +32,12 @@ class Framebuffer_window : public Scout::Window
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Framebuffer_window(Framebuffer_window const &);
+		Framebuffer_window &operator = (Framebuffer_window const &);
+
 		/**
 		 * Constants
 		 */
@@ -40,10 +46,10 @@ class Framebuffer_window : public Scout::Window
 		/**
 		 * Widgets
 		 */
-		Scout::Titlebar<PT>              _titlebar;
-		Scout::Sky_texture<PT, 512, 512> _bg_texture;
-		int                              _bg_offset;
-		Scout::Fade_icon<PT, 32, 32>     _sizer;
+		Scout::Titlebar<PT>              _titlebar   { };
+		Scout::Sky_texture<PT, 512, 512> _bg_texture { };
+		int                              _bg_offset  { 0 };
+		Scout::Fade_icon<PT, 32, 32>     _sizer      { };
 		Scout::Element                  *_content;
 		bool                             _config_alpha;
 		bool                             _config_resize_handle;
@@ -57,7 +63,7 @@ class Framebuffer_window : public Scout::Window
 		Framebuffer_window(Scout::Graphics_backend &gfx_backend,
 		                   Scout::Element          *content,
 		                   Scout::Point             position,
-		                   Scout::Area              size,
+		                   Scout::Area              /* size */,
 		                   Scout::Area              max_size,
 		                   char              const *name,
 		                   bool                     config_alpha,
@@ -68,7 +74,7 @@ class Framebuffer_window : public Scout::Window
 			              Scout::Area(content->min_size().w() + 2,
 			                          content->min_size().h() + 1 + _TH),
 			              max_size, false),
-			_bg_offset(0), _content(content), _config_alpha(config_alpha),
+			_content(content), _config_alpha(config_alpha),
 			_config_resize_handle(config_resize_handle),
 			_config_decoration(config_decoration)
 		{
@@ -135,7 +141,7 @@ class Framebuffer_window : public Scout::Window
 		/**
 		 * Move window to new position
 		 */
-		void vpos(int x, int y)
+		void vpos(int x, int y) override
 		{
 			Window::vpos(x, y);
 			format(_size);
@@ -157,7 +163,7 @@ class Framebuffer_window : public Scout::Window
 		/**
 		 * Window interface
 		 */
-		void format(Scout::Area size)
+		void format(Scout::Area size) override
 		{
 			using namespace Scout;
 
@@ -208,7 +214,7 @@ class Framebuffer_window : public Scout::Window
 		/**
 		 * Element interface
 		 */
-		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position)
+		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position) override
 		{
 			using namespace Scout;
 

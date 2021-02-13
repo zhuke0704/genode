@@ -5,24 +5,22 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/log.h>
+#include <base/buffered_output.h>
 
 /* base-internal includes */
 #include <base/internal/unmanaged_singleton.h>
-#include <base/internal/output.h>
 #include <base/internal/raw_write_string.h>
 
-using namespace Genode;
 
-
-Output &Raw::_output()
+Genode::Output &Genode::Raw::_output()
 {
 	struct Write_fn { void operator () (char const *s) { raw_write_string(s); } };
 

@@ -6,14 +6,15 @@
  */
 
 /*
- * Copyright (C) 2008-2016 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <base/component.h>
 #include <base/log.h>
+#include <base/heap.h>
 #include <root/component.h>
 #include <hello_session/hello_session.h>
 #include <base/rpc_server.h>
@@ -27,10 +28,10 @@ namespace Hello {
 
 struct Hello::Session_component : Genode::Rpc_object<Session>
 {
-	void say_hello() {
+	void say_hello() override {
 		Genode::log("I am here... Hello."); }
 
-	int add(int a, int b) {
+	int add(int a, int b) override {
 		return a + b; }
 };
 
@@ -41,7 +42,7 @@ class Hello::Root_component
 {
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *) override
 		{
 			Genode::log("creating hello session");
 			return new (md_alloc()) Session_component();
@@ -80,9 +81,6 @@ struct Hello::Main
 		env.parent().announce(env.ep().manage(root));
 	}
 };
-
-
-Genode::size_t Component::stack_size() { return 64*1024; }
 
 
 void Component::construct(Genode::Env &env)

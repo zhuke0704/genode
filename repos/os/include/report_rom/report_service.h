@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REPORT_ROM__REPORT_SERVICE_H_
@@ -20,6 +20,7 @@
 #include <root/component.h>
 #include <util/print_lines.h>
 #include <report_rom/rom_registry.h>
+#include <base/log.h>
 
 
 namespace Report {
@@ -44,26 +45,25 @@ struct Report::Session_component : Genode::Rpc_object<Session>, Rom::Writer
 
 		Rom::Module &_create_module(Rom::Module::Name const &name)
 		{
-			try {
-				return _registry.lookup(*this, name);
-			} catch (...) {
-				throw Genode::Root::Invalid_args();
-			}
+			try { return _registry.lookup(*this, name); }
+			catch (...) { throw Genode::Service_denied(); }
 		}
 
 		static void _log_lines(char const *string, size_t len)
 		{
 			Genode::print_lines<200>(string, len,
-			                         [&] (char const *line) { PLOG("  %s", line); });
+			                         [&] (char const *line)
+			                         { Genode::log("  ", line); });
 		}
 
 	public:
 
-		Session_component(Genode::Session_label const &label, size_t buffer_size,
+		Session_component(Genode::Env &env,
+		                  Genode::Session_label const &label, size_t buffer_size,
 		                  Rom::Registry_for_writer &registry, bool &verbose)
 		:
 			_registry(registry), _label(label),
-			_ds(Genode::env()->ram_session(), buffer_size),
+			_ds(env.ram(), env.rm(), buffer_size),
 			_module(_create_module(label.string())),
 			_verbose(verbose)
 		{ }
@@ -85,7 +85,7 @@ struct Report::Session_component : Genode::Rpc_object<Session>, Rom::Writer
 			length = Genode::min(length, _ds.size());
 
 			if (_verbose) {
-				PLOG("report '%s'", _module.name().string());
+				Genode::log("report '", _module.name(), "'");
 				_log_lines(_ds.local_addr<char>(), length);
 			}
 
@@ -102,6 +102,7 @@ struct Report::Root : Genode::Root_component<Session_component>
 {
 	private:
 
+		Genode::Env              &_env;
 		Rom::Registry_for_writer &_rom_registry;
 		bool                     &_verbose;
 
@@ -111,24 +112,42 @@ struct Report::Root : Genode::Root_component<Session_component>
 		{
 			using namespace Genode;
 
+			Session_label const label = label_from_args(args);
+
+			size_t const ram_quota =
+				Arg_string::find_arg(args, "ram_quota").aligned_size();
+
 			/* read report buffer size from session arguments */
 			size_t const buffer_size =
-				Arg_string::find_arg(args, "buffer_size").ulong_value(0);
+				Arg_string::find_arg(args, "buffer_size").aligned_size();
+
+			size_t const session_size =
+				max(sizeof(Session_component), 4096U) + buffer_size;
+
+			if (ram_quota < session_size) {
+				Genode::error("insufficient ram donation from ", label.string());
+				throw Insufficient_ram_quota();
+			}
+
+			if (buffer_size == 0) {
+				Genode::error("zero-length report requested by ", label.string());
+				throw Service_denied();
+			}
 
 			return new (md_alloc())
-				Session_component(Genode::Session_label(args), buffer_size,
+				Session_component(_env, label, buffer_size,
 				                  _rom_registry, _verbose);
 		}
 
 	public:
 
-		Root(Server::Entrypoint       &ep,
+		Root(Genode::Env              &env,
 		     Genode::Allocator        &md_alloc,
 		     Rom::Registry_for_writer &rom_registry,
 		     bool                     &verbose)
 		:
-			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
-			_rom_registry(rom_registry), _verbose(verbose)
+			Genode::Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _rom_registry(rom_registry), _verbose(verbose)
 		{ }
 };
 

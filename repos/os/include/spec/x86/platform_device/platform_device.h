@@ -5,27 +5,33 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#pragma once
+#ifndef _INCLUDE__SPEC__X86__PLATFORM_DEVICE__PLATFORM_DEVICE_H_
+#define _INCLUDE__SPEC__X86__PLATFORM_DEVICE__PLATFORM_DEVICE_H_
 
 #include <base/rpc.h>
 #include <base/signal.h>
 #include <base/exception.h>
+#include <base/ram_allocator.h>
 #include <io_mem_session/io_mem_session.h>
 #include <io_port_session/capability.h>
 #include <irq_session/capability.h>
-#include <ram_session/ram_session.h>
 
 /* os includes */
 #include <platform_device/device.h>
 
+namespace Platform {
 
-namespace Platform { struct Device; }
+	struct Device;
+
+	using Genode::Out_of_caps;
+	using Genode::Out_of_ram;
+}
 
 
 struct Platform::Device : Platform::Abstract_device
@@ -34,16 +40,12 @@ struct Platform::Device : Platform::Abstract_device
 	 ** Exception types **
 	 *********************/
 
-	class Alloc_failed    : public Genode::Exception { };
-	class Quota_exceeded  : public Alloc_failed      { };
-
-
 	class Resource
 	{
 		private:
 
-			unsigned _bar;   /* content of base-address register */
-			unsigned _size;  /* resource size                    */
+			unsigned _bar  = 0;  /* content of base-address register */
+			unsigned _size = 0;  /* resource size                    */
 
 		public:
 
@@ -74,7 +76,7 @@ struct Platform::Device : Platform::Abstract_device
 			/**
 			 * Return base address of resource
 			 */
-			unsigned base()
+			unsigned base() const
 			{
 				/*
 				 * Mask out the resource-description bits of the base
@@ -87,12 +89,12 @@ struct Platform::Device : Platform::Abstract_device
 			/**
 			 * Return resource size in bytes
 			 */
-			unsigned size() { return _size; }
+			unsigned size() const { return _size; }
 
 			/**
 			 * Return true if resource is prefetchable memory
 			 */
-			bool prefetchable()
+			bool prefetchable() const
 			{
 				return type() == MEMORY && (_bar & (1 << 3));
 			}
@@ -100,7 +102,7 @@ struct Platform::Device : Platform::Abstract_device
 			/**
 			 * Return resource type
 			 */
-			Type type()
+			Type type() const
 			{
 				if (_bar == 0)
 					return INVALID;
@@ -161,6 +163,9 @@ struct Platform::Device : Platform::Abstract_device
 
 	/**
 	 * Write configuration space
+	 *
+	 * \throw Out_of_ram
+	 * \throw Out_of_caps
 	 */
 	virtual void config_write(unsigned char address, unsigned value,
 	                          Access_size size) = 0;
@@ -169,6 +174,9 @@ struct Platform::Device : Platform::Abstract_device
 	 * Query Io_port of specified bar
 	 *
 	 * \param id   index of according PCI resource of the device
+	 *
+	 * \throw Out_of_ram
+	 * \throw Out_of_caps
 	 */
 	virtual Genode::Io_port_session_capability io_port(Genode::uint8_t id) = 0;
 
@@ -235,14 +243,14 @@ struct Platform::Device : Platform::Abstract_device
 	GENODE_RPC(Rpc_config_read, unsigned, config_read,
 	           unsigned char, Access_size);
 	GENODE_RPC_THROW(Rpc_config_write, void, config_write,
-	                 GENODE_TYPE_LIST(Quota_exceeded),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 unsigned char, unsigned, Access_size);
 	GENODE_RPC(Rpc_irq, Genode::Irq_session_capability, irq, Genode::uint8_t);
 	GENODE_RPC_THROW(Rpc_io_port, Genode::Io_port_session_capability, io_port,
-	                 GENODE_TYPE_LIST(Quota_exceeded),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 Genode::uint8_t);
 	GENODE_RPC_THROW(Rpc_io_mem, Genode::Io_mem_session_capability, io_mem,
-	                 GENODE_TYPE_LIST(Quota_exceeded),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 Genode::uint8_t, Genode::Cache_attribute,
 	                 Genode::addr_t, Genode::size_t);
 
@@ -250,3 +258,5 @@ struct Platform::Device : Platform::Abstract_device
 	                     Rpc_class_code, Rpc_resource, Rpc_config_read,
 	                     Rpc_config_write, Rpc_irq, Rpc_io_port, Rpc_io_mem);
 };
+
+#endif /* _INCLUDE__SPEC__X86__PLATFORM_DEVICE__PLATFORM_DEVICE_H_ */

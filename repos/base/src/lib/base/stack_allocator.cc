@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2010-2014 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* base-internal includes */
@@ -45,14 +45,14 @@ addr_t Stack_allocator::idx_to_base(size_t idx)
 
 
 Stack *
-Stack_allocator::alloc(Thread *thread_base, bool main_thread)
+Stack_allocator::alloc(Thread *, bool main_thread)
 {
 	if (main_thread)
 		/* the main-thread stack is the first one */
 		return base_to_stack(stack_area_virtual_base());
 
 	try {
-		Lock::Guard _lock_guard(_threads_lock);
+		Mutex::Guard guard(_threads_mutex);
 		return base_to_stack(idx_to_base(_alloc.alloc()));
 	} catch(Bit_allocator<MAX_THREADS>::Out_of_indices) {
 		return 0;
@@ -64,7 +64,7 @@ void Stack_allocator::free(Stack *stack)
 {
 	addr_t const base = addr_to_base(stack);
 
-	Lock::Guard _lock_guard(_threads_lock);
+	Mutex::Guard guard(_threads_mutex);
 	_alloc.free(base_to_idx(base));
 }
 

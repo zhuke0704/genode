@@ -6,18 +6,19 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/thread.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/sleep.h>
 #include <base/env.h>
 #include <cpu_thread/client.h>
+#include <deprecated/env.h>
 
 /* base-internal includes */
 #include <base/internal/stack_allocator.h>
@@ -37,12 +38,13 @@ namespace Hw {
 
 void Thread::_init_platform_thread(size_t weight, Type type)
 {
-	if (!_cpu_session) { _cpu_session = env()->cpu_session(); }
+	_init_cpu_session_and_trace_control();
+
 	if (type == NORMAL) {
 
 		/* create server object */
 		addr_t const utcb = (addr_t)&_stack->utcb();
-		_thread_cap = _cpu_session->create_thread(env()->pd_session_cap(),
+		_thread_cap = _cpu_session->create_thread(env_deprecated()->pd_session_cap(),
 		                                          name(), _affinity,
 		                                          Weight(weight), utcb);
 		return;
@@ -58,19 +60,19 @@ void Thread::_init_platform_thread(size_t weight, Type type)
 	/* remap initial main-thread UTCB according to stack-area spec */
 	try { rm->attach_at(Hw::_main_thread_utcb_ds, utcb_new, utcb_size); }
 	catch(...) {
-		PERR("failed to re-map UTCB");
+		error("failed to re-map UTCB");
 		while (1) ;
 	}
 	/* adjust initial object state in case of a main thread */
 	native_thread().cap = Hw::_main_thread_cap;
-	_thread_cap = env()->parent()->main_thread_cap();
+	_thread_cap = main_thread_cap();
 }
 
 
 void Thread::_deinit_platform_thread()
 {
 	if (!_cpu_session)
-		_cpu_session = env()->cpu_session();
+		_cpu_session = env_deprecated()->cpu_session();
 
 	_cpu_session->kill_thread(_thread_cap);
 
@@ -92,15 +94,9 @@ void Thread::start()
 		             stack_virtual_size() - size - stack_area_virtual_base();
 		env_stack_area_region_map->attach_at(ds, dst, size);
 	} catch (...) {
-		PERR("failed to attach userland stack");
+		error("failed to attach userland stack");
 		sleep_forever();
 	}
 	/* start thread with its initial IP and aligned SP */
 	Cpu_thread_client(_thread_cap).start((addr_t)_thread_start, _stack->top());
-}
-
-
-void Thread::cancel_blocking()
-{
-	Cpu_thread_client(_thread_cap).cancel_blocking();
 }

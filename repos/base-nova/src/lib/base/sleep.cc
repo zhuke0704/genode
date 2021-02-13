@@ -6,15 +6,14 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/sleep.h>
-#include <base/lock.h>
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
@@ -28,7 +27,8 @@ void Genode::sleep_forever()
 	using namespace Nova;
 
 	Thread *myself = Thread::myself();
-	addr_t sem = myself ? myself->native_thread().exc_pt_sel + SM_SEL_EC : SM_SEL_EC;
+	addr_t sem = myself ? (addr_t)SM_SEL_EC + myself->native_thread().exc_pt_sel
+	                    : (addr_t)SM_SEL_EC;
 
 	while (1) {
 		if (Nova::sm_ctrl(sem, SEMAPHORE_DOWNZERO))

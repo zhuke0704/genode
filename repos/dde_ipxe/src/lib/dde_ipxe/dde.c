@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2010-2015 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* iPXE */
@@ -21,11 +21,10 @@
 #include <ipxe/settings.h>
 #include <ipxe/netdevice.h>
 #include <ipxe/timer2.h>
+
 /* local includes */
 #include <dde_support.h>
 #include "local.h"
-
-#define PDBG(fmt, ...) dde_printf(fmt "\n", ##__VA_ARGS__)
 
 
 /***************************
@@ -243,13 +242,7 @@ void adjust_pci_device ( struct pci_device *pci ) {
 
 	pci_read_config_word(pci, PCI_COMMAND, &pci_command);
 	new_command = pci_command | PCI_COMMAND_MASTER | PCI_COMMAND_MEM | PCI_COMMAND_IO;
-	if (pci_command != new_command) {
-		LOG("PCI BIOS has not enabled device " FMT_BUSDEVFN "! "
-		    "Updating PCI command %04x->%04x\n", PCI_BUS(pci->busdevfn),
-		    PCI_SLOT(pci->busdevfn), PCI_FUNC (pci->busdevfn),
-		    pci_command, new_command);
-		pci_write_config_word(pci, PCI_COMMAND, new_command);
-	}
+	pci_write_config_word(pci, PCI_COMMAND, new_command);
 
 	unsigned char pci_latency;
 	pci_read_config_byte ( pci, PCI_LATENCY_TIMER, &pci_latency);

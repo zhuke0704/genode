@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__NATIVE_THREAD_H_
@@ -17,10 +17,8 @@
 /* Genode includes */
 #include <base/stdint.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/types.h>
-} }
+/* base-internal includes */
+#include <base/internal/okl4.h>
 
 namespace Genode {
 

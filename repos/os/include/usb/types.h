@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__USB__TYPES_H_
 #define _INCLUDE__USB__TYPES_H_
 
 #include <base/stdint.h>
-#include <base/printf.h>
 
 namespace Usb {
 	struct Device_descriptor;
@@ -23,6 +22,7 @@ namespace Usb {
 	struct Interface_descriptor;
 	struct Endpoint_descriptor;
 	struct String;
+	struct Interface_extra;
 }
 
 namespace Usb {
@@ -73,6 +73,10 @@ struct Usb::String
 	void copy(unsigned len, void *from, Genode::Allocator *md_alloc)
 	{
 		length = len;
+
+		if (len == 0)
+			return;
+
 		string = (utf16_t *)md_alloc->alloc(length * sizeof(utf16_t));
 		Genode::memcpy(string, from, sizeof(utf16_t) * length);
 	}
@@ -108,7 +112,7 @@ struct Usb::String
 	void print()
 	{
 		char buffer[128];
-		Genode::printf("%s\n", to_char(buffer, 128));
+		Genode::log(Genode::Cstring(to_char(buffer, 128)));
 	}
 };
 
@@ -117,31 +121,31 @@ struct Usb::String
  */
 struct Usb::Device_descriptor
 {
-	Genode::uint8_t length;
-	Genode::uint8_t type = 0x1;
+	Genode::uint8_t  length = 0;
+	Genode::uint8_t  type   = 0x1;
 
-	Genode::uint16_t usb;                /* USB version in BCD (binary-coded decimal ) */
-	Genode::uint8_t  dclass;
-	Genode::uint8_t  dsubclass;
-	Genode::uint8_t  dprotocol;
-	Genode::uint8_t  max_packet_size;    /* of endpoint zero */
+	Genode::uint16_t usb             = 0;      /* USB version in BCD (binary-coded decimal ) */
+	Genode::uint8_t  dclass          = 0;
+	Genode::uint8_t  dsubclass       = 0;
+	Genode::uint8_t  dprotocol       = 0;
+	Genode::uint8_t  max_packet_size = 0;      /* of endpoint zero */
 
-	Genode::uint16_t vendor_id;
-	Genode::uint16_t product_id;
-	Genode::uint16_t device_release;     /* release number in BCD */
+	Genode::uint16_t vendor_id      = 0;
+	Genode::uint16_t product_id     = 0;
+	Genode::uint16_t device_release = 0;       /* release number in BCD */
 
-	Genode::uint8_t  manufactorer_index; /* index of string describing manufacturer */
-	Genode::uint8_t  product_index;
-	Genode::uint8_t  serial_number_index;
+	Genode::uint8_t  manufactorer_index  = 0;  /* index of string describing manufacturer */
+	Genode::uint8_t  product_index       = 0;
+	Genode::uint8_t  serial_number_index = 0;
 
-	Genode::uint8_t  num_configs;
+	Genode::uint8_t  num_configs = 0;
 
 	/**
 	 * Genode extensions (POD only)
 	 */
-	unsigned         bus;
-	unsigned         num;
-	unsigned         speed;
+	unsigned         bus   = 0;
+	unsigned         num   = 0;
+	unsigned         speed = 0;
 } __attribute__((packed));
 
 /**
@@ -149,22 +153,22 @@ struct Usb::Device_descriptor
  */
 struct Usb::Config_descriptor
 {
-	Genode::uint8_t  length;
-	Genode::uint8_t  type = 0x2;
+	Genode::uint8_t  length = 0;
+	Genode::uint8_t  type   = 0x2;
 
 	/*
 	 * Total length of data returned for this configuration. Includes the
 	 * combined length of all descriptors (configuration, interface, endpoint,
 	 * and class or vendor specific) returned for this configuration.
 	 */
-	Genode::uint16_t total_length;
-	Genode::uint8_t  num_interfaces;
+	Genode::uint16_t total_length   = 0;
+	Genode::uint8_t  num_interfaces = 0;
 
-	Genode::uint8_t  config_value; /* value used to set this configuration */
-	Genode::uint8_t  config_index; /* index of string descriptor */
+	Genode::uint8_t  config_value = 0; /* value used to set this configuration */
+	Genode::uint8_t  config_index = 0; /* index of string descriptor */
 
-	Genode::uint8_t  attributes;
-	Genode::uint8_t  max_power;    /* maximum power consumption */
+	Genode::uint8_t  attributes = 0;
+	Genode::uint8_t  max_power  = 0;    /* maximum power consumption */
 } __attribute__((packed));
 
 /**
@@ -172,19 +176,19 @@ struct Usb::Config_descriptor
  */
 struct Usb::Interface_descriptor
 {
-	Genode::uint8_t length;
-	Genode::uint8_t type = 0x4;
+	Genode::uint8_t length = 0;
+	Genode::uint8_t type   = 0x4;
 
-	Genode::uint8_t number;          /* interface number */
-	Genode::uint8_t alt_settings;    /* value used for setting alternate setting 
-	                                    using the 'number' field */
-	Genode::uint8_t num_endpoints;
+	Genode::uint8_t number       = 0;    /* interface number */
+	Genode::uint8_t alt_settings = 0;    /* value used for setting alternate setting 
+	                                        using the 'number' field */
+	Genode::uint8_t num_endpoints = 0;
 
-	Genode::uint8_t iclass;
-	Genode::uint8_t isubclass;
-	Genode::uint8_t iprotocol;
+	Genode::uint8_t iclass    = 0;
+	Genode::uint8_t isubclass = 0;
+	Genode::uint8_t iprotocol = 0;
 
-	Genode::uint8_t interface_index; /* index of string descriptor */
+	Genode::uint8_t interface_index = 0; /* index of string descriptor */
 
 	/**
 	 * Genode extensions (POD only)
@@ -192,19 +196,28 @@ struct Usb::Interface_descriptor
 	bool active = false;
 } __attribute__((packed));
 
+
+/**
+ * Vendor specific data
+ */
+struct Usb::Interface_extra
+{
+	Genode::uint8_t length;
+	Genode::uint8_t data[32];
+};
+
+
 /**
  * USB hardware endpoint descriptor
  */
 struct Usb::Endpoint_descriptor
 {
-	Genode::uint8_t length;
-	Genode::uint8_t type = 0x5;
-
-	Genode::uint8_t address;
-	Genode::uint8_t attributes;
-
-	Genode::uint16_t max_packet_size; /* for this endpoint */
-	Genode::uint8_t  polling_interval;
+	Genode::uint8_t  length           = 0;
+	Genode::uint8_t  type             = 0x5;
+	Genode::uint8_t  address          = 0;
+	Genode::uint8_t  attributes       = 0;
+	Genode::uint16_t max_packet_size  = 0;  /* for this endpoint */
+	Genode::uint8_t  polling_interval = 0;
 } __attribute__((packed));
 
 #endif /* _INCLUDE__USB__TYPES_H_ */

@@ -5,27 +5,27 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/lock.h>
 #include <linux_dataspace/client.h>
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
+#include <base/internal/parent_socket_handle.h>
+#include <base/internal/capability_space_tpl.h>
 
 /* local includes */
 #include "platform.h"
 #include "core_env.h"
-#include "server_socket_pair.h"
+#include "resource_path.h"
 
 /* Linux includes */
 #include <core_linux_syscalls.h>
-
 
 using namespace Genode;
 
@@ -73,27 +73,34 @@ static Pipe_semaphore _wait_for_exit_sem;  /* wakeup of '_wait_for_exit' */
 static bool           _do_exit = false;    /* exit condition */
 
 
-static void sigint_handler(int signum)
+static void sigint_handler(int)
 {
 	_do_exit = true;
 	_wait_for_exit_sem.up();
 }
 
 
-static void sigchld_handler(int signnum)
+static void sigchld_handler(int)
 {
 	_wait_for_exit_sem.up();
 }
 
 
 Platform::Platform()
-: _core_mem_alloc(nullptr)
+:
+	_core_mem_alloc(nullptr)
 {
+	/* make 'mmap' behave deterministically */
+	lx_disable_aslr();
+
+	/* increase maximum number of open file descriptors to the hard limit */
+	lx_boost_rlimit();
+
 	/* catch control-c */
-	lx_sigaction(LX_SIGINT, sigint_handler);
+	lx_sigaction(LX_SIGINT, sigint_handler, false);
 
 	/* catch SIGCHLD */
-	lx_sigaction(LX_SIGCHLD, sigchld_handler);
+	lx_sigaction(LX_SIGCHLD, sigchld_handler, false);
 
 	/* create resource directory under /tmp */
 	lx_mkdir(resource_path(), S_IRWXU);
@@ -126,7 +133,7 @@ void Platform::wait_for_exit()
 		 * '_exit' condition will be set.
 		 */
 		if (_do_exit)
-			return;
+			break;
 
 		/*
 		 * Reflect SIGCHLD as exception signal to the signal context of the CPU
@@ -143,36 +150,7 @@ void Platform::wait_for_exit()
 			Platform_thread::submit_exception(pid);
 		}
 	}
-}
-
-
-void Core_parent::exit(int exit_value)
-{
-	lx_exit_group(exit_value);
-}
-
-
-/*****************************
- ** Support for IPC library **
- *****************************/
-
-namespace Genode {
-
-	Socket_pair server_socket_pair()
-	{
-		return create_server_socket_pair(Thread::myself()->native_thread().tid);
-	}
-
-	void destroy_server_socket_pair(Socket_pair socket_pair)
-	{
-		/*
-		 * As entrypoints in core are never destructed, this function is only
-		 * called on IPC-client destruction. In this case, it's a no-op in core
-		 * as well as in Genode processes.
-		 */
-		if (socket_pair.server_sd != -1 || socket_pair.client_sd != -1)
-			PERR("%s called for IPC server which should never happen", __func__);
-	}
+	lx_exit_group(0);
 }
 
 
@@ -185,31 +163,14 @@ size_t Region_map_mmap::_dataspace_size(Capability<Dataspace> ds_cap)
 	if (!ds_cap.valid())
 		return Local_capability<Dataspace>::deref(ds_cap)->size();
 
-	/* use RPC if called from a different thread */
-	if (!core_env()->entrypoint()->is_myself()) {
-		/* release Region_map_mmap::_lock during RPC */
-		_lock.unlock();
-		Genode::size_t size = Dataspace_client(ds_cap).size();
-		_lock.lock();
-		return size;
-	}
-
 	/* use local function call if called from the entrypoint */
-	return core_env()->entrypoint()->apply(ds_cap, [] (Dataspace *ds) {
+	return core_env().entrypoint().apply(ds_cap, [] (Dataspace *ds) {
 		return ds ? ds->size() : 0; });
 }
 
 
 int Region_map_mmap::_dataspace_fd(Capability<Dataspace> ds_cap)
 {
-	if (!core_env()->entrypoint()->is_myself()) {
-		/* release Region_map_mmap::_lock during RPC */
-		_lock.unlock();
-		int socket = Linux_dataspace_client(ds_cap).fd().dst().socket;
-		_lock.lock();
-		return socket;
-	}
-
 	Capability<Linux_dataspace> lx_ds_cap = static_cap_cast<Linux_dataspace>(ds_cap);
 
 	/*
@@ -221,21 +182,13 @@ int Region_map_mmap::_dataspace_fd(Capability<Dataspace> ds_cap)
 	 * socket descriptor during the RPC handling). When later destroying the
 	 * dataspace, the descriptor would unexpectedly be closed again.
 	 */
-	return core_env()->entrypoint()->apply(lx_ds_cap, [] (Linux_dataspace *ds) {
-		return ds ? lx_dup(ds->fd().dst().socket) : -1; });
+	return core_env().entrypoint().apply(lx_ds_cap, [] (Linux_dataspace *ds) {
+		return ds ? lx_dup(Capability_space::ipc_cap_data(ds->fd()).dst.socket.value) : -1; });
 }
 
 
 bool Region_map_mmap::_dataspace_writable(Dataspace_capability ds_cap)
 {
-	if (!core_env()->entrypoint()->is_myself()) {
-		/* release Region_map_mmap::_lock during RPC */
-		_lock.unlock();
-		bool writable = Dataspace_client(ds_cap).writable();
-		_lock.lock();
-		return writable;
-	}
-
-	return core_env()->entrypoint()->apply(ds_cap, [] (Dataspace *ds) {
+	return core_env().entrypoint().apply(ds_cap, [] (Dataspace *ds) {
 		return ds ? ds->writable() : false; });
 }

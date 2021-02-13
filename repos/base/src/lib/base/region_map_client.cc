@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <region_map/client.h>
@@ -23,10 +23,10 @@ Region_map_client::Region_map_client(Capability<Region_map> cap)
 Region_map::Local_addr
 Region_map_client::attach(Dataspace_capability ds, size_t size, off_t offset,
                           bool use_local_addr, Local_addr local_addr,
-                          bool executable)
+                          bool executable, bool writeable)
 {
 	return call<Rpc_attach>(ds, size, offset, use_local_addr, local_addr,
-	                        executable);
+	                        executable, writeable);
 }
 
 

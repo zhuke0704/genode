@@ -5,23 +5,24 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_THREAD_H_
 #define _CORE__INCLUDE__PLATFORM_THREAD_H_
 
 /* Genode includes */
-#include <base/native_types.h>
+#include <base/native_capability.h>
 #include <base/thread_state.h>
+#include <base/trace/types.h>
 
 /* core includes */
 #include <pager.h>
 #include <platform_pd.h>
-#include <address_space.h>
+#include <assertion.h>
 
 /* Pistachio includes */
 namespace Pistachio {
@@ -42,33 +43,47 @@ inline unsigned long convert_native_thread_id_to_badge(Pistachio::L4_ThreadId_t 
 namespace Genode {
 
 	class Platform_pd;
-	class Platform_thread
+	class Platform_thread : Interface
 	{
 		private:
 
-			int                      _thread_id;      /* plain thread number */
-			Pistachio::L4_ThreadId_t _l4_thread_id;   /* L4 thread ID */
-			char                     _name[32];       /* thread name that will be
-			                                             registered at the kernel
-			                                             debugger */
-			Platform_pd             *_platform_pd;    /* protection domain thread
-			                                             is bound to */
-			unsigned                 _priority;       /* thread priority */
-			Pager_object            *_pager;
+			typedef Pistachio::L4_ThreadId_t L4_ThreadId_t;
 
-			Affinity::Location       _location;
+			/*
+			 * Noncopyable
+			 */
+			Platform_thread(Platform_thread const &);
+			Platform_thread &operator = (Platform_thread const &);
+
+			typedef String<32> Name;
+
+			int                _thread_id = THREAD_INVALID;
+			L4_ThreadId_t      _l4_thread_id = L4_nilthread;
+			Name         const _name;  /* thread name at kernel debugger */
+			Platform_pd       *_platform_pd = nullptr;
+			unsigned           _priority = 0;
+			Pager_object      *_pager = nullptr;
+			Affinity::Location _location;
 
 		public:
 
-			enum { THREAD_INVALID = -1 };       /* invalid thread number */
+			enum { THREAD_INVALID = -1 };
 			enum { DEFAULT_PRIORITY = 128 };
 
 			/**
 			 * Constructor
 			 */
-			Platform_thread(size_t, const char *name = 0, unsigned priority = 0,
-			                Affinity::Location = Affinity::Location(),
-			                addr_t utcb = 0, int thread_id = THREAD_INVALID);
+			Platform_thread(size_t, char const *name, unsigned priority,
+			                Affinity::Location location, addr_t)
+			:
+				_name(name), _priority(priority), _location(location)
+			{ }
+
+			/**
+			 * Constructor used for core-internal threads
+			 */
+			Platform_thread(char const *name)
+			: _name(name), _location(Affinity::Location()) { }
 
 			/**
 			 * Destructor
@@ -102,11 +117,6 @@ namespace Genode {
 			void resume();
 
 			/**
-			 * Cancel currently blocking operation
-			 */
-			void cancel_blocking();
-
-			/**
 			 * This thread is about to be bound
 			 *
 			 * \param thread_id     local thread ID
@@ -114,7 +124,7 @@ namespace Genode {
 			 * \param pd            platform pd, thread is bound to
 			 */
 			void bind(int thread_id, Pistachio::L4_ThreadId_t l4_thread_id,
-			          Platform_pd *pd);
+			          Platform_pd &pd);
 
 			/**
 			 * Unbind this thread
@@ -133,11 +143,6 @@ namespace Genode {
 			 */
 			Thread_state state();
 
-			/**
-			 * Return the address space to which the thread is bound
-			 */
-			Weak_ptr<Address_space> address_space();
-
 
 			/************************
 			 ** Accessor functions **
@@ -146,8 +151,15 @@ namespace Genode {
 			/**
 			 * Return/set pager
 			 */
-			Pager_object *pager() const { return _pager; }
-			void pager(Pager_object *pager) { _pager = pager; }
+			Pager_object &pager() const
+			{
+				if (_pager)
+					return *_pager;
+
+				ASSERT_NEVER_CALLED;
+			}
+
+			void pager(Pager_object &pager) { _pager = &pager; }
 
 			/**
 			 * Return identification of thread when faulting
@@ -168,12 +180,12 @@ namespace Genode {
 			/**
 			 * Set CPU quota of the thread to 'quota'
 			 */
-			void quota(size_t const quota) { /* not supported*/ }
+			void quota(size_t const) { /* not supported*/ }
 
 			/**
 			 * Return execution time consumed by the thread
 			 */
-			unsigned long long execution_time() const { return 0; }
+			Trace::Execution_time execution_time() const { return { 0, 0 }; }
 
 
 			/**********************************
@@ -182,7 +194,7 @@ namespace Genode {
 
 			int                      thread_id()        const { return _thread_id; }
 			Pistachio::L4_ThreadId_t native_thread_id() const { return _l4_thread_id; }
-			const char              *name()             const { return _name; }
+			Name                     name()             const { return _name; }
 
 			/* use only for core... */
 			void set_l4_thread_id(Pistachio::L4_ThreadId_t id) { _l4_thread_id = id; }

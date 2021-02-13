@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__NATIVE_THREAD_H_
@@ -17,12 +17,15 @@
 /* Genode includes */
 #include <base/stdint.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
+
+namespace Genode {
+
+	struct Platform_thread;
+	struct Native_thread;
 }
 
-namespace Genode { struct Native_thread; }
 
 struct Genode::Native_thread
 {

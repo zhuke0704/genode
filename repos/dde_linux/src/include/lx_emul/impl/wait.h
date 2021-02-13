@@ -5,23 +5,19 @@
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Linux kit includes */
 #include <lx_kit/scheduler.h>
 
 
-void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *w, int state)
+void prepare_to_wait(wait_queue_head_t *q, wait_queue_entry_t *, int)
 {
-	if (!q) {
-		PWRN("prepare_to_wait: wait_queue_head_t is 0, ignore, called from: %p",
-		    __builtin_return_address(0));
-		return;
-	}
+	if (!q) { return; }
 
 	Wait_list *list = static_cast<Wait_list *>(q->list);
 	Lx::Task *task = Lx::scheduler().current();
@@ -30,19 +26,15 @@ void prepare_to_wait(wait_queue_head_t *q, wait_queue_t *w, int state)
 }
 
 
-void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_t *w, int state)
+void prepare_to_wait_exclusive(wait_queue_head_t *q, wait_queue_entry_t *, int)
 {
-	prepare_to_wait(q, w, state);
+	prepare_to_wait(q, 0, 0);
 }
 
 
-void finish_wait(wait_queue_head_t *q, wait_queue_t *w)
+void finish_wait(wait_queue_head_t *q, wait_queue_entry_t *)
 {
-	if (!q) {
-		PWRN("finish_wait: wait_queue_head_t is 0, ignore, called from: %p",
-		    __builtin_return_address(0));
-		return;
-	}
+	if (!q) { return; }
 
 	Wait_list *list = static_cast<Wait_list *>(q->list);
 	Lx::Task *task = Lx::scheduler().current();

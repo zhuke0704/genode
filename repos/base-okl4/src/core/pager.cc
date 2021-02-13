@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* core includes */
 #include <ipc_pager.h>
@@ -21,13 +21,9 @@
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
-
-namespace Okl4 { extern "C" {
-#include <l4/message.h>
-#include <l4/ipc.h>
-#include <l4/schedule.h>
-#include <l4/kdebug.h>
-} }
+#include <base/internal/native_utcb.h>
+#include <base/internal/capability_space_tpl.h>
+#include <base/internal/okl4.h>
 
 static const bool verbose_page_fault = false;
 static const bool verbose_exception  = false;
@@ -42,11 +38,11 @@ using namespace Okl4;
 static inline void print_page_fault(L4_Word_t type, L4_Word_t addr, L4_Word_t ip,
                                     unsigned long badge)
 {
-	printf("page (%s%s%s) fault at fault_addr=%lx, fault_ip=%lx, from=%lx\n",
-	       type & L4_Readable   ? "r" : "-",
-	       type & L4_Writable   ? "w" : "-",
-	       type & L4_eXecutable ? "x" : "-",
-	       addr, ip, badge);
+	log("page (",
+	    type & L4_Readable   ? "r" : "-",
+	    type & L4_Writable   ? "w" : "-",
+	    type & L4_eXecutable ? "x" : "-",
+	    ") fault at fault_addr=, ", Hex(addr), ", ip=", Hex(ip), ", from=", badge);
 }
 
 
@@ -57,10 +53,10 @@ static inline void print_page_fault(L4_Word_t type, L4_Word_t addr, L4_Word_t ip
  * identity. By convention, each thread stores its global ID in a
  * defined entry of its UTCB.
  */
-static inline Okl4::L4_ThreadId_t thread_get_my_global_id()
+static inline L4_ThreadId_t thread_get_my_global_id()
 {
-	Okl4::L4_ThreadId_t myself;
-	myself.raw = Okl4::__L4_TCR_ThreadWord(UTCB_TCR_THREAD_WORD_MYSELF);
+	L4_ThreadId_t myself;
+	myself.raw = __L4_TCR_ThreadWord(UTCB_TCR_THREAD_WORD_MYSELF);
 	return myself;
 }
 
@@ -69,9 +65,8 @@ static inline Okl4::L4_ThreadId_t thread_get_my_global_id()
  ** Mapping **
  *************/
 
-Mapping::Mapping(addr_t dst_addr, addr_t src_addr,
-                 Cache_attribute cacheability, bool io_mem,
-                 unsigned l2size, bool rw)
+Mapping::Mapping(addr_t dst_addr, addr_t src_addr, Cache_attribute, bool,
+                 unsigned l2size, bool rw, bool)
 :
 	_fpage(L4_FpageLog2(dst_addr, l2size)),
 	/*
@@ -104,9 +99,9 @@ void Ipc_pager::wait_for_fault()
 		L4_StoreMR(1, &_fault_ip);
 
 		if (verbose_exception)
-			PERR("Exception (label 0x%x) occured in space %d at IP 0x%p",
-			     (int)L4_Label(_faulter_tag), (int)L4_SenderSpace().raw,
-			     (void *)_fault_ip);
+			error("exception (label ", Hex(L4_Label(_faulter_tag)), ") occured, "
+			      "space=", Hex(L4_SenderSpace().raw), ", "
+			      "ip=",    Hex(_fault_ip));
 	}
 
 	/* page fault */
@@ -131,8 +126,7 @@ void Ipc_pager::reply_and_wait_for_fault()
 	                                _reply_mapping.phys_desc());
 
 	if (ret != 1)
-		PERR("L4_MapFpage returned %d, error_code=%d",
-		     ret, (int)L4_ErrorCode());
+		error("L4_MapFpage returned ", ret, ", error=", L4_ErrorCode());
 
 	/* reply to page-fault message to resume the faulting thread */
 	acknowledge_wakeup();
@@ -155,5 +149,5 @@ void Ipc_pager::acknowledge_wakeup()
 
 Untyped_capability Pager_entrypoint::_pager_object_cap(unsigned long badge)
 {
-	return Untyped_capability(native_thread().l4id, badge);
+	return Capability_space::import(native_thread().l4id, Rpc_obj_key(badge));
 }

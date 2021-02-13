@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IRQ_SESSION_COMPONENT_H_
@@ -16,39 +16,44 @@
 
 #include <util/list.h>
 #include <base/rpc_server.h>
+#include <base/allocator.h>
 #include <irq_session/irq_session.h>
+#include <irq_object.h>
 
-namespace Genode {
-	class Irq_session_component;
-}
+namespace Genode { class Irq_session_component; }
+
 
 class Genode::Irq_session_component : public Rpc_object<Irq_session>,
-                                      public List<Irq_session_component>::Element
+                                      private List<Irq_session_component>::Element
 {
+	private:
+
+		friend class List<Irq_session_component>;
+
+		unsigned _irq_number;
+
+		Irq_object _irq_object;
+
 	public:
 
 		/**
 		 * Constructor
-		 *
-		 * \param irq_alloc    platform-dependent IRQ allocator
-		 * \param args         session construction arguments
 		 */
-		Irq_session_component(Range_allocator *irq_alloc,
-		                      const char      *args) { }
+		Irq_session_component(Range_allocator &, const char *);
 
 		/**
 		 * Destructor
 		 */
-		~Irq_session_component() { }
+		~Irq_session_component();
+
 
 		/***************************
 		 ** Irq session interface **
 		 ***************************/
 
-		void ack_irq() override { }
-		void sigh(Signal_context_capability) override { }
-		Info info() override { 
-			return { .type = Genode::Irq_session::Info::Type::INVALID }; }
+		void ack_irq() override;
+		void sigh(Signal_context_capability) override;
+		Info info() override;
 };
 
 #endif /* _CORE__INCLUDE__IRQ_SESSION_COMPONENT_H_ */

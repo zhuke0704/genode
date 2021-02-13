@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <mixer/channel.h>
-#include <os/attached_rom_dataspace.h>
-#include <os/config.h>
+#include <base/attached_rom_dataspace.h>
 #include <os/reporter.h>
 #include <rom_session/connection.h>
 
@@ -149,7 +148,6 @@ class Client_widget : public Compound_widget<QFrame, QVBoxLayout>,
 	private:
 
 		Genode::List<Channel_widget>  _list;
-		Genode::Allocator            &_alloc;
 		Channel::Label                _label;
 
 		QLabel      _name;
@@ -171,9 +169,9 @@ class Client_widget : public Compound_widget<QFrame, QVBoxLayout>,
 
 	public:
 
-		Client_widget(Genode::Allocator &alloc, Channel::Label const &label)
+		Client_widget(Channel::Label const &label)
 		:
-			_alloc(alloc), _label(label),
+			_label(label),
 			_name(_strip_label(_label))
 		{
 			setFrameStyle(QFrame::Panel | QFrame::Raised);
@@ -194,7 +192,7 @@ class Client_widget : public Compound_widget<QFrame, QVBoxLayout>,
 				disconnect(ch, SIGNAL(channel_changed()));
 				_hlayout.removeWidget(ch);
 				_list.remove(ch);
-				Genode::destroy(&_alloc, ch);
+				delete ch;
 			}
 		}
 
@@ -211,7 +209,7 @@ class Client_widget : public Compound_widget<QFrame, QVBoxLayout>,
 		Channel_widget* add_channel(Channel::Type const   type,
 		                            Channel::Number const number)
 		{
-			Channel_widget *ch = new (&_alloc) Channel_widget(type, number);
+			Channel_widget *ch = new Channel_widget(type, number);
 			connect(ch,   SIGNAL(channel_changed()),
 			        this, SIGNAL(client_changed()));
 
@@ -248,13 +246,12 @@ class Client_widget_registry : public QObject
 	private:
 
 		Genode::List<Client_widget>  _list;
-		Genode::Allocator           &_alloc;
 
 		void _remove_destroy(Client_widget *c)
 		{
 			disconnect(c, SIGNAL(client_changed()));
 			_list.remove(c);
-			Genode::destroy(&_alloc, c);
+			delete c;
 		}
 
 	Q_SIGNALS:
@@ -263,7 +260,7 @@ class Client_widget_registry : public QObject
 
 	public:
 
-		Client_widget_registry(Genode::Allocator &alloc) : QObject(), _alloc(alloc) { }
+		Client_widget_registry() : QObject() { }
 
 		Client_widget* first() { return _list.first(); }
 
@@ -280,7 +277,7 @@ class Client_widget_registry : public QObject
 		{
 			Client_widget *c = lookup(label);
 			if (c == nullptr) {
-				c = new (&_alloc) Client_widget(_alloc, label);
+				c = new Client_widget(label);
 				connect(c,    SIGNAL(client_changed()),
 				        this, SIGNAL(registry_changed()));
 				_list.insert(c);
@@ -304,7 +301,7 @@ class Client_widget_registry : public QObject
 
 static Client_widget_registry *client_registry()
 {
-	static Client_widget_registry inst(*Genode::env()->heap());
+	static Client_widget_registry inst;
 	return &inst;
 }
 
@@ -318,7 +315,7 @@ static int write_config(char const *file, char const *data, size_t length)
 
 	QFile mixer_file(file);
 	if (!mixer_file.open(QIODevice::WriteOnly)) {
-		PERR("could not open '%s'", file);
+		Genode::error("could not open '", file, "'");
 		return -1;
 	}
 
@@ -367,16 +364,16 @@ void Main_window::_update_config()
 						});
 
 						if (_verbose)
-							PLOG("label: '%s' volume: %d muted: %d", c->label().string(),
-							     combined ? vol   : w->volume(),
-							     combined ? muted : w->muted());
+							Genode::log("label: '", c->label(), "' "
+							            "volume: ", combined ? vol   : w->volume(), " "
+							            "muted: ",  combined ? muted : w->muted());
 					}
 				}
 			});
 		});
 		xml_used = xml.used();
 
-	} catch (...) { PWRN("could generate 'mixer.config'"); }
+	} catch (...) { Genode::warning("could generate 'mixer.config'"); }
 
 	write_config(config_file, xml_data, xml_used);
 }
@@ -411,7 +408,7 @@ void Main_window::_update_clients(Genode::Xml_node &channels)
 
 			_layout->addWidget(c);
 			resize(sizeHint());
-		} catch (Channel::Invalid_channel) { PWRN("invalid channel node"); }
+		} catch (Channel::Invalid_channel) { Genode::warning("invalid channel node"); }
 	});
 
 	client_registry()->remove_invalid();
@@ -424,17 +421,17 @@ void Main_window::_update_clients(Genode::Xml_node &channels)
  */
 void Main_window::report_changed(void *l, void const *p)
 {
-	Genode::Lock &lock     = *reinterpret_cast<Genode::Lock*>(l);
+	Genode::Blockade &blockade = *reinterpret_cast<Genode::Blockade*>(l);
 	Genode::Xml_node &node = *((Genode::Xml_node*)p);
 
 	if (node.has_type("channel_list"))
 		_update_clients(node);
 
-	lock.unlock();
+	blockade.wakeup();
 }
 
 
-Main_window::Main_window()
+Main_window::Main_window(Genode::Env &env)
 :
 	_default_out_volume(0),
 	_default_volume(0),
@@ -445,17 +442,18 @@ Main_window::Main_window()
 
 	using namespace Genode;
 
+	Attached_rom_dataspace config(env, "config");
 	try {
-		Xml_node config_node = config()->xml_node();
+		Xml_node config_node = config.xml();
 		_verbose = config_node.attribute("verbose").has_value("yes");
 	} catch (...) { _verbose = false; }
 
 	try {
-		Xml_node node = config()->xml_node().sub_node("default");
+		Xml_node node = config.xml().sub_node("default");
 		_default_out_volume = node.attribute_value<long>("out_volume", 0);
 		_default_volume     = node.attribute_value<long>("volume", 0);
 		_default_muted      = node.attribute_value<long>("muted", 1);
-	} catch (...) { PWRN("no <default> node found, fallback is 'muted=1'"); }
+	} catch (...) { Genode::warning("no <default> node found, fallback is 'muted=1'"); }
 }
 
 

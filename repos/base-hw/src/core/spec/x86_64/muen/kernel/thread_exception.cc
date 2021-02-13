@@ -6,44 +6,39 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
+#include <kernel/cpu.h>
 #include <kernel/thread.h>
-#include <pic.h>
 
 using namespace Kernel;
 
-void Thread::exception(unsigned const cpu)
+void Thread::exception(Cpu & cpu)
 {
-	switch (trapno) {
-	case PAGE_FAULT:
+	switch (regs->trapno) {
+	case Cpu::Context::PAGE_FAULT:
 		_mmu_exception();
 		return;
-	case NO_MATH_COPROC:
-		if (_cpu->fpu().fault(*this)) { return; }
-		PWRN("%s -> %s: FPU error", pd_label(), label());
-		_stop();
+	case Cpu::Context::UNDEFINED_INSTRUCTION:
+		Genode::raw(*this, ": undefined instruction at ip=", (void*)regs->ip);
+		_die();
 		return;
-	case UNDEFINED_INSTRUCTION:
-		PWRN("%s -> %s: undefined instruction at ip=%p",
-			 pd_label(), label(), (void*)ip);
-		_stop();
-		return;
-	case SUPERVISOR_CALL:
+	case Cpu::Context::SUPERVISOR_CALL:
 		_call();
 		return;
 	}
-	if (trapno >= INTERRUPTS_START && trapno <= INTERRUPTS_END) {
-		pic()->irq_occurred(trapno);
-		_interrupt(cpu);
+	if (regs->trapno >= Cpu::Context::INTERRUPTS_START &&
+	    regs->trapno <= Cpu::Context::INTERRUPTS_END) {
+		cpu.pic().irq_occurred(regs->trapno);
+		_interrupt(cpu.id());
 		return;
 	}
-	PWRN("%s -> %s: triggered unknown exception %lu with error code %lu"
-		 " at ip=%p", pd_label(), label(), trapno, errcode, (void*)ip);
-	_stop();
+	Genode::raw(*this, ": triggered unknown exception ", regs->trapno,
+	            " with error code ", regs->errcode, " at ip=", (void*)regs->ip);
+	_die();
 }

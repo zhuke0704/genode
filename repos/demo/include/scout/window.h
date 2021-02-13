@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__WINDOW_H_
@@ -32,11 +32,25 @@ class Scout::Window : public Parent_element
 	private:
 
 		Graphics_backend &_gfx_backend;
-		Rect              _dirty;
+		Rect              _dirty { };
 		Area              _max_size;
-		Point             _view_position;
 		int               _request_cnt;  /* nb of requests since last process */
 		bool const        _scout_quirk;  /* enable redraw quirk for scout     */
+
+		/*
+		 * We limit the rate of (expensive) view-position updates to the rate
+		 * of 'process_redraw' calls instead of eagerly responding to
+		 * individual input events (which trigger calls of 'vpos').
+		 */
+		Point _view_position, _next_view_position = _view_position;
+
+		void _update_view_position()
+		{
+			if (_view_position == _next_view_position) return;
+
+			_view_position = _next_view_position;
+			_gfx_backend.position(_view_position);
+		}
 
 	public:
 
@@ -44,11 +58,10 @@ class Scout::Window : public Parent_element
 		       Area max_size, bool scout_quirk)
 		:
 			_gfx_backend(gfx_backend), _max_size(max_size), _request_cnt(0),
-			_scout_quirk(scout_quirk)
+			_scout_quirk(scout_quirk), _view_position(position)
 		{
 			/* init element attributes */
-			_view_position = position;
-			_size          = size;
+			_size = size;
 		}
 
 		virtual ~Window() { }
@@ -56,8 +69,8 @@ class Scout::Window : public Parent_element
 		/**
 		 * Return current window position
 		 */
-		int view_x() const { return _view_position.x(); }
-		int view_y() const { return _view_position.y(); }
+		int view_x() const { return _next_view_position.x(); }
+		int view_y() const { return _next_view_position.y(); }
 		int view_w() const { return _size.w(); }
 		int view_h() const { return _size.h(); }
 
@@ -71,16 +84,12 @@ class Scout::Window : public Parent_element
 		/**
 		 * Move window to new position
 		 */
-		virtual void vpos(int x, int y)
-		{
-			_view_position = Point(x, y);
-			_gfx_backend.position(_view_position);
-		}
+		virtual void vpos(int x, int y) { _next_view_position = Point(x, y); }
 
 		/**
 		 * Define vertical scroll offset
 		 */
-		virtual void ypos(int ypos) { }
+		virtual void ypos(int) { }
 		virtual int  ypos() { return 0; }
 
 		/**
@@ -98,7 +107,7 @@ class Scout::Window : public Parent_element
 		 * does not perform any immediate drawing operation. The actual drawing
 		 * must be initiated by calling the process_redraw function.
 		 */
-		void redraw_area(int x, int y, int w, int h)
+		void redraw_area(int x, int y, int w, int h) override
 		{
 			/*
 			 * Scout redraw quirk
@@ -133,6 +142,8 @@ class Scout::Window : public Parent_element
 		 */
 		void process_redraw()
 		{
+			_update_view_position();
+
 			if (_request_cnt == 0) return;
 
 			/* get actual drawing area (clipped against canvas dimensions) */
@@ -181,9 +192,9 @@ class Scout::Drag_event_handler : public Event_handler
 {
 	protected:
 
-		int   _key_cnt;     /* number of curr. pressed keys */
-		Point _current_mouse_position;
-		Point _old_mouse_position;
+		int   _key_cnt = 0;     /* number of curr. pressed keys */
+		Point _current_mouse_position { };
+		Point _old_mouse_position     { };
 
 		virtual void start_drag() = 0;
 		virtual void do_drag() = 0;
@@ -193,12 +204,12 @@ class Scout::Drag_event_handler : public Event_handler
 		/**
 		 * Constructor
 		 */
-		Drag_event_handler() { _key_cnt = 0; }
+		Drag_event_handler() { }
 
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &ev)
+		void handle_event(Event const &ev) override
 		{
 			if (ev.type == Event::PRESS)   _key_cnt++;
 			if (ev.type == Event::RELEASE) _key_cnt--;
@@ -226,21 +237,29 @@ class Scout::Drag_event_handler : public Event_handler
 
 class Scout::Sizer_event_handler : public Drag_event_handler
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Sizer_event_handler(Sizer_event_handler const &);
+		Sizer_event_handler &operator = (Sizer_event_handler const &);
+
 	protected:
 
 		Window *_window;
-		int     _obw, _obh;   /* original window size */
+		int     _obw = 0, _obh = 0;   /* original window size */
 
 		/**
 		 * Event handler interface
 		 */
-		void start_drag()
+		void start_drag() override
 		{
 			_obw = _window->view_w();
 			_obh = _window->view_h();
 		}
 
-		void do_drag()
+		void do_drag() override
 		{
 			/* calculate new window size */
 			int nbw = _obw + _current_mouse_position.x() - _old_mouse_position.x();
@@ -254,28 +273,33 @@ class Scout::Sizer_event_handler : public Drag_event_handler
 		/**
 		 * Constructor
 		 */
-		Sizer_event_handler(Window *window)
-		{
-			_window = window;
-		}
+		Sizer_event_handler(Window *window) : _window(window) { }
 };
 
 
 class Scout::Mover_event_handler : public Drag_event_handler
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Mover_event_handler(Mover_event_handler const &);
+		Mover_event_handler &operator = (Mover_event_handler const &);
+
 	protected:
 
 		Window *_window;
-		int     _obx, _oby;    /* original launchpad position */
+		int     _obx = 0, _oby = 0;    /* original launchpad position */
 
-		void start_drag()
+		void start_drag() override
 		{
 			_obx = _window->view_x();
 			_oby = _window->view_y();
 			_window->top();
 		}
 
-		void do_drag()
+		void do_drag() override
 		{
 			int nbx = _obx + _current_mouse_position.x() - _old_mouse_position.x();
 			int nby = _oby + _current_mouse_position.y() - _old_mouse_position.y();
@@ -288,10 +312,7 @@ class Scout::Mover_event_handler : public Drag_event_handler
 		/**
 		 * Constructor
 		 */
-		Mover_event_handler(Window *window)
-		{
-			_window = window;
-		}
+		Mover_event_handler(Window *window) : _window(window) { }
 };
 
 #endif /* _INCLUDE__SCOUT__WINDOW_H_ */

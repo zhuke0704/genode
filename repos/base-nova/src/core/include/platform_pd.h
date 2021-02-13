@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_PD_H_
@@ -18,11 +18,6 @@
 #include <platform_thread.h>
 #include <address_space.h>
 
-/*
- * Must be initialized by the startup code,
- * only valid in core
- */
-extern Genode::addr_t __core_pd_sel;
 
 namespace Genode {
 
@@ -31,17 +26,23 @@ namespace Genode {
 	{
 		private:
 
-			Native_capability _parent;
+			Native_capability _parent { };
 			int               _thread_cnt;
-			addr_t            _pd_sel;
+			addr_t const      _pd_sel;
 			const char *      _label;
+
+			/*
+			 * Noncopyable
+			 */
+			Platform_pd(Platform_pd const &);
+			Platform_pd &operator = (Platform_pd const &);
 
 		public:
 
 			/**
 			 * Constructors
 			 */
-			Platform_pd(Allocator * md_alloc, char const *,
+			Platform_pd(Allocator &md_alloc, char const *,
 			            signed pd_id = -1, bool create = true);
 
 			/**
@@ -52,14 +53,14 @@ namespace Genode {
 			/**
 			 * Bind thread to protection domain
 			 */
-			bool bind_thread(Platform_thread *thread);
+			bool bind_thread(Platform_thread &thread);
 
 			/**
 			 * Unbind thread from protection domain
 			 *
 			 * Free the thread's slot and update thread object.
 			 */
-			void unbind_thread(Platform_thread *thread);
+			void unbind_thread(Platform_thread &thread);
 
 			/**
 			 * Assign parent interface to protection domain
@@ -72,24 +73,11 @@ namespace Genode {
 			addr_t parent_pt_sel() { return _parent.local_name(); }
 
 			/**
-			 * Assign PD selector to PD
-			 */
-			void assign_pd(addr_t pd_sel) { _pd_sel = pd_sel; }
-
-			/**
 			 * Capability selector of this task.
 			 *
 			 * \return PD selector
 			 */
 			addr_t pd_sel() const { return _pd_sel; }
-
-			/**
-			 * Capability selector of core protection domain
-			 *
-			 * \return PD selector
-			 */
-			static addr_t pd_core_sel() { return __core_pd_sel; }
-
 
 			/**
 			 * Label of this protection domain
@@ -102,7 +90,7 @@ namespace Genode {
 			 ** Address-space interface **
 			 *****************************/
 
-			void flush(addr_t, size_t);
+			void flush(addr_t, size_t, Core_local_addr) override;
 	};
 }
 

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -24,13 +24,14 @@
 /*
  * Add x86 specific ioport service
  */
-void Genode::platform_add_local_services(Rpc_entrypoint*,
-                                         Sliced_heap *sliced_heap,
-                                         Service_registry *local_services)
+void Genode::platform_add_local_services(Rpc_entrypoint         &,
+                                         Sliced_heap            &sliced_heap,
+                                         Registry<Service>      &local_services,
+                                         Trace::Source_registry &)
 {
-	static Io_port_root io_port_root(core_env()->pd_session(),
-	                                 platform()->io_port_alloc(), sliced_heap);
-	static Local_service io_port_ls(Io_port_session::service_name(),
-	                                &io_port_root);
-	local_services->insert(&io_port_ls);
+	static Io_port_root io_port_root(*core_env().pd_session(),
+	                                 platform().io_port_alloc(), sliced_heap);
+
+	static Core_service<Io_port_session_component>
+		io_port_ls(local_services, io_port_root);
 }

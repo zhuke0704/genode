@@ -5,17 +5,18 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <os/config.h>
-#include <os/attached_rom_dataspace.h>
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/attached_rom_dataspace.h>
 #include <polygon_gfx/shaded_polygon_painter.h>
-#include <polygon_gfx/interpolate_rgb565.h>
+#include <os/pixel_rgb888.h>
 #include <os/pixel_alpha8.h>
 #include <nano3d/scene.h>
 #include <nano3d/sincos_frac16.h>
@@ -122,15 +123,16 @@ class Cpu_load_display::Cpu : public Genode::List<Cpu>::Element
 {
 	private:
 
+		Genode::Allocator     &_heap;
 		Genode::Point<>  const _pos;
-		Genode::List<Timeline> _timelines;
+		Genode::List<Timeline> _timelines { };
 
 		Timeline *_lookup_timeline(Xml_node subject)
 		{
 			unsigned long const subject_id = subject.attribute_value("id", 0UL);
 
-			char label[sizeof(Timeline::Label)];
-			subject.attribute("label").value(label, sizeof(label));
+			Timeline::Label const label =
+				subject.attribute_value("label", Timeline::Label());
 
 			for (Timeline *t = _timelines.first(); t; t = t->next()) {
 				if (t->has_subject_id(subject_id))
@@ -138,7 +140,7 @@ class Cpu_load_display::Cpu : public Genode::List<Cpu>::Element
 			}
 
 			/* add new timeline */
-			Timeline *t = new (Genode::env()->heap()) Timeline(subject_id, label);
+			Timeline *t = new (_heap) Timeline(subject_id, label);
 			_timelines.insert(t);
 			return t;
 		}
@@ -155,7 +157,8 @@ class Cpu_load_display::Cpu : public Genode::List<Cpu>::Element
 
 	public:
 
-		Cpu(Genode::Point<> pos) : _pos(pos) { }
+		Cpu(Genode::Allocator &heap, Genode::Point<> pos)
+		: _heap(heap), _pos(pos) { }
 
 		bool has_pos(Genode::Point<> pos) const
 		{
@@ -181,9 +184,8 @@ class Cpu_load_display::Cpu : public Genode::List<Cpu>::Element
 
 				if (t->idle()) {
 
-					PDBG("discard timeline");
 					_timelines.remove(t);
-					Genode::destroy(Genode::env()->heap(), t);
+					Genode::destroy(_heap, t);
 				}
 			}
 		}
@@ -211,7 +213,9 @@ class Cpu_load_display::Cpu_registry
 {
 	private:
 
-		Genode::List<Cpu> _cpus;
+		Genode::Allocator &_heap;
+
+		Genode::List<Cpu> _cpus { };
 
 		static Genode::Point<> _cpu_pos(Xml_node subject)
 		{
@@ -234,7 +238,7 @@ class Cpu_load_display::Cpu_registry
 			}
 
 			/* add new CPU */
-			Cpu *cpu = new (Genode::env()->heap()) Cpu(cpu_pos);
+			Cpu *cpu = new (_heap) Cpu(_heap, cpu_pos);
 			_cpus.insert(cpu);
 			return cpu;
 		}
@@ -247,6 +251,8 @@ class Cpu_load_display::Cpu_registry
 		}
 
 	public:
+
+		Cpu_registry(Genode::Allocator &heap) : _heap(heap) { }
 
 		void import_trace_subjects(Xml_node node, unsigned now)
 		{
@@ -274,22 +280,25 @@ class Cpu_load_display::Scene : public Nano3d::Scene<PT>
 {
 	private:
 
-		Nitpicker::Area const _size;
+		Genode::Env &_env;
 
-		void _handle_config(unsigned)
-		{
-			Genode::config()->reload();
-		}
+		Gui::Area const _size;
 
-		Genode::Signal_dispatcher<Scene> _config_dispatcher;
+		Genode::Attached_rom_dataspace _config { _env, "config" };
 
-		Genode::Attached_rom_dataspace _trace_subjects { "trace_subjects" };
+		void _handle_config() { _config.update(); }
+
+		Genode::Signal_handler<Scene> _config_handler;
+
+		Genode::Attached_rom_dataspace _trace_subjects { _env, "trace_subjects" };
 
 		unsigned _now = 0;
 
-		Cpu_registry _cpu_registry;
+		Genode::Heap _heap { _env.ram(), _env.rm() };
 
-		void _handle_trace_subjects(unsigned)
+		Cpu_registry _cpu_registry { _heap };
+
+		void _handle_trace_subjects()
 		{
 			_trace_subjects.update();
 
@@ -301,30 +310,30 @@ class Cpu_load_display::Scene : public Nano3d::Scene<PT>
 			try {
 				Xml_node subjects(_trace_subjects.local_addr<char>());
 				_cpu_registry.import_trace_subjects(subjects, _now);
-			} catch (...) { PWRN("failed to import trace subjects"); }
+			} catch (...) { Genode::error("failed to import trace subjects"); }
 		}
 
-		Genode::Signal_dispatcher<Scene> _trace_subjects_dispatcher;
+		Genode::Signal_handler<Scene> _trace_subjects_handler;
 
 	public:
 
-		Scene(Genode::Signal_receiver &sig_rec, unsigned update_rate_ms,
-		      Nitpicker::Point pos, Nitpicker::Area size)
+		Scene(Genode::Env &env, Genode::uint64_t update_rate_ms,
+		      Gui::Point pos, Gui::Area size)
 		:
-			Nano3d::Scene<PT>(sig_rec, update_rate_ms, pos, size), _size(size),
-			_config_dispatcher(sig_rec, *this, &Scene::_handle_config),
-			_trace_subjects_dispatcher(sig_rec, *this, &Scene::_handle_trace_subjects)
+			Nano3d::Scene<PT>(env, update_rate_ms, pos, size),
+			_env(env), _size(size),
+			_config_handler(env.ep(), *this, &Scene::_handle_config),
+			_trace_subjects_handler(env.ep(), *this, &Scene::_handle_trace_subjects)
 		{
-			Genode::config()->sigh(_config_dispatcher);
-			_handle_config(0);
+			_config.sigh(_config_handler);
+			_handle_config();
 
-			_trace_subjects.sigh(_trace_subjects_dispatcher);
+			_trace_subjects.sigh(_trace_subjects_handler);
 		}
 
 	private:
 
-		Polygon::Shaded_painter _shaded_painter {
-			*Genode::env()->heap(), _size.h() };
+		Polygon::Shaded_painter _shaded_painter { _heap, _size.h() };
 
 		long _activity_sum[Timeline::HISTORY_LEN];
 		long _y_level[Timeline::HISTORY_LEN];
@@ -332,7 +341,7 @@ class Cpu_load_display::Scene : public Nano3d::Scene<PT>
 
 		void _plot_cpu(Genode::Surface<PT>                   &pixel,
 		               Genode::Surface<Genode::Pixel_alpha8> &alpha,
-		               Cpu const &cpu, Nitpicker::Rect rect)
+		               Cpu const &cpu, Gui::Rect rect)
 		{
 			enum { HISTORY_LEN = Timeline::HISTORY_LEN };
 
@@ -437,36 +446,30 @@ class Cpu_load_display::Scene : public Nano3d::Scene<PT>
 
 			/* determine number of CPUs */
 			unsigned num_cpus = 0;
-			_cpu_registry.for_each_cpu([&] (Cpu const &cpu) { num_cpus++; });
+			_cpu_registry.for_each_cpu([&] (Cpu const &) { num_cpus++; });
 
 			if (num_cpus == 0)
 				return;
 
 			/* plot graphs for the CPUs below each other */
 			enum { GAP = 8 };
-			Nitpicker::Point const step(0, _size.h()/num_cpus);
-			Nitpicker::Area  const size(_size.w(), step.y() - GAP);
-			Nitpicker::Point       point(0, GAP/2);
+			Gui::Point const step(0, _size.h()/num_cpus);
+			Gui::Area  const size(_size.w(), step.y() - GAP);
+			Gui::Point       point(0, GAP/2);
 
 			_cpu_registry.for_each_cpu([&] (Cpu const &cpu) {
-				_plot_cpu(pixel, alpha, cpu, Nitpicker::Rect(point, size));
+				_plot_cpu(pixel, alpha, cpu, Gui::Rect(point, size));
 				point = point + step;
 			});
 		}
 };
 
 
-int main(int argc, char **argv)
+void Component::construct(Genode::Env &env)
 {
-	static Genode::Signal_receiver sig_rec;
-
 	enum { UPDATE_RATE_MS = 250 };
 
-	static Cpu_load_display::Scene<Genode::Pixel_rgb565>
-		scene(sig_rec, UPDATE_RATE_MS,
-		      Nitpicker::Point(0, 0), Nitpicker::Area(400, 400));
-
-	scene.dispatch_signals_loop(sig_rec);
-
-	return 0;
+	static Cpu_load_display::Scene<Genode::Pixel_rgb888>
+		scene(env, UPDATE_RATE_MS,
+		      Gui::Point(0, 0), Gui::Area(400, 400));
 }

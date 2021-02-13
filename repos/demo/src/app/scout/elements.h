@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _ELEMENTS_H_
 #define _ELEMENTS_H_
 
 #include <scout/parent_element.h>
-#include <scout/printf.h>
 #include <scout/string.h>
 #include <scout/fader.h>
 #include <scout/platform.h>
@@ -67,12 +66,7 @@ class Scout::Style
 		Color  color;
 		int    attr;
 
-		Style(Font *f, Color c, int a)
-		{
-			font  = f;
-			color = c;
-			attr  = a;
-		}
+		Style(Font *f, Color c, int a) : font(f), color(c), attr(a) { }
 };
 
 
@@ -84,6 +78,14 @@ class Scout::Style
  */
 class Scout::Token : public Element
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Token(Token const &);
+		Token &operator = (Token const &);
+
 	protected:
 
 		const char  *_str;       /* start  of string   */
@@ -102,7 +104,7 @@ class Scout::Token : public Element
 		/**
 		 * Element interface
 		 */
-		void draw(Canvas_base &, Point);
+		void draw(Canvas_base &, Point) override;
 		void refresh() { redraw_area(-1, 0, _size.w() + 1, _size.h()); }
 };
 
@@ -121,7 +123,7 @@ class Scout::Link
 		/**
 		 * Constructor
 		 */
-		explicit Link(Anchor *dst) { _dst = dst; }
+		explicit Link(Anchor *dst) : _dst(dst) { }
 
 		/**
 		 * Accessor function
@@ -133,12 +135,16 @@ class Scout::Link
 /**
  * Textual link
  */
-class Scout::Link_token : public Token, public Link, public Event_handler,
-                          public Fader
+class Scout::Link_token : public Token, private Link, public Event_handler,
+                          private Fader
 {
 	private:
 
 		enum { _MAX_ALPHA = 50 };
+
+	protected:
+
+		using Link::_dst;
 
 	public:
 
@@ -152,11 +158,14 @@ class Scout::Link_token : public Token, public Link, public Event_handler,
 			_curr_value        = 0;
 			event_handler(this);
 		}
+
+		using Fader::step;
+		using Fader::curr;
 		
 		/**
 		 * Element interface
 		 */
-		void draw(Canvas_base &canvas, Point abs_position)
+		void draw(Canvas_base &canvas, Point abs_position) override
 		{
 			_outline = Color(_style->color.r,
 			                 _style->color.g,
@@ -169,7 +178,7 @@ class Scout::Link_token : public Token, public Link, public Event_handler,
 			                _size.w(), 1, Color(0,0,255));
 		}
 
-		void mfocus(int flag)
+		void mfocus(int flag) override
 		{
 			/*
 			 * highlight link of all siblings that point to the same link.
@@ -200,12 +209,12 @@ class Scout::Link_token : public Token, public Link, public Event_handler,
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &e);
+		void handle_event(Event const &) override;
 
 		/**
 		 * Tick interface
 		 */
-		int on_tick()
+		int on_tick() override
 		{
 			/* call on_tick function of the fader */
 			if (Fader::on_tick() == 0) return 0;
@@ -221,37 +230,58 @@ class Launchpad;
 
 class Scout::Launcher : public Anchor
 {
+	public:
+
+		typedef Genode::String<64> Name;
+
 	private:
 
-		const char      *_prg_name;  /* null-terminated name of the program */
-		int              _active;
-		int              _exec_once;
-		Launchpad       *_launchpad;
-		unsigned long    _quota;
-		Launcher_config *_config;
+		/*
+		 * Noncopyable
+		 */
+		Launcher(Launcher const &);
+		Launcher &operator = (Launcher const &);
+
+		Name                _prg_name;
+		int                 _active    = 0;
+		int                 _exec_once = 0;
+		Launchpad          *_launchpad = nullptr;
+		unsigned long const _caps;
+		unsigned long       _quota;
+		Launcher_config    *_config;
 
 	public:
+
+		static void init(Genode::Env &, Genode::Allocator &);
 
 		/**
 		 * Constructors
 		 */
-		Launcher(const char *prg_name, int exec_once = 0,
-		         unsigned long quota = 0, Launcher_config *config = 0) :
+		Launcher(Name const &prg_name, int exec_once = 0,
+		         unsigned long caps = 0, unsigned long quota = 0,
+		         Launcher_config *config = 0)
+		:
 			_prg_name(prg_name), _active(1),
-			_exec_once(exec_once), _quota(quota), _config(config) { }
+			_exec_once(exec_once), _caps(caps), _quota(quota), _config(config)
+		{ }
 
-		Launcher(const char *prg_name, Launchpad *launchpad,
-		         unsigned long quota, Launcher_config *config = 0) :
-			_prg_name(prg_name), _launchpad(launchpad), _quota(quota),
-			_config(config) { }
+		Launcher(Name const &prg_name, Launchpad *launchpad,
+		         unsigned long caps, unsigned long quota,
+		         Launcher_config *config = 0)
+		:
+			_prg_name(prg_name), _launchpad(launchpad),
+			_caps(caps), _quota(quota), _config(config)
+		{ }
 
-		int active() { return _active; }
+		int active() const { return _active; }
 
-		const char *prg_name() { return _prg_name; }
+		Name prg_name() const { return _prg_name; }
 
 		void quota(unsigned long quota) { _quota = quota; }
 
-		unsigned long quota() { return _quota; }
+		unsigned long quota() const { return _quota; }
+
+		unsigned long caps() const { return _caps; }
 
 		Launcher_config *config() { return _config; }
 
@@ -280,7 +310,7 @@ class Scout::Launcher_link_token : public Link_token
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &e);
+		void handle_event(Event const &) override;
 };
 
 
@@ -299,8 +329,8 @@ class Scout::Block : public Parent_element
 
 	private:
 
-		int       _second_indent;   /* indentation of second line */
-		Alignment _align;           /* text alignment             */
+		Alignment _align;             /* text alignment             */
+		int       _second_indent;     /* indentation of second line */
 
 		/**
 		 * Append text to block
@@ -314,16 +344,10 @@ class Scout::Block : public Parent_element
 		 * Constructors
 		 */
 		explicit Block(int second_indent = 0)
-		{
-			_align         = LEFT;
-			_second_indent = second_indent;
-		}
+		: _align(LEFT), _second_indent(second_indent) { }
 
 		explicit Block(Alignment align)
-		{
-			_align         = align;
-			_second_indent = 0;
-		}
+		: _align(align), _second_indent(0) { }
 
 		/**
 		 * Define alignment of text
@@ -359,7 +383,7 @@ class Scout::Block : public Parent_element
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w);
+		void format_fixed_width(int w) override;
 };
 
 
@@ -381,7 +405,7 @@ class Scout::Center : public Parent_element
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w);
+		void format_fixed_width(int w) override;
 };
 
 
@@ -392,19 +416,23 @@ class Scout::Png_image : public Element
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Png_image(Png_image const &);
+		Png_image &operator = (Png_image const &);
+
 		void         *_png_data;
-		Texture_base *_texture;
+		Texture_base *_texture = nullptr;
 
 	public:
+
+		static void init(Genode::Allocator &);
 
 		/**
 		 * Constructor
 		 */
-		explicit Png_image(void *png_data)
-		{
-			_png_data = png_data;
-			_texture  = 0;
-		}
+		explicit Png_image(void *png_data) : _png_data(png_data) { }
 
 		/**
 		 * Accessor functions
@@ -414,9 +442,9 @@ class Scout::Png_image : public Element
 		/**
 		 * Element interface
 		 */
-		void fill_cache(Canvas_base &);
-		void flush_cache(Canvas_base &);
-		void draw(Canvas_base &, Point);
+		void fill_cache(Canvas_base &) override;
+		void flush_cache(Canvas_base &) override;
+		void draw(Canvas_base &, Point) override;
 };
 
 
@@ -425,23 +453,28 @@ class Scout::Png_image : public Element
  */
 class Scout::Document : public Parent_element
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Document(Document const &);
+		Document &operator = (Document const &);
+
 	public:
 
-		Chapter    *toc;     /* table of contents */
-		const char *title;   /* document title    */
+		Chapter    *toc   = nullptr;     /* table of contents */
+		const char *title = "";          /* document title    */
 
 		/**
 		 * Constructor
 		 */
-		Document()
-		{
-			toc = 0; title = ""; _flags.chapter = 1;
-		}
+		Document() { _flags.chapter = 1; }
 
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			_min_size = Area(w, _format_children(0, w));
 		}
@@ -482,7 +515,7 @@ class Scout::Verbatim : public Parent_element
 		/**
 		 * Constructor
 		 */
-		explicit Verbatim(Color bg) { bgcol = bg; }
+		explicit Verbatim(Color bg) : bgcol(bg) { }
 
 		/**
 		 * Append verbatim text line
@@ -495,8 +528,8 @@ class Scout::Verbatim : public Parent_element
 		/**
 		 * Element interface
 		 */
-		void draw(Canvas_base &, Point);
-		void format_fixed_width(int);
+		void draw(Canvas_base &, Point) override;
+		void format_fixed_width(int) override;
 };
 
 
@@ -505,31 +538,35 @@ class Scout::Verbatim : public Parent_element
  */
 class Scout::Item : public Parent_element
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Item(Item const &);
+		Item &operator = (Item const &);
+
 	public:
 
-		int         _tag_ident;
-		const char *_tag;
 		Style      *_style;
+		const char *_tag;
+		int         _tag_ident;
 
 		/**
 		 * Constructor
 		 */
 		Item(Style *style, const char *str, int ident)
-		{
-			_style     = style;
-			_tag       = str;
-			_tag_ident = ident;
-		}
+		: _style(style), _tag(str), _tag_ident(ident) { }
 
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			_min_size = Area(w, _format_children(_tag_ident, w - _tag_ident));
 		}
 
-		void draw(Canvas_base &canvas, Point abs_position)
+		void draw(Canvas_base &canvas, Point abs_position) override
 		{
 			canvas.draw_string(_position.x() + abs_position.x(),
 			                   _position.y() + abs_position.y(),
@@ -546,11 +583,17 @@ class Scout::Navbar : public Parent_element, public Fader
 {
 	private:
 
-		Block *_next_title;
-		Block *_prev_title;
+		/*
+		 * Noncopyable
+		 */
+		Navbar(Navbar const &);
+		Navbar &operator = (Navbar const &);
 
-		Anchor *_next_anchor;
-		Anchor *_prev_anchor;
+		Block *_next_title = nullptr;
+		Block *_prev_title = nullptr;
+
+		Anchor *_next_anchor = nullptr;
+		Anchor *_prev_anchor = nullptr;
 
 	public:
 
@@ -578,14 +621,14 @@ class Scout::Navbar : public Parent_element, public Fader
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int);
-		void draw(Canvas_base &, Point);
-		Element *find(Point);
+		void format_fixed_width(int)    override;
+		void draw(Canvas_base &, Point) override;
+		Element *find(Point)            override;
 
 		/**
 		 * Tick interface
 		 */
-		int on_tick();
+		int on_tick() override;
 };
 
 #endif /* _ELEMENTS_H_ */

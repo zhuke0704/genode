@@ -1,24 +1,26 @@
-/**
+/*
  * \brief  PL2303-USB-UART driver that exposes a terminal session
  * \author Sebastian Sumpf
+ * \author Christian Helmuth
  * \date   2014-12-17
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
-#include <os/attached_ram_dataspace.h>
+/* Genode includes */
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/attached_ram_dataspace.h>
 #include <os/ring_buffer.h>
-#include <os/server.h>
-#include <root/component.h>
+#include <os/static_root.h>
 #include <terminal_session/terminal_session.h>
 #include <usb/usb.h>
 
-constexpr bool verbose = false;
 
 namespace Terminal {
 	class Main;
@@ -45,8 +47,6 @@ struct pl2303_config
 
 struct Usb::Pl2303_driver : Completion
 {
-	enum { VENDOR = 0x67b, PRODUCT = 0x2303 /* Prolific 2303 seriral port */ };
-
 	enum {
 		PACKET_BUFFER   = 2,    /* number of read packets */
 		RING_SIZE       = 4096, /* size of ring buffer    */
@@ -58,108 +58,36 @@ struct Usb::Pl2303_driver : Completion
 
 	typedef Genode::Ring_buffer<char, 4096, Genode::Ring_buffer_unsynchronized> Ring_buffer;
 
-	Ring_buffer                              ring_buffer;
-	Server::Entrypoint                      &ep;
-	Server::Signal_rpc_member<Pl2303_driver> dispatcher{ ep, *this, &Pl2303_driver::state_change };
-	Genode::Allocator_avl                    alloc;
-	Usb::Connection                          connection{ &alloc, "usb_serial", 512 * 1024, dispatcher };
-	Usb::Device                              device;
-	Signal_context_capability                connected_sigh;
-	Signal_context_capability                read_sigh;
+	Env                   &_env;
+	Heap                  &_heap;
+	Ring_buffer            _ring_buffer;
+	Genode::Allocator_avl  _alloc { &_heap };
 
+	Genode::Signal_handler<Pl2303_driver> _state_handler {
+		_env.ep(), *this, &Pl2303_driver::_handle_state_change };
 
-	Pl2303_driver(Server::Entrypoint &ep)
-	: ep(ep), alloc(Genode::env()->heap()),
-	  device(Genode::env()->heap(), connection, ep)
-	{ }
+	Usb::Connection _connection { _env, &_alloc, "usb_serial", 512 * 1024, _state_handler };
+	Usb::Device     _device     { &_heap, _connection, _env.ep() };
 
-
-	/* send control message for to read/write from/to PL2303 endpoint */
-	void pl2303_magic(Usb::Interface &iface, uint16_t value, uint16_t index, bool read)
-	{
-		Usb::Packet_descriptor p = iface.alloc(0);
-
-		uint8_t request_type = read ? Usb::ENDPOINT_IN : Usb::ENDPOINT_OUT
-		                        | Usb::TYPE_VENDOR
-		                        | Usb::RECIPIENT_DEVICE;
-
-		iface.control_transfer(p, request_type, 1, value, index,100);
-		iface.release(p);
-	}
-
-	void pl2303_magic_read(Usb::Interface &iface, uint16_t value, uint16_t index) {
-		pl2303_magic(iface, value, index, true); }
-
-	void pl2303_magic_write(Usb::Interface &iface, uint16_t value, uint16_t index) {
-		pl2303_magic(iface, value, index, false); }
-
-	void bulk_packet(Packet_descriptor &p)
-	{
-		Interface iface = device.interface(0);
-
-		/* error or write packet */
-		if (!p.succeded || !p.read_transfer()) {
-			iface.release(p);
-			return;
-		}
-
-		/* buffer data */
-		bool send_sigh = ring_buffer.empty() && p.transfer.actual_size;
-		char *data     = (char *)iface.content(p);
-
-		try {
-			for (int i = 0; i < p.transfer.actual_size; i++)
-				ring_buffer.add(data[i]);
-		} catch (Ring_buffer::Overflow) {
-			PWRN("Pl2303 buffer overflow");
-		}
-
-		/* submit back to device (async) */
-		iface.submit(p);
-
-		/* notify client */
-		if (send_sigh && read_sigh.valid())
-			Signal_transmitter(read_sigh).submit();
-	}
-
-	void complete(Packet_descriptor &p)
-	{
-		switch (p.type) {
-			case Packet_descriptor::BULK: bulk_packet(p); break;
-			default: break;
-		}
-	}
-
-	size_t write(void *dst, size_t num_bytes)
-	{
-		num_bytes = min(num_bytes, MAX_PACKET_SIZE);
-
-		Interface         &iface = device.interface(0);
-		Endpoint          &ep    = iface.endpoint(OUT);
-		Packet_descriptor  p     = iface.alloc(num_bytes);
-
-		memcpy(iface.content(p), dst, num_bytes);
-		iface.bulk_transfer(p, ep, 0, false, this);
-
-		return num_bytes;
-	}
+	Signal_context_capability _connected_sigh;
+	Signal_context_capability _read_avail_sigh;
 
 	/**
 	 * Init 2303 controller
 	 */
-	void init()
+	void _init()
 	{
 		/* read device configuration */
-		device.update_config();
+		_device.update_config();
 
 		enum { BUF = 128 };
 		char buffer[BUF];
 
-		PINF("PL2303 controller: ready");
-		PINF("Manufacturer     : %s", device.manufactorer_string.to_char(buffer, BUF));
-		PINF("Product          : %s", device.product_string.to_char(buffer, BUF));
+		Genode::log("PL2303 controller: ready");
+		Genode::log("Manufacturer     : ", Cstring(_device.manufactorer_string.to_char(buffer, BUF)));
+		Genode::log("Product          : ", Cstring(_device.product_string.to_char(buffer, BUF)));
 
-		Interface &iface = device.interface(0);
+		Usb::Interface &iface = _device.interface(0);
 		iface.claim();
 
 		/* undocumented magic, taken from Linux and GRUB */
@@ -183,16 +111,8 @@ struct Usb::Pl2303_driver : Completion
 		/* set baud rate to 115200 */
 		pl2303_config *cfg = (pl2303_config *)iface.content(p);
 
-		if (verbose)
-			PDBG("GET_LINE  %u %u %u %u\n",
-			     cfg->baud, cfg->stop_bits, cfg->parity, cfg->data_bits);
-
 		pl2303_config cfg_new;
 		*cfg = cfg_new;
-
-		if (verbose)
-			PDBG("SET_LINE  %u %u %u %u\n",
-			     cfg_new.baud, cfg_new.stop_bits, cfg_new.parity, cfg_new.data_bits);
 
 		iface.control_transfer(p, 0x21, 0x20, 0, 0, 100);
 		iface.release(p);
@@ -204,37 +124,115 @@ struct Usb::Pl2303_driver : Completion
 		Usb::Endpoint &ep = iface.endpoint(IN);
 		for (int i = 0; i < PACKET_BUFFER; i++) {
 			p = iface.alloc(ep.max_packet_size);
-			iface.bulk_transfer(p, ep, 0, false, this);
+			iface.bulk_transfer(p, ep, false, this);
 		}
 
 		/* send signal to terminal client */
-		if (connected_sigh.valid())
-			Signal_transmitter(connected_sigh).submit();
+		if (_connected_sigh.valid())
+			Signal_transmitter(_connected_sigh).submit();
 	}
 
-	/**
-	 * Called from USB driver when the desired device is active
-	 */
-	void state_change(unsigned)
+	void _handle_state_change()
 	{
-		if (connection.plugged()) {
-			if (verbose)
-				PDBG("Device: Plugged");
-			init();
+		if (_connection.plugged())
+			_init();
+	}
+
+
+
+	Pl2303_driver(Genode::Env &env, Heap &heap)
+	: _env(env), _heap(heap) { }
+
+	void read_avail_sigh(Signal_context_capability sigh)
+	{
+		_read_avail_sigh = sigh;
+	}
+
+	void connected_sigh(Signal_context_capability sigh)
+	{
+		_connected_sigh = sigh;
+	}
+
+
+	/* send control message for to read/write from/to PL2303 endpoint */
+	void pl2303_magic(Usb::Interface &iface, uint16_t value, uint16_t index, bool read)
+	{
+		Usb::Packet_descriptor p = iface.alloc(0);
+
+		uint8_t request_type = read ? Usb::ENDPOINT_IN : Usb::ENDPOINT_OUT
+		                        | Usb::TYPE_VENDOR
+		                        | Usb::RECIPIENT_DEVICE;
+
+		iface.control_transfer(p, request_type, 1, value, index,100);
+		iface.release(p);
+	}
+
+	void pl2303_magic_read(Usb::Interface &iface, uint16_t value, uint16_t index) {
+		pl2303_magic(iface, value, index, true); }
+
+	void pl2303_magic_write(Usb::Interface &iface, uint16_t value, uint16_t index) {
+		pl2303_magic(iface, value, index, false); }
+
+	void bulk_packet(Packet_descriptor &p)
+	{
+		Usb::Interface iface = _device.interface(0);
+
+		/* error or write packet */
+		if (!p.succeded || !p.read_transfer()) {
+			iface.release(p);
+			return;
 		}
-		else if (verbose)
-			PDBG("Device: Unplugged");
+
+		/* buffer data */
+		bool const notify_sigh = _ring_buffer.empty() && p.transfer.actual_size;
+		char *data             = (char *)iface.content(p);
+
+		try {
+			for (int i = 0; i < p.transfer.actual_size; i++)
+				_ring_buffer.add(data[i]);
+		} catch (Ring_buffer::Overflow) {
+			Genode::warning("Pl2303 buffer overflow");
+		}
+
+		/* submit back to device (async) */
+		iface.submit(p);
+
+		/* notify client */
+		if (notify_sigh && _read_avail_sigh.valid())
+			Signal_transmitter(_read_avail_sigh).submit();
+	}
+
+	void complete(Packet_descriptor &p)
+	{
+		switch (p.type) {
+			case Packet_descriptor::BULK: bulk_packet(p); break;
+			default: break;
+		}
+	}
+
+	size_t write(void *dst, size_t num_bytes)
+	{
+		num_bytes = min(num_bytes, MAX_PACKET_SIZE);
+
+		Usb::Interface   &iface = _device.interface(0);
+		Endpoint         &ep    = iface.endpoint(OUT);
+		Packet_descriptor p     = iface.alloc(num_bytes);
+
+		memcpy(iface.content(p), dst, num_bytes);
+		iface.bulk_transfer(p, ep, false, this);
+
+		return num_bytes;
 	}
 
 	/**
 	 * Return true if data is available
 	 */
-	bool avail() const { return !ring_buffer.empty(); }
+	bool avail() const { return !_ring_buffer.empty(); }
 
 	/**
 	 * Obtain character
 	 */
-	char get() { return ring_buffer.get(); }
+	char get() { return _ring_buffer.get(); }
 };
 
 
@@ -247,22 +245,27 @@ class Terminal::Session_component : public Rpc_object<Session, Session_component
 
 	public:
 
-		Session_component(size_t io_buffer_size, Usb::Pl2303_driver &driver)
-		: _io_buffer(env()->ram_session(), io_buffer_size), _driver(driver)
+		Session_component(Genode::Env &env, size_t io_buffer_size,
+		                  Usb::Pl2303_driver &driver)
+		:
+			_io_buffer(env.ram(), env.rm(), io_buffer_size),
+			_driver(driver)
 		{ }
 
-		void read_avail_sigh(Signal_context_capability sigh)
+		void read_avail_sigh(Signal_context_capability sigh) override
 		{
-			_driver.read_sigh = sigh;
+			_driver.read_avail_sigh(sigh);
 		}
 
-		void connected_sigh(Signal_context_capability sigh)
+		void connected_sigh(Signal_context_capability sigh) override
 		{
-			_driver.connected_sigh = sigh;
+			_driver.connected_sigh(sigh);
 		}
 
-		Size size()  { return Size(0, 0); }
-		bool avail() { return _driver.avail(); }
+		void size_changed_sigh(Signal_context_capability) override { }
+
+		Size size()  override { return Size(0, 0); }
+		bool avail() override { return _driver.avail(); }
 
 		size_t _read(size_t dst_len)
 		{
@@ -275,65 +278,37 @@ class Terminal::Session_component : public Rpc_object<Session, Session_component
 			return num_bytes;
 		}
 
-		void _write(size_t num_bytes)
+		size_t _write(size_t num_bytes)
 		{
 			char *dst = _io_buffer.local_addr<char>();
-			while (num_bytes) {
-				size_t size = _driver.write(dst, num_bytes);
-				num_bytes -= size;
-				dst       += size;
+			size_t written_bytes;
+			for (written_bytes = 0; written_bytes < num_bytes; ) {
+				written_bytes += _driver.write(dst + written_bytes,
+				                               num_bytes - written_bytes);
 			}
+			return written_bytes;
 		}
 
 		Dataspace_capability _dataspace() { return _io_buffer.cap(); }
 
-		size_t read(void *buf, size_t) { return 0; }
-		size_t write(void const *buf, size_t) { return 0; }
-};
-
-
-class Terminal::Root_component : public Genode::Root_component<Session_component, Single_client>
-{
-	private:
-
-		Usb::Pl2303_driver _driver;
-
-	protected:
-
-		Session_component *_create_session(char const *args)
-		{
-			size_t const io_buffer_size = 4096;
-			return new (md_alloc()) Session_component(io_buffer_size, _driver);
-		}
-
-	public:
-
-		Root_component(Server::Entrypoint &ep, Genode::Allocator &md_alloc)
-		: Genode::Root_component<Session_component, Genode::Single_client>(&ep.rpc_ep(), &md_alloc),
-			_driver(ep)
-		{ }
+		size_t read(void *buf, size_t) override { return 0; }
+		size_t write(void const *buf, size_t) override { return 0; }
 };
 
 
 struct Terminal::Main
 {
-	Server::Entrypoint &ep;
-	Sliced_heap         heap = { env()->ram_session(), env()->rm_session() };
-	Root_component      terminal_root = { ep, heap };
+	Env                  &_env;
+	Heap                  _heap    { _env.ram(), _env.rm() };
+	Usb::Pl2303_driver    _driver  { _env, _heap };
+	Session_component     _session { _env, 4096, _driver };
+	Static_root<Session>  _root    { _env.ep().manage(_session) };
 
-	Main(Server::Entrypoint &ep) :  ep(ep)
+	Main(Genode::Env &env) : _env(env)
 	{
-		env()->parent()->announce(ep.manage(terminal_root));
+		env.parent().announce(env.ep().manage(_root));
 	}
 };
 
 
-namespace Server {
-	char const *name()       { return "usb_terminal_ep"; };
-	size_t      stack_size() { return 2*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Terminal::Main server(ep);
-	}
-}
+void Component::construct(Genode::Env &env) { static Terminal::Main inst(env); }

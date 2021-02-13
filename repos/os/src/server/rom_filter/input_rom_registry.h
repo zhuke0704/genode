@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INPUT_ROM_REGISTRY_H_
@@ -16,10 +16,7 @@
 
 /* Genode includes */
 #include <util/xml_node.h>
-#include <os/attached_rom_dataspace.h>
-#include <os/config.h>
-#include <os/attached_ram_dataspace.h>
-#include <os/server.h>
+#include <base/attached_rom_dataspace.h>
 #include <base/allocator.h>
 
 namespace Rom_filter {
@@ -33,11 +30,10 @@ namespace Rom_filter {
 	typedef Genode::String<80> Node_type_name;
 	typedef Genode::String<80> Attribute_name;
 
-
-	using Genode::env;
 	using Genode::Signal_context_capability;
-	using Genode::Signal_rpc_member;
+	using Genode::Signal_handler;
 	using Genode::Xml_node;
+	using Genode::Interface;
 }
 
 
@@ -48,7 +44,7 @@ class Rom_filter::Input_rom_registry
 		/**
 		 * Callback type
 		 */
-		struct Input_rom_changed_fn
+		struct Input_rom_changed_fn : Interface
 		{
 			virtual void input_rom_changed() = 0;
 		};
@@ -57,6 +53,7 @@ class Rom_filter::Input_rom_registry
 		 * Exception type
 		 */
 		class Nonexistent_input_value { };
+		class Nonexistent_input_node  { };
 
 	private:
 
@@ -64,34 +61,71 @@ class Rom_filter::Input_rom_registry
 		{
 			private:
 
-				Server::Entrypoint &_ep;
+				Genode::Env &_env;
 
 				Input_rom_name _name;
 
 				Input_rom_changed_fn &_input_rom_changed_fn;
 
-				Genode::Attached_rom_dataspace _rom_ds { _name.string() };
+				Genode::Attached_rom_dataspace _rom_ds { _env, _name.string() };
 
 				Xml_node _top_level { "<empty/>" };
 
-				void _handle_rom_changed(unsigned)
+				void _handle_rom_changed()
 				{
 					_rom_ds.update();
 					if (!_rom_ds.valid())
 						return;
 
-					try {
-						_top_level = Xml_node(_rom_ds.local_addr<char>());
-					} catch (...) {
-						_top_level = Xml_node("<empty/>");
-					}
+					_top_level = _rom_ds.xml();
 
 					/* trigger re-evaluation of the inputs */
 					_input_rom_changed_fn.input_rom_changed();
 				}
 
-				Genode::Signal_rpc_member<Entry> _rom_changed_dispatcher =
-					{ _ep, *this, &Entry::_handle_rom_changed };
+				Genode::Signal_handler<Entry> _rom_changed_handler =
+					{ _env.ep(), *this, &Entry::_handle_rom_changed };
+
+				/**
+				 * Return sub node of 'content' according to the constraints
+				 * given by 'path'
+				 *
+				 * \throw Xml_node::Nonexistent_sub_node
+				 */
+				static Xml_node _matching_sub_node(Node_type_name type,
+				                                   Xml_node const &path,
+				                                   Xml_node const &content)
+				{
+					typedef Input_value Attribute_value;
+
+					Xml_node sub_node = content.sub_node(type.string());
+
+					Attribute_name const expected_attr =
+						path.attribute_value("attribute", Attribute_name());
+
+					Attribute_value const expected_value =
+						path.attribute_value("value", Attribute_value());
+
+					for (;; sub_node = sub_node.next(type.string())) {
+
+						/* attribute remains unspecified -> match */
+						if (!expected_attr.valid())
+							return sub_node;
+
+						/* value remains unspecified -> match */
+						if (!expected_value.valid())
+							return sub_node;
+
+						Attribute_value const present_value =
+							sub_node.attribute_value(expected_attr.string(),
+							                         Attribute_value());
+
+						if (present_value == expected_value)
+							return sub_node;
+					}
+
+					throw Xml_node::Nonexistent_sub_node();
+				}
 
 				/**
 				 * Query value from XML-structured ROM content
@@ -127,8 +161,12 @@ class Rom_filter::Input_rom_registry
 							Node_type_name const sub_node_type =
 								path.attribute_value("type", Node_type_name(""));
 
-							content = content.sub_node(sub_node_type.string());
-							path    = path.sub_node();
+							try {
+								content = _matching_sub_node(sub_node_type, path, content);
+								path    = path.sub_node();
+							}
+							catch (Xml_node::Nonexistent_sub_node) {
+								throw Nonexistent_input_value(); }
 
 							continue;
 						}
@@ -155,13 +193,15 @@ class Rom_filter::Input_rom_registry
 				/**
 				 * Constructor
 				 */
-				Entry(Input_rom_name const &name, Server::Entrypoint &ep,
+				Entry(Genode::Env &env, Input_rom_name const &name,
 				      Input_rom_changed_fn &input_rom_changed_fn)
 				:
-					_ep(ep), _name(name),
+					_env(env), _name(name),
 					_input_rom_changed_fn(input_rom_changed_fn)
 				{
-					_rom_ds.sigh(_rom_changed_dispatcher);
+					_rom_ds.sigh(_rom_changed_handler);
+					try { _top_level = _rom_ds.xml(); }
+					catch (...) {}
 				}
 
 				Input_rom_name name() const { return _name; }
@@ -190,21 +230,27 @@ class Rom_filter::Input_rom_registry
 						Node_type_name expected = _top_level_node_type(input_node);
 						if (content_node.has_type(expected.string()))
 							return _query_value(input_node.sub_node(), content_node);
-						else
-							PWRN("top-level node <%s> missing in input ROM %s",
-							     expected.string(), name().string());
 
 					} catch (...) { }
 
 					throw Nonexistent_input_value();
 				}
+
+				Xml_node node() const
+				{
+					try {
+						return Xml_node(_top_level);
+					} catch (...) { }
+
+					throw Nonexistent_input_node();
+				}
 		};
 
 		Genode::Allocator &_alloc;
 
-		Server::Entrypoint &_ep;
+		Genode::Env &_env;
 
-		Genode::List<Entry> _input_roms;
+		Genode::List<Entry> _input_roms { };
 
 		Input_rom_changed_fn &_input_rom_changed_fn;
 
@@ -289,7 +335,7 @@ class Rom_filter::Input_rom_registry
 		/**
 		 * \throw Nonexistent_input_value
 		 */
-		Input_value _query_value_in_roms(Xml_node input_node)
+		Input_value _query_value_in_roms(Xml_node input_node) const
 		{
 			Entry const *entry =
 				_lookup_entry_by_name(_input_rom_name(input_node));
@@ -310,10 +356,10 @@ class Rom_filter::Input_rom_registry
 		 * \param sigh  signal context capability to install in ROM sessions
 		 *              for the inputs
 		 */
-		Input_rom_registry(Genode::Allocator &alloc, Server::Entrypoint &ep,
+		Input_rom_registry(Genode::Env &env, Genode::Allocator &alloc,
 		                   Input_rom_changed_fn &input_rom_changed_fn)
 		:
-			_alloc(alloc), _ep(ep), _input_rom_changed_fn(input_rom_changed_fn)
+			_alloc(alloc), _env(env), _input_rom_changed_fn(input_rom_changed_fn)
 		{ }
 
 		void update_config(Xml_node config)
@@ -342,7 +388,7 @@ class Rom_filter::Input_rom_registry
 					return;
 
 				Entry *entry =
-					new (_alloc) Entry(name, _ep, _input_rom_changed_fn);
+					new (_alloc) Entry(_env, name, _input_rom_changed_fn);
 
 				_input_roms.insert(entry);
 			};
@@ -378,6 +424,21 @@ class Rom_filter::Input_rom_registry
 				throw Nonexistent_input_value();
 
 			return input_value;
+		}
+
+		/**
+		 * Generate content of the specifed input
+		 *
+		 * \throw Nonexistent_input_node
+		 */
+		void gen_xml(Input_name const &input_name, Genode::Xml_generator &xml)
+		{
+			Entry const *e = _lookup_entry_by_name(input_name);
+			if (!e)
+				throw Nonexistent_input_node();
+
+			e->node().with_raw_node([&] (char const *start, Genode::size_t length) {
+				xml.append(start, length); });
 		}
 };
 

@@ -1,13 +1,13 @@
 #
 # Make Linux headers of the host platform available to the program
 #
-include $(call select_from_repositories,lib/import/import-syscall.mk)
+include $(call select_from_repositories,lib/import/import-syscall-linux.mk)
 
 #
 # Manually supply all library search paths of the host compiler to our tool
 # chain.
 #
-HOST_LIB_SEARCH_DIRS = $(shell cc $(CC_MARCH) -print-search-dirs | grep libraries |\
+HOST_LIB_SEARCH_DIRS = $(shell $(CUSTOM_HOST_CC) $(CC_MARCH) -print-search-dirs | grep libraries |\
                                sed "s/.*=//"   | sed "s/:/ /g" |\
                                sed "s/\/ / /g" | sed "s/\/\$$//")
 #
@@ -65,31 +65,37 @@ endif
 #
 # Use the host's startup codes, linker script, and dynamic linker
 #
-ifneq ($(filter hardening_tool_chain, $(SPECS)),)
-EXT_OBJECTS += $(shell cc $(CC_MARCH) -print-file-name=Scrt1.o)
-EXT_OBJECTS += $(shell cc $(CC_MARCH) -print-file-name=crti.o)
-EXT_OBJECTS += $(shell $(CUSTOM_CC) $(CC_MARCH) -print-file-name=crtbeginS.o)
-EXT_OBJECTS += $(shell $(CUSTOM_CC) $(CC_MARCH) -print-file-name=crtendS.o)
-else
-EXT_OBJECTS += $(shell cc $(CC_MARCH) -print-file-name=crt1.o)
-EXT_OBJECTS += $(shell cc $(CC_MARCH) -print-file-name=crti.o)
+LD_TEXT_ADDR     ?=
+LD_SCRIPT_STATIC ?=
+
+EXT_OBJECTS += $(shell $(CUSTOM_HOST_CC) $(CC_MARCH) -print-file-name=crt1.o)
+EXT_OBJECTS += $(shell $(CUSTOM_HOST_CC) $(CC_MARCH) -print-file-name=crti.o)
 EXT_OBJECTS += $(shell $(CUSTOM_CC) $(CC_MARCH) -print-file-name=crtbegin.o)
 EXT_OBJECTS += $(shell $(CUSTOM_CC) $(CC_MARCH) -print-file-name=crtend.o)
-endif
-EXT_OBJECTS += $(shell cc $(CC_MARCH) -print-file-name=crtn.o)
+EXT_OBJECTS += $(shell $(CUSTOM_HOST_CC) $(CC_MARCH) -print-file-name=crtn.o)
 
 LX_LIBS_OPT += -lgcc -lgcc_s -lsupc++ -lc -lpthread
 
 USE_HOST_LD_SCRIPT = yes
 
+#
+# We need to manually add the default linker script on the command line in case
+# of standard library use. Otherwise, we were not able to extend it by the
+# stack area section.
+#
 ifeq (x86_64,$(findstring x86_64,$(SPECS)))
-CXX_LINK_OPT += -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2
-else
-ifeq (arm,$(findstring arm,$(SPECS)))
-CXX_LINK_OPT += -Wl,--dynamic-linker=/lib/ld-linux.so.3
-else
-CXX_LINK_OPT += -Wl,--dynamic-linker=/lib/ld-linux.so.2
+CXX_LINK_OPT     += -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2
+LD_SCRIPT_DEFAULT = ldscripts/elf_x86_64.xc
 endif
+
+ifeq (x86_32,$(findstring x86_32,$(SPECS)))
+CXX_LINK_OPT     += -Wl,--dynamic-linker=/lib/ld-linux.so.2
+LD_SCRIPT_DEFAULT = ldscripts/elf_i386.xc
+endif
+
+ifeq (arm,$(findstring arm,$(SPECS)))
+CXX_LINK_OPT    += -Wl,--dynamic-linker=/lib/ld-linux.so.3
+LD_SCRIPT_STATIC = ldscripts/armelf_linux_eabi.xc
 endif
 
 #
@@ -99,7 +105,17 @@ endif
 LD_LIBGCC = $(LX_LIBS_OPT)
 
 # use the host c++ for linking to find shared libraries in DT_RPATH library paths
-LD_CMD = c++
+LD_CMD = $(CUSTOM_HOST_CXX)
 
 # disable format-string security checks, which prevent non-literal format strings
 CC_OPT += -Wno-format-security
+
+#
+# Disable position-independent executables (which are enabled by default on
+# Ubuntu 16.10 or newer)
+#
+CXX_LINK_OPT_NO_PIE = $(shell \
+	(echo "int main(){}" | $(CUSTOM_HOST_CXX) -no-pie -x c++ - -o /dev/null >& /dev/null \
+	&& echo "-no-pie") || true)
+CXX_LINK_OPT += $(CXX_LINK_OPT_NO_PIE)
+

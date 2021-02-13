@@ -1,14 +1,14 @@
 /*
- * \brief  libc_pipe test
+ * \brief  Test for using libc with VFS pipe plugin
  * \author Christian Prochaska
  * \date   2016-04-24
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 
@@ -76,12 +76,12 @@ int main(int argc, char *argv[])
 	ssize_t bytes_written = write(pipefd[1], buf, BUF_SIZE);
 
 	if (bytes_written != BUF_SIZE) {
-		fprintf(stderr, "Error writing to pipe");
+		fprintf(stderr, "Error writing to pipe (bytes_written=%zd, BUF_SIZE=%zd)\n",
+		        bytes_written, (size_t)BUF_SIZE);
 		exit(1);
 	}
 
-	/* pthread_join() is not implemented at this time */
-	while (!reader_finished) { }
+	pthread_join(tid, NULL);
 
 	printf("--- test finished ---\n");
 

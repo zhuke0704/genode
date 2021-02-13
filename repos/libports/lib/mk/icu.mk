@@ -1,4 +1,4 @@
-include $(REP_DIR)/lib/import/import-icu.mk
+include $(call select_from_repositories,lib/import/import-icu.mk)
 
 ICU_DIR = $(call select_from_ports,icu)/src/lib/icu
 
@@ -85,12 +85,17 @@ binary_$(ICU_DAT).o : $(ICU_DAT)
 
 CC_OPT += -DU_COMMON_IMPLEMENTATION -DU_I18N_IMPLEMENTATION
 
+# prevent redefinition of the 'uintptr_t' type
+CC_OPT += -D__intptr_t_defined
+
 CC_WARN += -Wno-deprecated-declarations
 
-LIBS = stdcxx pthread
+LIBS = stdcxx
 
 vpath % $(ICU_DIR)/source/common
 vpath % $(ICU_DIR)/source/i18n
 vpath % $(ICU_DIR)/source/data/in
 
 SHARED_LIB = yes
+
+CC_CXX_WARN_STRICT =

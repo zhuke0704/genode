@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _STATUS_ENTRY_H_
@@ -23,7 +23,7 @@ class Status_entry : public Scout::Parent_element
 
 		Scout::Block      _block;
 		Kbyte_loadbar<PT> _loadbar;
-		int               _lh;        /* launch entry height */
+		int               _lh = 0;        /* launch entry height */
 
 		enum { _PTW = 100 };  /* program text width */
 		enum { _PADX = 10 };  /* horizontal padding */
@@ -48,7 +48,7 @@ class Status_entry : public Scout::Parent_element
 			_min_size = Scout::Area(_PTW + 100, _min_size.h());
 		}
 
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			using namespace Scout;
 

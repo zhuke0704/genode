@@ -5,15 +5,16 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__CANVAS_H_
 #define _INCLUDE__SCOUT__CANVAS_H_
 
+#include <base/allocator.h>
 #include <scout/texture_allocator.h>
 #include <os/pixel_rgba.h>
 #include <util/color.h>
@@ -70,7 +71,7 @@ struct Scout::Canvas_base : Texture_allocator
 };
 
 
-#include <os/texture_rgb565.h>
+#include <os/texture_rgb888.h>
 #include <base/env.h>
 
 
@@ -79,36 +80,43 @@ class Scout::Canvas : public Canvas_base
 {
 	private:
 
+		Genode::Allocator  &_alloc;
 		Genode::Surface<PT> _surface;
 
 	public:
 
-		Canvas(PT *base, Area size) : _surface(base, size) { }
+		/**
+		 * Constructor
+		 *
+		 * \param alloc  allocator to be used for allocating textures
+		 */
+		Canvas(PT *base, Area size, Genode::Allocator &alloc)
+		: _alloc(alloc), _surface(base, size) { }
 
-		Area size() const { return _surface.size(); }
+		Area size() const override { return _surface.size(); }
 
-		Rect clip() const { return _surface.clip(); }
+		Rect clip() const override { return _surface.clip(); }
 
-		void clip(Rect rect) { _surface.clip(rect); }
+		void clip(Rect rect) override { _surface.clip(rect); }
 
-		void draw_string(int x, int y, Font *font, Color color, char const *str, int len)
+		void draw_string(int x, int y, Font *font, Color color, char const *str, int len) override
 		{
 			char buf[len + 1];
-			Genode::strncpy(buf, str, len + 1);
-			Text_painter::paint(_surface, Point(x, y), *font, color, buf);
+			Genode::copy_cstring(buf, str, len + 1);
+			Text_painter::paint(_surface, Text_painter::Position(x, y), *font, color, buf);
 		}
 
-		void draw_box(int x, int y, int w, int h, Color c)
+		void draw_box(int x, int y, int w, int h, Color c) override
 		{
 			Box_painter::paint(_surface, Rect(Point(x, y), Area(w, h)), c);
 		}
 
-		void draw_horizontal_shadow(Rect rect, int intensity)
+		void draw_horizontal_shadow(Rect rect, int intensity) override
 		{
 			Horizontal_shadow_painter::paint(_surface, rect, intensity);
 		}
 
-		void draw_icon(Rect rect, Texture_base const &icon, unsigned alpha)
+		void draw_icon(Rect rect, Texture_base const &icon, unsigned alpha) override
 		{
 			Icon_painter::paint(_surface, rect,
 			                    static_cast<Texture<PT> const &>(icon), alpha);
@@ -116,7 +124,7 @@ class Scout::Canvas : public Canvas_base
 
 		void draw_sky_texture(int py,
 		                      Sky_texture_painter::Sky_texture_base const &texture,
-		                      bool detail)
+		                      bool detail) override
 		{
 			Sky_texture_painter::paint(_surface, py, texture, detail);
 		}
@@ -124,7 +132,7 @@ class Scout::Canvas : public Canvas_base
 		void draw_refracted_icon(Point pos,
 		                         Scout::Refracted_icon_painter::Distmap<short> const &distmap,
 		                         Texture_base &tmp, Texture_base const &foreground,
-		                         bool detail, bool filter_backbuf)
+		                         bool detail, bool filter_backbuf) override
 		{
 			using namespace Scout;
 			Refracted_icon_painter::paint(_surface, pos, distmap,
@@ -133,7 +141,7 @@ class Scout::Canvas : public Canvas_base
 			                              detail, filter_backbuf);
 		}
 
-		void draw_texture(Point pos, Texture_base const &texture_base)
+		void draw_texture(Point pos, Texture_base const &texture_base) override
 		{
 			Texture<PT> const &texture = static_cast<Texture<PT> const &>(texture_base);
 
@@ -141,39 +149,39 @@ class Scout::Canvas : public Canvas_base
 			                       Texture_painter::SOLID, true);
 		}
 
-		Texture_base *alloc_texture(Area size, bool has_alpha)
+		Texture_base *alloc_texture(Area size, bool has_alpha) override
 		{
 			using namespace Genode;
 
-			PT *pixel = (PT *)env()->heap()->alloc(size.count()*sizeof(PT));
+			PT *pixel = (PT *)_alloc.alloc(size.count()*sizeof(PT));
 
 			unsigned char *alpha = 0;
 
 			if (has_alpha)
-				alpha = (unsigned char *)env()->heap()->alloc(size.count());
+				alpha = (unsigned char *)_alloc.alloc(size.count());
 
-			return new (env()->heap()) Genode::Texture<PT>(pixel, alpha, size);
+			return new (_alloc) Genode::Texture<PT>(pixel, alpha, size);
 		}
 
-		virtual void free_texture(Texture_base *texture_base)
+		void free_texture(Texture_base *texture_base) override
 		{
 			using namespace Genode;
 
 			Texture<PT> *texture = static_cast<Texture<PT> *>(texture_base);
 
-			size_t const num_pixels = texture->size().count();
+			Genode::size_t const num_pixels = texture->size().count();
 
 			if (texture->alpha())
-				env()->heap()->free(texture->alpha(), num_pixels);
+				_alloc.free(texture->alpha(), num_pixels);
 
-			env()->heap()->free(texture->pixel(), sizeof(PT)*num_pixels);
+			_alloc.free(texture->pixel(), sizeof(PT)*num_pixels);
 
-			destroy(env()->heap(), texture);
+			destroy(_alloc, texture);
 		}
 
-		virtual void set_rgba_texture(Texture_base *texture_base,
-		                              unsigned char const *rgba,
-		                              unsigned len, int y)
+		void set_rgba_texture(Texture_base *texture_base,
+		                      unsigned char const *rgba,
+		                      unsigned len, int y) override
 		{
 			Texture<PT> *texture = static_cast<Texture<PT> *>(texture_base);
 

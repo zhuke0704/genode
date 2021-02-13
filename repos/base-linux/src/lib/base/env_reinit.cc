@@ -8,17 +8,17 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* base-internal includes */
 #include <base/internal/platform_env.h>
 
 
-void Genode::Platform_env_base::reinit(Native_capability::Dst, long) { }
+void Genode::Platform_env_base::reinit(Native_capability::Raw) { }
 
 
 void Genode::Platform_env_base::reinit_main_thread(Capability<Region_map> &) { }

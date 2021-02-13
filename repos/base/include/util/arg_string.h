@@ -18,10 +18,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__ARG_STRING_H_
@@ -140,16 +140,18 @@ class Genode::Arg
 		bool bool_value(bool default_value) const
 		{
 			bool result = default_value;
-			switch(_value.type()) {
+			switch (_value.type()) {
 
 			/* result is passed to 'ascii_to' by reference */
 			case Token::IDENT:;
 				if (ascii_to(_value.start(), result) ==  _value.len())
 					return result;
+				return default_value;
 
 			case Token::STRING:
 				if (ascii_to(_value.start()+1, result) == _value.len()-2)
 					return result;
+				return default_value;
 
 			default:
 				/* read values 0 (false) / !0 (true) */
@@ -178,7 +180,7 @@ class Genode::Arg
 
 			/* stop here if _value is not a string */
 			if (_value.type() != Token::STRING) {
-				strncpy(dst, default_string, dst_len);
+				copy_cstring(dst, default_string, dst_len);
 				return;
 			}
 

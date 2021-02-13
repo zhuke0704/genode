@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -21,9 +21,9 @@
 using namespace Genode;
 
 
-void Io_mem_session_component::_unmap_local(addr_t base, size_t size)
+void Io_mem_session_component::_unmap_local(addr_t base, size_t)
 {
-	platform()->region_alloc()->free(reinterpret_cast<void *>(base));
+	platform().region_alloc().free(reinterpret_cast<void *>(base));
 }
 
 
@@ -35,11 +35,11 @@ addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
 
 	/* find appropriate region for mapping */
 	void *local_base = 0;
-	if (platform()->region_alloc()->alloc_aligned(size, &local_base, alignment).error())
+	if (platform().region_alloc().alloc_aligned(size, &local_base, alignment).error())
 		return 0;
 
 	if (!map_local_io(base, (addr_t)local_base, size >> get_page_size_log2())) {
-		PERR("map_local_io failed\n");
+		error("map_local_io failed");
 		return 0;
 	}
 

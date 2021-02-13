@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -17,7 +17,6 @@
 #include <base/ipc.h>
 #include <base/allocator.h>
 #include <base/thread.h>
-#include <base/native_env.h>
 #include <util/construct_at.h>
 #include <util/retry.h>
 
@@ -25,6 +24,8 @@
 #include <base/internal/native_utcb.h>
 #include <base/internal/native_thread.h>
 #include <base/internal/ipc_server.h>
+#include <base/internal/native_env.h>
+#include <base/internal/capability_space.h>
 
 /* base-hw includes */
 #include <kernel/interface.h>
@@ -44,7 +45,7 @@ static inline void copy_msg_to_utcb(Msgbuf_base const &snd_msg, Native_utcb &utc
 	                            snd_msg.used_caps());
 
 	for (unsigned i = 0; i < num_caps; i++)
-		utcb.cap_set(i, snd_msg.cap(i).dst());
+		utcb.cap_set(i, Capability_space::capid(snd_msg.cap(i)));
 
 	utcb.cap_cnt(num_caps);
 
@@ -68,9 +69,9 @@ static inline void copy_utcb_to_msg(Native_utcb const &utcb, Msgbuf_base &rcv_ms
 	                            utcb.cap_cnt());
 
 	for (unsigned i = 0; i < num_caps; i++) {
-		rcv_msg.cap(i) = utcb.cap_get(i);
+		rcv_msg.cap(i) = Capability_space::import(utcb.cap_get(i));
 		if (rcv_msg.cap(i).valid())
-			Kernel::ack_cap(rcv_msg.cap(i).dst());
+			Kernel::ack_cap(Capability_space::capid(rcv_msg.cap(i)));
 	}
 
 	rcv_msg.used_caps(num_caps);
@@ -100,8 +101,7 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
 
 			copy_msg_to_utcb(snd_msg, *Thread::myself()->utcb());
 
-			switch (Kernel::send_request_msg(dst.dst(),
-			                                 rcv_caps)) {
+			switch (Kernel::send_request_msg(Capability_space::capid(dst), rcv_caps)) {
 			case -1: throw Blocking_canceled();
 			case -2: throw Allocator::Out_of_memory();
 			default:
@@ -109,7 +109,7 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
 			}
 
 		},
-		[&] () { upgrade_pd_session_quota(3*4096); });
+		[&] () { upgrade_capability_slab(); });
 
 	return Rpc_exception_code(utcb.exception_code());
 }
@@ -119,7 +119,7 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
  ** IPC server **
  ****************/
 
-void Genode::ipc_reply(Native_capability caller, Rpc_exception_code exc,
+void Genode::ipc_reply(Native_capability, Rpc_exception_code exc,
                        Msgbuf_base &snd_msg)
 {
 	Native_utcb &utcb = *Thread::myself()->utcb();
@@ -154,7 +154,7 @@ Genode::Rpc_request Genode::ipc_reply_wait(Reply_capability const &,
 			default: break;
 			}
 		},
-		[&] () { upgrade_pd_session_quota(3*4096); });
+		[&] () { upgrade_capability_slab(); });
 
 	copy_utcb_to_msg(utcb, request_msg);
 

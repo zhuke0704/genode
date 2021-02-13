@@ -5,22 +5,17 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
+#include <util/construct_at.h>
 #include <base/allocator_avl.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 using namespace Genode;
-
-
-/**
- * Placement operator - tool for directly calling a constructor
- */
-inline void *operator new(size_t, void *at) { return at; }
 
 
 /**************************
@@ -102,25 +97,31 @@ void Allocator_avl_base::Block::recompute()
 
 Allocator_avl_base::Block *Allocator_avl_base::_alloc_block_metadata()
 {
-	void *b = 0;
+	void *b = nullptr;
 	if (_md_alloc->alloc(sizeof(Block), &b))
+		return construct_at<Block>(b, 0, 0, 0);
 
-		/* call constructor by using the placement new operator */
-		return new((Block *)b) Block(0, 0, 0);
-
-	return 0;
+	return nullptr;
 }
 
 
 bool Allocator_avl_base::_alloc_two_blocks_metadata(Block **dst1, Block **dst2)
 {
-	*dst1 = _alloc_block_metadata();
-	*dst2 = _alloc_block_metadata();
+	Block * const b1 = _alloc_block_metadata();
+	Block * const b2 = _alloc_block_metadata();
 
-	if (!*dst1 && *dst2) _md_alloc->free(*dst2, sizeof(Block));
-	if (!*dst2 && *dst1) _md_alloc->free(*dst1, sizeof(Block));
+	if (b1 && b2) {
+		*dst1 = b1;
+		*dst2 = b2;
+		return true;
+	}
 
-	return (*dst1 && *dst2);
+	*dst1 = *dst2 = nullptr;
+
+	if (b2) _md_alloc->free(b2, sizeof(Block));
+	if (b1) _md_alloc->free(b1, sizeof(Block));
+
+	return false;
 }
 
 
@@ -131,7 +132,7 @@ int Allocator_avl_base::_add_block(Block *block_metadata,
 		return -1;
 
 	/* call constructor for new block */
-	new (block_metadata) Block(base, size, used);
+	construct_at<Block>(block_metadata, base, size, used);
 
 	/* insert block into avl tree */
 	_addr_tree.insert(block_metadata);
@@ -153,8 +154,14 @@ void Allocator_avl_base::_destroy_block(Block *b)
 void Allocator_avl_base::_cut_from_block(Block *b, addr_t addr, size_t size,
                                          Block *dst1, Block *dst2)
 {
-	size_t   padding = addr > b->addr() ? addr - b->addr() : 0;
-	size_t remaining = b->size() > (size + padding) ? b->size() - size - padding : 0;
+	size_t const padding   = addr > b->addr() ? addr - b->addr() : 0;
+	size_t const b_size    = b->size() > padding ? b->size() - padding : 0;
+	size_t       remaining = b_size > size ? b_size - size : 0;
+
+	/* case that a block contains the whole addressable range */
+	if (!b->addr() && !b->size())
+		remaining = b->size() - size - padding;
+
 	addr_t orig_addr = b->addr();
 
 	_destroy_block(b);
@@ -186,12 +193,17 @@ void Allocator_avl_base::_revert_allocations_and_ranges()
 	}
 
 	if (dangling_allocations)
-		PWRN("%zd dangling allocation%s at allocator destruction time",
-		     dangling_allocations, (dangling_allocations > 1) ? "s" : "");
+		warning(dangling_allocations, " dangling allocation",
+		        (dangling_allocations > 1) ? "s" : "",
+		        " at allocator destruction time");
 
-	/* remove ranges */
-	while (Block *block = _addr_tree.first())
-		remove_range(block->addr(), block->size());
+	/* destroy all remaining blocks */
+	while (Block *block = _addr_tree.first()) {
+		if (remove_range(block->addr(), block->size())) {
+			/* if the invocation fails, release the block to break endless loop  */
+			_destroy_block(block);
+		}
+	}
 }
 
 
@@ -353,8 +365,8 @@ void Allocator_avl_base::free(void *addr)
 	size_t new_size = b->size();
 
 	if (new_addr != (addr_t)addr)
-		PERR("%s: given address (0x%p) is not the block start address (0x%lx)",
-		     __PRETTY_FUNCTION__, addr, new_addr);
+		error(__PRETTY_FUNCTION__, ": given address (", addr, ") "
+		      "is not the block start address (", (void *)new_addr, ")");
 
 	_destroy_block(b);
 

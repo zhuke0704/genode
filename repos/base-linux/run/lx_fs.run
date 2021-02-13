@@ -23,7 +23,6 @@ install_config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="PD"/>
 		<service name="RM"/>
 		<service name="CPU"/>
@@ -32,20 +31,20 @@ install_config {
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
-	<start name="lx_fs">
+	<default caps="100"/>
+	<start name="lx_fs" caps="200" ld="no">
 		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system"/> </provides>
-		<config> <policy label="test-libc_vfs" root="/libc_vfs" writeable="yes" /> </config>
+		<config> <policy label_prefix="test-libc_vfs" root="/libc_vfs" writeable="yes" /> </config>
 	</start>
 	<start name="test-libc_vfs">
-		<resource name="RAM" quantum="2M"/>
+		<resource name="RAM" quantum="4M"/>
 		<config>
-			<libc stdout="/dev/log">
-				<vfs>
-					<fs />
-					<dir name="dev"> <log/> </dir>
-				</vfs>
-			</libc>
+			<vfs>
+				<fs />
+				<dir name="dev"> <log/> </dir>
+			</vfs>
+			<libc stdout="/dev/log"/>
 		</config>
 	</start>
 </config>
@@ -62,7 +61,7 @@ exec mkdir -p bin/libc_vfs
 #
 
 build_boot_image {
-	core init ld.lib.so libc.lib.so lx_fs test-libc_vfs
+	core init ld.lib.so libc.lib.so vfs.lib.so lx_fs test-libc_vfs
 	libc_vfs
 }
 

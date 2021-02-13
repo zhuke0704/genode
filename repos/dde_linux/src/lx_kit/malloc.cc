@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
@@ -57,7 +57,7 @@ class Lx_kit::Slab_backend_alloc : public Lx::Slab_backend_alloc,
 		bool _alloc_block()
 		{
 			if (_index == ELEMENTS) {
-				PERR("Slab-backend exhausted!");
+				Genode::error("slab backend exhausted!");
 				return false;
 			}
 
@@ -80,26 +80,17 @@ class Lx_kit::Slab_backend_alloc : public Lx::Slab_backend_alloc,
 
 	public:
 
-		Slab_backend_alloc(Genode::Cache_attribute cached)
+		Slab_backend_alloc(Genode::Env &env, Genode::Allocator &md_alloc,
+		                   Genode::Cache_attribute cached)
 		:
+			Rm_connection(env),
 			Region_map_client(Rm_connection::create(VM_SIZE)),
-			_cached(cached), _index(0), _range(Genode::env()->heap())
+			_cached(cached), _index(0), _range(&md_alloc)
 		{
 			/* reserver attach us, anywere */
-			_base = Genode::env()->rm_session()->attach(dataspace());
+			_base = env.rm().attach(dataspace());
 		}
 
-		static Slab_backend_alloc &mem()
-		{
-			static Lx_kit::Slab_backend_alloc inst(Genode::CACHED);
-			return inst;
-		}
-
-		static Slab_backend_alloc &dma()
-		{
-			static Lx_kit::Slab_backend_alloc inst(Genode::UNCACHED);
-			return inst;
-		}
 
 		/**************************************
 		 ** Lx::Slab_backend_alloc interface **
@@ -114,7 +105,7 @@ class Lx_kit::Slab_backend_alloc : public Lx::Slab_backend_alloc,
 
 			done = _alloc_block();
 			if (!done) {
-				PERR("Backend allocator exhausted\n");
+				Genode::error("backend allocator exhausted");
 				return false;
 			}
 
@@ -154,7 +145,7 @@ class Lx_kit::Slab_backend_alloc : public Lx::Slab_backend_alloc,
 					return _base +  i * V_BLOCK_SIZE + phys - _ds_phys[i];
 			}
 
-			PWRN("virt_addr(0x%lx) - no translation", phys);
+			Genode::warning("virt_addr(", Genode::Hex(phys), ") - no translation");
 			return 0;
 		}
 
@@ -177,11 +168,11 @@ class Lx_kit::Malloc : public Lx::Malloc
 		typedef Lx::Slab_alloc         Slab_alloc;
 		typedef Lx::Slab_backend_alloc Slab_backend_alloc;
 
-		Slab_backend_alloc     &_back_allocator;
-		Slab_alloc             *_allocator[NUM_SLABS];
-		Genode::Cache_attribute _cached; /* cached or un-cached memory */
-		addr_t                  _start;  /* VM region of this allocator */
-		addr_t                  _end;
+		Slab_backend_alloc                &_back_allocator;
+		Genode::Constructible<Slab_alloc>  _allocator[NUM_SLABS];
+		Genode::Cache_attribute            _cached; /* cached or un-cached memory */
+		addr_t                             _start;  /* VM region of this allocator */
+		addr_t                             _end;
 
 		/**
 		 * Set 'value' at 'addr'
@@ -233,21 +224,9 @@ class Lx_kit::Malloc : public Lx::Malloc
 		{
 			/* init slab allocators */
 			for (unsigned i = SLAB_START_LOG2; i <= SLAB_STOP_LOG2; i++)
-				_allocator[i - SLAB_START_LOG2] = new (Genode::env()->heap())
-				                                  Slab_alloc(1U << i, alloc);
+				_allocator[i - SLAB_START_LOG2].construct(1U << i, alloc);
 		}
 
-		static Malloc & mem()
-		{
-			static Malloc inst(Slab_backend_alloc::mem(), Genode::CACHED);
-			return inst;
-		}
-
-		static Malloc & dma()
-		{
-			static Malloc inst(Slab_backend_alloc::dma(), Genode::UNCACHED);
-			return inst;
-		}
 
 		/**************************
 		 ** Lx::Malloc interface **
@@ -273,13 +252,14 @@ class Lx_kit::Malloc : public Lx::Malloc
 				msb = SLAB_STOP_LOG2;
 
 			if (msb > SLAB_STOP_LOG2) {
-				PERR("Slab too large %u reqested %zu cached %d", 1U << msb, size, _cached);
+				Genode::error("slab too large ",
+				              1UL << msb, " requested ", size, " cached ", (int)_cached);
 				return 0;
 			}
 
 			addr_t addr =  _allocator[msb - SLAB_START_LOG2]->alloc();
 			if (!addr) {
-				PERR("Failed to get slab for %u", 1 << msb);
+				Genode::error("failed to get slab for ", 1 << msb);
 				return 0;
 			}
 
@@ -320,7 +300,7 @@ class Lx_kit::Malloc : public Lx::Malloc
 		{
 			void *addr;
 			if (!_back_allocator.alloc(size, &addr)) {
-				PERR("Large back end allocation failed (%zu bytes)", size);
+				Genode::error("large back end allocation failed (", size, " bytes)");
 				return nullptr;
 			}
 
@@ -331,7 +311,6 @@ class Lx_kit::Malloc : public Lx::Malloc
 		{
 			_back_allocator.free(ptr);
 		}
-
 
 		size_t size(void const *a)
 		{
@@ -356,33 +335,49 @@ class Lx_kit::Malloc : public Lx::Malloc
  ** Lx::Malloc implementation **
  *******************************/
 
+static Lx_kit::Slab_backend_alloc *_mem_backend_alloc_ptr;
+static Lx_kit::Slab_backend_alloc *_dma_backend_alloc_ptr;
+
+static Lx_kit::Malloc *_mem_alloc_ptr;
+static Lx_kit::Malloc *_dma_alloc_ptr;
+
+
+void Lx::malloc_init(Genode::Env &env, Genode::Allocator &md_alloc)
+{
+	static Lx_kit::Slab_backend_alloc mem_backend_alloc(env, md_alloc, Genode::CACHED);
+	static Lx_kit::Slab_backend_alloc dma_backend_alloc(env, md_alloc, Genode::UNCACHED);
+
+	_mem_backend_alloc_ptr = &mem_backend_alloc;
+	_dma_backend_alloc_ptr = &dma_backend_alloc;
+
+	static Lx_kit::Malloc mem_alloc(mem_backend_alloc, Genode::CACHED);
+	static Lx_kit::Malloc dma_alloc(dma_backend_alloc, Genode::UNCACHED);
+
+	_mem_alloc_ptr = &mem_alloc;
+	_dma_alloc_ptr = &dma_alloc;
+}
+
+
 /**
  * Cached memory backend allocator
  */
 Lx::Slab_backend_alloc &Lx::Slab_backend_alloc::mem() {
-	return Lx_kit::Slab_backend_alloc::mem(); }
+	return *_mem_backend_alloc_ptr; }
 
 
 /**
  * DMA memory backend allocator
  */
 Lx::Slab_backend_alloc &Lx::Slab_backend_alloc::dma() {
-	return Lx_kit::Slab_backend_alloc::dma(); }
+	return *_dma_backend_alloc_ptr; }
 
 
 /**
  * Cached memory allocator
  */
-Lx::Malloc &Lx::Malloc::mem() {
-	return Lx_kit::Malloc::mem(); }
+Lx::Malloc &Lx::Malloc::mem() { return *_mem_alloc_ptr; }
 
 /**
  * DMA memory allocator
  */
-Lx::Malloc &Lx::Malloc::dma() {
-	return Lx_kit::Malloc::dma(); }
-
-/**
- * Placement new for Malloc allocator
- */
-void *operator new (Genode::size_t s, Lx::Malloc &a) { return a.alloc(s); }
+Lx::Malloc &Lx::Malloc::dma() { return *_dma_alloc_ptr; }

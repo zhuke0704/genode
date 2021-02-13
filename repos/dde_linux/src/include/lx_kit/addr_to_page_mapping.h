@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__ADDR_TO_PAGE_MAPPING_H_
@@ -76,6 +76,8 @@ class Lx::Addr_to_page_mapping : public Lx_kit::List<Addr_to_page_mapping>::Elem
 
 			return 0;
 		}
+
+		static struct page* find_page_by_paddr(unsigned long paddr);
 };
 
 

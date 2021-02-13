@@ -2,14 +2,16 @@
  * \brief  Socket-based IPC implementation for Linux
  * \author Norman Feske
  * \author Christian Helmuth
+ * \author Stefan Thoeni
  * \date   2011-10-11
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
+ * Copyright (C) 2019 gapfruit AG
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -17,20 +19,30 @@
 #include <base/thread.h>
 #include <base/blocking.h>
 #include <base/env.h>
+#include <base/sleep.h>
 #include <linux_native_cpu/linux_native_cpu.h>
 
 /* base-internal includes */
-#include <base/internal/socket_descriptor_registry.h>
 #include <base/internal/native_thread.h>
 #include <base/internal/ipc_server.h>
-#include <base/internal/server_socket_pair.h>
+#include <base/internal/capability_space_tpl.h>
 
 /* Linux includes */
 #include <linux_syscalls.h>
-#include <sys/un.h>
-#include <sys/socket.h>
 
 using namespace Genode;
+
+namespace {
+
+	struct Pid
+	{
+		int value;
+
+		Pid() : value(lx_getpid()) { }
+
+		void print(Output &out) const { Genode::print(out, "[", value, "]"); }
+	};
+}
 
 
 /*
@@ -44,37 +56,35 @@ using namespace Genode;
  *   long  exception code
  *   ...call results...
  *
- * First data word of message, used to transfer the local name of the invoked
- * object (when a client calls a server) or the exception code (when the server
- * replies). This data word is never fetched from memory but transferred via
- * the first short-IPC register. The 'protocol_word' is needed as a spacer
- * between the header fields define above and the regular message payload..
+ * First data word of message, used to transfer the exception code (when the
+ * server replies). This data word is never fetched from memory but
+ * transferred via the first short-IPC register. The 'protocol_word' is needed
+ * as a spacer between the header fields defined above and the regular message
+ * payload.
  */
 struct Protocol_header
 {
 	/* badge of invoked object (on call) / exception code (on reply) */
 	unsigned long protocol_word;
 
-	size_t num_caps;
+	Genode::size_t num_caps;
 
 	/* badges of the transferred capability arguments */
 	unsigned long badges[Msgbuf_base::MAX_CAPS_PER_MSG];
 
-	enum { INVALID_BADGE = ~0UL };
+	enum { INVALID_BADGE = ~1UL };
 
 	void *msg_start() { return &protocol_word; }
 };
 
 
-/******************************
- ** File-descriptor registry **
- ******************************/
-
-Genode::Ep_socket_descriptor_registry *Genode::ep_sd_registry()
-{
-	static Genode::Ep_socket_descriptor_registry registry;
-	return &registry;
-}
+/*
+ * The INVALID_BADGE must be different from the representation of an
+ * invalid RPC object key because this key value is used by manually
+ * created NON-RPC-object capabilities (client_sd, server_sd, dataspace fd).
+ */
+static_assert((int)Protocol_header::INVALID_BADGE != (int)Rpc_obj_key::INVALID,
+              "ambigious INVALID_BADGE");
 
 
 /********************************************
@@ -83,67 +93,9 @@ Genode::Ep_socket_descriptor_registry *Genode::ep_sd_registry()
 
 enum {
 	LX_EINTR        = 4,
+	LX_EAGAIN       = 11,
 	LX_ECONNREFUSED = 111
 };
-
-
-/**
- * Utility: Return thread ID to which the given socket is directed to
- *
- * \return -1  if the socket is pointing to a valid entrypoint
- */
-static int lookup_tid_by_client_socket(int sd)
-{
-	/*
-	 * Synchronize calls so that the large 'sockaddr_un' can be allocated
-	 * in the BSS rather than the stack.
-	 */
-	static Lock lock;
-	Lock::Guard guard(lock);
-
-	static sockaddr_un name;
-	socklen_t name_len = sizeof(name);
-	int ret = lx_getpeername(sd, (sockaddr *)&name, &name_len);
-	if (ret < 0)
-		return -1;
-
-	struct Prefix_len
-	{
-		typedef Genode::size_t size_t;
-
-		size_t const len;
-
-		static int _init_len(char const *s)
-		{
-			char  const * const pattern     = "/ep-";
-			static size_t const pattern_len = Genode::strlen(pattern);
-
-			for (size_t i = 0; Genode::strlen(s + i) >= pattern_len; i++)
-				if (Genode::strcmp(s + i, pattern, pattern_len) == 0)
-					return i + pattern_len;
-
-			struct Unexpected_rpath_prefix { };
-			throw  Unexpected_rpath_prefix();
-		}
-
-		Prefix_len(char const *s) : len(_init_len(s)) { }
-	};
-
-	/*
-	 * The name of the Unix-domain socket has the form <rpath>-<uid>/ep-<tid>.
-	 * We are only interested in the <tid> part. Hence, we determine the length
-	 * of the <rpath>-<uid>/ep- portion only once and keep it in a static
-	 * variable.
-	 */
-	static Prefix_len prefix_len(name.sun_path);
-
-	unsigned tid = 0;
-	if (Genode::ascii_to(name.sun_path + prefix_len.len, tid) == 0) {
-		PRAW("Error: could not parse tid number");
-		return -1;
-	}
-	return tid;
-}
 
 
 namespace {
@@ -161,9 +113,8 @@ namespace {
 
 			typedef Genode::size_t size_t;
 
-			msghdr      _msg;
-			sockaddr_un _addr;
-			iovec       _iovec;
+			msghdr      _msg   { };
+			iovec       _iovec { };
 			char        _cmsg_buf[CMSG_SPACE(MAX_SDS_PER_MSG*sizeof(int))];
 
 			unsigned _num_sds;
@@ -196,15 +147,16 @@ namespace {
 
 			msghdr * msg() { return &_msg; }
 
-			void marshal_socket(int sd)
+			void marshal_socket(Lx_sd sd)
 			{
-				*((int *)CMSG_DATA((cmsghdr *)_cmsg_buf) + _num_sds) = sd;
-
-				_num_sds++;
+				*((int *)CMSG_DATA((cmsghdr *)_cmsg_buf) + _num_sds) = sd.value;
 
 				struct cmsghdr *cmsg = CMSG_FIRSTHDR(&_msg);
-				cmsg->cmsg_len       = CMSG_LEN(_num_sds*sizeof(int));
-				_msg.msg_controllen  = cmsg->cmsg_len;     /* actual cmsg length */
+				if (cmsg) {
+					_num_sds++;
+					cmsg->cmsg_len       = CMSG_LEN(_num_sds*sizeof(int));
+					_msg.msg_controllen  = cmsg->cmsg_len;     /* actual cmsg length */
+				}
 			}
 
 			void accept_sockets(int num_sds)
@@ -214,9 +166,9 @@ namespace {
 				_msg.msg_controllen  = cmsg->cmsg_len;     /* actual cmsg length */
 			}
 
-			int socket_at_index(int index) const
+			Lx_sd socket_at_index(int index) const
 			{
-				return *((int *)CMSG_DATA((cmsghdr *)_cmsg_buf) + index);
+				return Lx_sd { *((int *)CMSG_DATA((cmsghdr *)_cmsg_buf) + index) };
 			}
 
 			unsigned num_sockets() const
@@ -241,9 +193,25 @@ static void insert_sds_into_message(Message &msg,
 
 		Native_capability const &cap = snd_msgbuf.cap(i);
 
-		if (cap.valid()) {
-			msg.marshal_socket(cap.dst().socket);
-			header.badges[i] = cap.local_name();
+		auto remote_socket_of_capability = [] (Native_capability const &cap)
+		{
+			if (!cap.valid())
+				return Lx_sd::invalid();
+
+			Capability_space::Ipc_cap_data cap_data =
+				Capability_space::ipc_cap_data(cap);
+
+			if (cap_data.dst.socket.value < 0)
+				return Lx_sd::invalid();
+
+			return cap_data.dst.socket;
+		};
+
+		Lx_sd const socket = remote_socket_of_capability(cap);
+
+		if (socket.valid()) {
+			msg.marshal_socket(socket);
+			header.badges[i] = Capability_space::ipc_cap_data(cap).rpc_obj_key.value();
 		} else {
 			header.badges[i] = Protocol_header::INVALID_BADGE;
 		}
@@ -262,7 +230,7 @@ static void extract_sds_from_message(unsigned start_index,
                                      Genode::Msgbuf_base &buf)
 {
 	unsigned sd_cnt = 0;
-	for (unsigned i = 0; i < min(header.num_caps, Msgbuf_base::MAX_CAPS_PER_MSG); i++) {
+	for (unsigned i = 0; i < min(header.num_caps, (size_t)Msgbuf_base::MAX_CAPS_PER_MSG); i++) {
 
 		unsigned long const badge = header.badges[i];
 
@@ -272,21 +240,14 @@ static void extract_sds_from_message(unsigned start_index,
 			continue;
 		}
 
-		int const sd = msg.socket_at_index(start_index + sd_cnt++);
-		int const id = lookup_tid_by_client_socket(sd);
+		Lx_sd const sd = msg.socket_at_index(start_index + sd_cnt++);
 
-		int const associated_sd = Genode::ep_sd_registry()->try_associate(sd, id);
+		Rpc_destination const dst(sd);
 
-		buf.insert(Native_capability(Cap_dst_policy::Dst(associated_sd), badge));
-
-		if ((associated_sd >= 0) && (associated_sd != sd)) {
-
-			/*
-			 * The association already existed under a different name, use
-			 * already associated socket descriptor and and drop 'sd'.
-			 */
-			lx_close(sd);
-		}
+		if (dst.valid())
+			buf.insert(Capability_space::import(dst, Rpc_obj_key(badge)));
+		else
+			buf.insert(Native_capability());
 	}
 }
 
@@ -294,7 +255,7 @@ static void extract_sds_from_message(unsigned start_index,
 /**
  * Send reply to client
  */
-static inline void lx_reply(int reply_socket, Rpc_exception_code exception_code,
+static inline void lx_reply(Lx_sd reply_socket, Rpc_exception_code exception_code,
                             Genode::Msgbuf_base &snd_msgbuf)
 {
 
@@ -310,13 +271,12 @@ static inline void lx_reply(int reply_socket, Rpc_exception_code exception_code,
 	int const ret = lx_sendmsg(reply_socket, msg.msg(), 0);
 
 	/* ignore reply send error caused by disappearing client */
-	if (ret >= 0 || ret == -LX_ECONNREFUSED) {
-		lx_close(reply_socket);
+	if (ret >= 0 || ret == -LX_ECONNREFUSED)
 		return;
-	}
 
 	if (ret < 0)
-		PRAW("[%d] lx_sendmsg failed with %d in lx_reply() reply_socket=%d", lx_gettid(), ret, reply_socket);
+		error(lx_getpid(), ":", lx_gettid(), " lx_sendmsg failed with ", ret, " "
+		    "in lx_reply() reply_socket=", reply_socket);
 }
 
 
@@ -328,8 +288,13 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
                                     Msgbuf_base &snd_msgbuf, Msgbuf_base &rcv_msgbuf,
                                     size_t)
 {
+	if (!dst.valid()) {
+		error("attempt to call invalid capability, blocking forever");
+		sleep_forever();
+	}
+
 	Protocol_header &snd_header = snd_msgbuf.header<Protocol_header>();
-	snd_header.protocol_word = dst.local_name();
+	snd_header.protocol_word = 0;
 
 	Message snd_msg(snd_header.msg_start(),
 	                sizeof(Protocol_header) + snd_msgbuf.data_size());
@@ -339,46 +304,30 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
 	 *
 	 * The reply channel will be closed when leaving the scope of 'lx_call'.
 	 */
-	struct Reply_channel
+	struct Reply_channel : Lx_socketpair
 	{
-		enum { LOCAL_SOCKET = 0, REMOTE_SOCKET = 1 };
-		int sd[2];
-
-		Reply_channel()
-		{
-			sd[LOCAL_SOCKET] = -1; sd[REMOTE_SOCKET] = -1;
-
-			int ret = lx_socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, sd);
-			if (ret < 0) {
-				PRAW("[%d] lx_socketpair failed with %d", lx_getpid(), ret);
-				throw Genode::Ipc_error();
-			}
-		}
-
 		~Reply_channel()
 		{
-			if (sd[LOCAL_SOCKET]  != -1) lx_close(sd[LOCAL_SOCKET]);
-			if (sd[REMOTE_SOCKET] != -1) lx_close(sd[REMOTE_SOCKET]);
+			if (local.value  != -1) lx_close(local.value);
+			if (remote.value != -1) lx_close(remote.value);
 		}
-
-		int local_socket()  const { return sd[LOCAL_SOCKET];  }
-		int remote_socket() const { return sd[REMOTE_SOCKET]; }
-
 	} reply_channel;
 
 	/* assemble message */
 
 	/* marshal reply capability */
-	snd_msg.marshal_socket(reply_channel.remote_socket());
+	snd_msg.marshal_socket(reply_channel.remote);
 
 	/* marshal capabilities contained in 'snd_msgbuf' */
 	insert_sds_into_message(snd_msg, snd_header, snd_msgbuf);
 
-	int const send_ret = lx_sendmsg(dst.dst().socket, snd_msg.msg(), 0);
+	Lx_sd const dst_socket = Capability_space::ipc_cap_data(dst).dst.socket;
+
+	int const send_ret = lx_sendmsg(dst_socket, snd_msg.msg(), 0);
 	if (send_ret < 0) {
-		PRAW("[%d] lx_sendmsg to sd %d failed with %d in lx_call()",
-		     lx_getpid(), dst.dst().socket, send_ret);
-		throw Genode::Ipc_error();
+		error(lx_getpid(), ":", lx_gettid(), " lx_sendmsg to sd ", dst_socket,
+		    " failed with ", send_ret, " in lx_call()");
+		sleep_forever();
 	}
 
 	/* receive reply */
@@ -390,15 +339,15 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
 	rcv_msg.accept_sockets(Message::MAX_SDS_PER_MSG);
 
 	rcv_msgbuf.reset();
-	int const recv_ret = lx_recvmsg(reply_channel.local_socket(), rcv_msg.msg(), 0);
+	int const recv_ret = lx_recvmsg(reply_channel.local, rcv_msg.msg(), 0);
 
 	/* system call got interrupted by a signal */
 	if (recv_ret == -LX_EINTR)
 		throw Genode::Blocking_canceled();
 
 	if (recv_ret < 0) {
-		PRAW("[%d] lx_recvmsg failed with %d in lx_call()", lx_getpid(), recv_ret);
-		throw Genode::Ipc_error();
+		error(lx_getpid(), ":", lx_gettid(), " ipc_call failed to receive result (", recv_ret, ")");
+		sleep_forever();
 	}
 
 	extract_sds_from_message(0, rcv_msg, rcv_header, rcv_msgbuf);
@@ -414,65 +363,65 @@ Rpc_exception_code Genode::ipc_call(Native_capability dst,
 void Genode::ipc_reply(Native_capability caller, Rpc_exception_code exc,
                        Msgbuf_base &snd_msg)
 {
-	try { lx_reply(caller.dst().socket, exc, snd_msg); } catch (Ipc_error) { }
+	Lx_sd const reply_socket = Capability_space::ipc_cap_data(caller).dst.socket;
+
+	try { lx_reply(reply_socket, exc, snd_msg); } catch (Ipc_error) { }
 }
 
 
-Genode::Rpc_request Genode::ipc_reply_wait(Reply_capability const &last_caller,
-                                           Rpc_exception_code      exc,
-                                           Msgbuf_base            &reply_msg,
-                                           Msgbuf_base            &request_msg)
+Rpc_request Genode::ipc_reply_wait(Reply_capability const &last_caller,
+                                   Rpc_exception_code      exc,
+                                   Msgbuf_base            &reply_msg,
+                                   Msgbuf_base            &request_msg)
 {
 	/* when first called, there was no request yet */
 	if (last_caller.valid() && exc.value != Rpc_exception_code::INVALID_OBJECT)
-		lx_reply(last_caller.dst().socket, exc, reply_msg);
+		lx_reply(Capability_space::ipc_cap_data(last_caller).dst.socket, exc, reply_msg);
 
 	/*
 	 * Block infinitely if called from the main thread. This may happen if the
 	 * main thread calls 'sleep_forever()'.
 	 */
-	if (!Thread::myself()) {
+	Thread *myself_ptr = Thread::myself();
+	if (!myself_ptr) {
 		struct timespec ts = { 1000, 0 };
 		for (;;) lx_nanosleep(&ts, 0);
 	}
 
+	Native_thread::Epoll &epoll = myself_ptr->native_thread().epoll;
+
 	for (;;) {
+
+		Lx_sd const selected_sd = epoll.poll();
 
 		Protocol_header &header = request_msg.header<Protocol_header>();
 		Message msg(header.msg_start(), sizeof(Protocol_header) + request_msg.capacity());
 
 		msg.accept_sockets(Message::MAX_SDS_PER_MSG);
 
-		Native_thread &native_thread = Thread::myself()->native_thread();
-
 		request_msg.reset();
-		int const ret = lx_recvmsg(native_thread.socket_pair.server_sd, msg.msg(), 0);
+		int const ret = lx_recvmsg(selected_sd, msg.msg(), 0x40);
 
-		/* system call got interrupted by a signal */
-		if (ret == -LX_EINTR)
+		if (ret < 0)
 			continue;
 
-		if (ret < 0) {
-			PRAW("lx_recvmsg failed with %d in ipc_reply_wait, sd=%d",
-			     ret, native_thread.socket_pair.server_sd);
+		if (msg.num_sockets() == 0 || !msg.socket_at_index(0).valid()) {
+			warning("ipc_reply_wait: failed to obtain reply socket");
 			continue;
 		}
 
-		int           const reply_socket = msg.socket_at_index(0);
-		unsigned long const badge        = header.protocol_word;
+		Lx_sd const reply_socket = msg.socket_at_index(0);
 
 		/* start at offset 1 to skip the reply channel */
 		extract_sds_from_message(1, msg, header, request_msg);
 
-		typedef Native_capability::Dst Dst;
-		return Rpc_request(Native_capability(Dst(reply_socket), ~0UL), badge);
+		return Rpc_request(Capability_space::import(Rpc_destination(reply_socket),
+		                                            Rpc_obj_key()), selected_sd.value);
 	}
 }
 
 
 Ipc_server::Ipc_server()
-:
-	Native_capability(Dst(-1), 0)
 {
 	/*
 	 * If 'thread' is 0, the constructor was called by the main thread. By
@@ -485,20 +434,13 @@ Ipc_server::Ipc_server()
 	Native_thread &native_thread = Thread::myself()->native_thread();
 
 	if (native_thread.is_ipc_server) {
-		PRAW("[%d] unexpected multiple instantiation of Ipc_server by one thread",
-		     lx_gettid());
+		Genode::raw(lx_getpid(), ":", lx_gettid(),
+		            " unexpected multiple instantiation of Ipc_server by one thread");
 		struct Ipc_server_multiple_instance { };
 		throw Ipc_server_multiple_instance();
 	}
 
-	Socket_pair const socket_pair = server_socket_pair();
-
-	native_thread.socket_pair    = socket_pair;
 	native_thread.is_ipc_server = true;
-
-	/* override capability initialization */
-	*static_cast<Native_capability *>(this) =
-		Native_capability(Native_capability::Dst(socket_pair.client_sd), 0);
 }
 
 
@@ -513,9 +455,5 @@ Ipc_server::~Ipc_server()
 	 */
 	Native_thread &native_thread = Thread::myself()->native_thread();
 
-	Genode::ep_sd_registry()->disassociate(native_thread.socket_pair.client_sd);
 	native_thread.is_ipc_server = false;
-
-	destroy_server_socket_pair(native_thread.socket_pair);
-	native_thread.socket_pair = Socket_pair();
 }

@@ -91,6 +91,11 @@ namespace Nova {
 		struct Mem_desc
 		{
 			enum Type {
+				EFI_SYSTEM_TABLE    = -7,
+				HYPERVISOR_LOG      = -6,
+				FRAMEBUFFER         = -5,
+				ACPI_XSDT           = -4,
+				ACPI_RSDT           = -3,
 				MULTIBOOT_MODULE    = -2,
 				MICROHYPERVISOR     = -1,
 				AVAILABLE_MEMORY    =  1,
@@ -126,6 +131,20 @@ namespace Nova {
 		bool has_feature_vmx() const { return feature_flags & (1 << 1); }
 		bool has_feature_svm() const { return feature_flags & (1 << 2); }
 
+		struct Cpu_desc {
+			uint8_t flags;
+			uint8_t thread;
+			uint8_t core;
+			uint8_t package;
+			uint8_t acpi_id;
+			uint8_t family;
+			uint8_t model;
+			uint8_t stepping:4;
+			uint8_t platform:3;
+			uint8_t reserved:1;
+			uint32_t patch;
+		} __attribute__((packed));
+
 		unsigned cpu_max() const {
 			return (mem_desc_offset - cpu_desc_offset) / cpu_desc_size; }
 
@@ -139,14 +158,71 @@ namespace Nova {
 			return cpu_num;
 		}
 
-		bool is_cpu_enabled(unsigned i) const {
+		Cpu_desc const * cpu_desc_of_cpu(unsigned i) const {
 			if (i >= cpu_max())
+				return nullptr;
+
+			unsigned long desc_addr = reinterpret_cast<unsigned long>(this) +
+			                          cpu_desc_offset + i * cpu_desc_size;
+			return reinterpret_cast<Cpu_desc const *>(desc_addr);
+		}
+
+		bool is_cpu_enabled(unsigned i) const {
+			Cpu_desc const * const desc = cpu_desc_of_cpu(i);
+			return desc ? desc->flags & 0x1 : false;
+		}
+
+		/**
+		 * Map kernel cpu ids to virtual cpu ids.
+		 */
+		bool remap_cpu_ids(uint8_t *map_cpus, unsigned const boot_cpu) const {
+			unsigned const num_cpus = cpus();
+			unsigned cpu_i = 0;
+
+			/* assign boot cpu ever the virtual cpu id 0 */
+			Cpu_desc const * const boot = cpu_desc_of_cpu(boot_cpu);
+			if (!boot || !is_cpu_enabled(boot_cpu))
 				return false;
 
-			const char * cpu_desc = reinterpret_cast<const char *>(this) +
-			                        cpu_desc_offset + i * cpu_desc_size;
+			map_cpus[cpu_i++] = boot_cpu;
+			if (cpu_i >= num_cpus)
+				return true;
 
-			return (*cpu_desc) & 0x1;
+			/* assign remaining cores and afterwards all threads to the ids */
+			for (uint8_t package = 0; package < 255; package++) {
+				for (uint8_t core = 0; core < 255; core++) {
+					for (uint8_t thread = 0; thread < 255; thread++) {
+						for (unsigned i = 0; i < cpu_max(); i++) {
+							if (i == boot_cpu || !is_cpu_enabled(i))
+								continue;
+
+							Cpu_desc const * const c = cpu_desc_of_cpu(i);
+							if (!c)
+								continue;
+
+							if (!(c->package == package && c->core == core &&
+							      c->thread == thread))
+								continue;
+
+							map_cpus [cpu_i++] = i;
+							if (cpu_i >= num_cpus)
+								return true;
+						}
+					}
+				}
+			}
+			return false;
+		}
+
+		template <typename FUNC>
+		void for_each_enabled_cpu(FUNC const &func) const
+		{
+			for (unsigned i = 0; i < cpu_max(); i++) {
+				Cpu_desc const * cpu = cpu_desc_of_cpu(i);
+				if (!is_cpu_enabled(i)) continue;
+				if (!cpu) return;
+				func(*cpu, i);
+			}
 		}
 
 	} __attribute__((packed));
@@ -160,7 +236,13 @@ namespace Nova {
 	/**
 	 * Ec operations
 	 */
-	enum Ec_op { EC_RECALL = 0U, EC_YIELD = 1U, EC_DONATE_SC = 2U, EC_RESCHEDULE = 3U };
+	enum Ec_op {
+		EC_RECALL = 0U,
+		EC_YIELD  = 1U,
+		EC_DONATE_SC = 2U,
+		EC_RESCHEDULE = 3U,
+		EC_MIGRATE = 4U,
+	};
 
 	/**
 	 * Pd operations
@@ -172,7 +254,7 @@ namespace Nova {
 	{
 		protected:
 
-			mword_t _value;
+			mword_t _value { 0 };
 
 			/**
 			 * Assign bitfield to descriptor
@@ -193,6 +275,7 @@ namespace Nova {
 		public:
 
 			mword_t value() const { return _value; }
+
 	} __attribute__((packed));
 
 
@@ -383,6 +466,7 @@ namespace Nova {
 				RIGHT_EC_RECALL = 0x1U,
 				RIGHT_PT_CALL   = 0x2U,
 				RIGHT_PT_CTRL   = 0x1U,
+				RIGHT_PT_XCPU   = 0x10U,
 				RIGHT_SM_UP     = 0x1U,
 				RIGHT_SM_DOWN   = 0x2U
 			};
@@ -464,9 +548,6 @@ namespace Nova {
 		 */
 		union {
 
-			/* message payload */
-			mword_t msg[];
-
 			/* exception state */
 			struct {
 				mword_t mtd, instr_len, ip, flags;
@@ -485,6 +566,7 @@ namespace Nova {
 				mword_t cr8, efer;
 				unsigned long long star;
 				unsigned long long lstar;
+				unsigned long long cstar;
 				unsigned long long fmask;
 				unsigned long long kernel_gs_base;
 				unsigned tpr;
@@ -512,10 +594,13 @@ namespace Nova {
 			} __attribute__((packed));
 		};
 
+		/* message payload */
+		mword_t * msg() { return reinterpret_cast<mword_t *>(&mtd); }
+
 		struct Item {
 			mword_t crd;
 			mword_t hotspot;
-			bool is_del() { return hotspot & 0x1; }
+			bool is_del() const { return hotspot & 0x1; }
 		};
 
 #ifdef __x86_64__
@@ -541,6 +626,8 @@ namespace Nova {
 		inline void write_star(mword_t value) { star = value; }
 		inline mword_t read_lstar() { return lstar; }
 		inline void write_lstar(mword_t value) { lstar = value; }
+		inline mword_t read_cstar() { return cstar; }
+		inline void write_cstar(mword_t value) { cstar = value; }
 		inline mword_t read_fmask() { return fmask; }
 		inline void write_fmask(mword_t value) { fmask = value; }
 		inline mword_t read_kernel_gs_base() { return kernel_gs_base; }
@@ -572,6 +659,8 @@ namespace Nova {
 		inline void write_star(mword_t) { }
 		inline mword_t read_lstar() { return 0UL; }
 		inline void write_lstar(mword_t) { }
+		inline mword_t read_cstar() { return 0UL; }
+		inline void write_cstar(mword_t) { }
 		inline mword_t read_fmask() { return 0UL; }
 		inline void write_fmask(mword_t) { }
 		inline mword_t read_kernel_gs_base() { return 0UL; }
@@ -619,7 +708,7 @@ namespace Nova {
 			item += (PAGE_SIZE_BYTE / sizeof(struct Item)) - msg_items();
 
 			/* check that there is enough space left on UTCB */
-			if (msg + msg_words() >= reinterpret_cast<mword_t *>(item)) {
+			if (msg() + msg_words() >= reinterpret_cast<mword_t *>(item)) {
 				items -= 1 << 16;
 				return false;
 			}
@@ -653,7 +742,7 @@ namespace Nova {
 		Item * get_item(const unsigned i) {
 			if (i > (PAGE_SIZE_BYTE / sizeof(struct Item))) return 0;
 			Item * item = reinterpret_cast<Item *>(this) + (PAGE_SIZE_BYTE / sizeof(struct Item)) - i - 1;
-			if (reinterpret_cast<mword_t *>(item) < this->msg) return 0;
+			if (reinterpret_cast<mword_t *>(item) < this->msg()) return 0;
 			return item;
 		}
 
@@ -676,9 +765,9 @@ namespace Nova {
 	enum {
 		PT_SEL_PAGE_FAULT = 0xe,
 		PT_SEL_PARENT     = 0x1a,  /* convention on Genode */
-		PT_SEL_MAIN_PAGER = 0x1b,  /* convention on Genode */
-		PT_SEL_MAIN_EC    = 0x1c,  /* convention on Genode */
+		EC_SEL_THREAD     = 0x1c,  /* convention on Genode */
 		PT_SEL_STARTUP    = 0x1e,
+		SM_SEL_SIGNAL     = 0x1e,  /* alias of PT_SEL_STARTUP */
 		PT_SEL_RECALL     = 0x1f,
 		SM_SEL_EC         = 0x1d,  /* convention on Genode */
 	};

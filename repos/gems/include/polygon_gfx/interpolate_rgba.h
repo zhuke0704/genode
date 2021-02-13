@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__POLYGON_GFX__INTERPOLATE_RGBA_H_
@@ -36,7 +36,7 @@ static inline void Polygon::interpolate_rgba(Polygon::Color start,
                                              PT *dst,
                                              unsigned char *dst_alpha,
                                              unsigned num_values,
-                                             int x, int y)
+                                             int, int)
 {
 	/* sanity check */
 	if (num_values == 0) return;

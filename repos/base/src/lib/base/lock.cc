@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/cancelable_lock.h>
+#include <base/lock.h>
 #include <cpu/memory_barrier.h>
 
 /* base-internal includes */
@@ -23,7 +23,7 @@ using namespace Genode;
 
 static inline Genode::Thread *invalid_thread_base()
 {
-	return (Genode::Thread*)~0;
+	return (Genode::Thread*)~0UL;
 }
 
 
@@ -37,7 +37,7 @@ static inline bool thread_base_valid(Genode::Thread *thread_base)
  ** Lock applicant **
  ********************/
 
-void Cancelable_lock::Applicant::wake_up()
+void Lock::Applicant::wake_up()
 {
 	if (!thread_base_valid(_thread_base)) return;
 
@@ -56,19 +56,19 @@ void Cancelable_lock::Applicant::wake_up()
 }
 
 
-/*********************
- ** Cancelable lock **
- *********************/
+/***************
+ ** Lock lock **
+ ***************/
 
-void Cancelable_lock::lock()
+void Lock::lock()
 {
 	Applicant myself(Thread::myself());
+	lock(myself);
+}
 
+void Lock::lock(Applicant &myself)
+{
 	spinlock_lock(&_spinlock_state);
-
-	/* reset ownership if one thread 'lock' twice */
-	if (_owner == myself)
-		_owner = Applicant(invalid_thread_base());
 
 	if (cmpxchg(&_state, UNLOCKED, LOCKED)) {
 
@@ -84,8 +84,29 @@ void Cancelable_lock::lock()
 	 * list of applicants and block for the current lock holder.
 	 */
 
-	_last_applicant->applicant_to_wake_up(&myself);
-	_last_applicant = &myself;
+	/* reset ownership if one thread 'lock' twice */
+	if (_owner == myself) {
+		/* remember applicants already in list */
+		Applicant * applicants =_owner.applicant_to_wake_up();
+
+		/* reset owner */
+		_owner = Applicant(invalid_thread_base());
+
+		/* register thread calling twice 'lock' as first applicant */
+		_owner.applicant_to_wake_up(&myself);
+
+		/* if we had already applicants, add after myself in list */
+		myself.applicant_to_wake_up(applicants);
+
+		/* if we had applicants, _last_applicant already points to the last */
+		if (!applicants)
+			_last_applicant = &myself;
+	} else {
+		if (_last_applicant)
+			_last_applicant->applicant_to_wake_up(&myself);
+		_last_applicant = &myself;
+	}
+
 	spinlock_unlock(&_spinlock_state);
 
 	/*
@@ -104,39 +125,11 @@ void Cancelable_lock::lock()
 	 * ! for (int i = 0; i < 10; i++)
 	 * !   thread_yield();
 	 */
-	thread_stop_myself();
-
-	/*
-	 * We expect to be the lock owner when woken up. If this is not
-	 * the case, the blocking was canceled via core's cancel-blocking
-	 * mechanism. We have to dequeue ourself from the list of applicants
-	 * and reflect this condition as a C++ exception.
-	 */
-	spinlock_lock(&_spinlock_state);
-	if (_owner != myself) {
-		/*
-		 * Check if we are the applicant to be waken up next,
-		 * otherwise, go through the list of remaining applicants
-		 */
-		for (Applicant *a = &_owner; a; a = a->applicant_to_wake_up()) {
-			/* remove reference to ourself from the applicants list */
-			if (a->applicant_to_wake_up() == &myself) {
-				a->applicant_to_wake_up(myself.applicant_to_wake_up());
-				if (_last_applicant == &myself)
-					_last_applicant = a;
-				break;
-			}
-		}
-
-		spinlock_unlock(&_spinlock_state);
-
-		throw Blocking_canceled();
-	}
-	spinlock_unlock(&_spinlock_state);
+	thread_stop_myself(myself.thread_base());
 }
 
 
-void Cancelable_lock::unlock()
+void Lock::unlock()
 {
 	spinlock_lock(&_spinlock_state);
 
@@ -146,12 +139,16 @@ void Cancelable_lock::unlock()
 
 		/* transfer lock ownership to next applicant and wake him up */
 		_owner = *next_owner;
+
+		/* make copy since _owner may change outside spinlock ! */
+		Applicant owner = *next_owner;
+
 		if (_last_applicant == next_owner)
 			_last_applicant = &_owner;
 
 		spinlock_unlock(&_spinlock_state);
 
-		_owner.wake_up();
+		owner.wake_up();
 
 	} else {
 
@@ -165,7 +162,7 @@ void Cancelable_lock::unlock()
 }
 
 
-Cancelable_lock::Cancelable_lock(Cancelable_lock::State initial)
+Lock::Lock(Lock::State initial)
 :
 	_spinlock_state(SPINLOCK_UNLOCKED),
 	_state(UNLOCKED),
@@ -175,4 +172,3 @@ Cancelable_lock::Cancelable_lock(Cancelable_lock::State initial)
 	if (initial == LOCKED)
 		lock();
 }
-

@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /****************
@@ -26,7 +26,9 @@ typedef struct pm_message { int event; } pm_message_t;
 struct dev_pm_info
 {
 	pm_message_t power_state;
-	bool         is_prepared;
+	bool         is_prepared:1;
+	bool         is_suspended:1;
+	atomic_t     usage_count;
 };
 
 struct dev_pm_ops {

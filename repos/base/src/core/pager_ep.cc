@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2009-2015 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Core includes */
@@ -35,11 +35,16 @@ void Pager_entrypoint::entry()
 
 		Pool::apply(_pager.badge(), [&] (Pager_object *obj) {
 			if (obj) {
-				if (_pager.exception())
+				if (_pager.exception()) {
 					obj->submit_exception_signal();
-				else
+				} else {
 					/* send reply if page-fault handling succeeded */
 					reply_pending = !obj->pager(_pager);
+					if (!reply_pending)
+						warning("page-fault, ", *obj,
+						        " ip=", Hex(_pager.fault_ip()),
+						        " pf-addr=", Hex(_pager.fault_addr()));
+				}
 			} else {
 
 				/*
@@ -79,21 +84,21 @@ void Pager_entrypoint::entry()
 }
 
 
-void Pager_entrypoint::dissolve(Pager_object *obj)
+void Pager_entrypoint::dissolve(Pager_object &obj)
 {
 	using Pool = Object_pool<Pager_object>;
 
-	if (obj) Pool::remove(obj);
+	Pool::remove(&obj);
 }
 
 
-Pager_capability Pager_entrypoint::manage(Pager_object *obj)
+Pager_capability Pager_entrypoint::manage(Pager_object &obj)
 {
-	Native_capability cap = _pager_object_cap(obj->badge());
+	Native_capability cap = _pager_object_cap(obj.badge());
 
 	/* add server object to object pool */
-	obj->cap(cap);
-	insert(obj);
+	obj.cap(cap);
+	insert(&obj);
 
 	/* return capability that uses the object id as badge */
 	return reinterpret_cap_cast<Pager_object>(cap);

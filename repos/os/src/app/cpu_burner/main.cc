@@ -5,93 +5,147 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <os/config.h>
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/attached_rom_dataspace.h>
 #include <timer_session/connection.h>
+
+using namespace Genode;
+
+struct Cpu_burn : Thread
+{
+	List_element<Cpu_burn>  _list_element { this };
+	Env           &_env;
+	Blockade       _block { };
+	bool volatile  _stop  { false };
+
+	Cpu_burn(Genode::Env &env, Location const &location)
+	:
+		Genode::Thread(env, Name("burn_", location.xpos(), "x", location.ypos()),
+		               4 * 4096, location, Weight(), env.cpu()),
+		_env(env)
+	{ }
+
+	void entry() override
+	{
+		while (true) {
+			_block.block();
+
+			while (!_stop) { }
+
+			_stop = false;
+		}
+	}
+};
+
+typedef List<List_element<Cpu_burn> >  Thread_list;
 
 struct Cpu_burner
 {
-	Timer::Connection _timer;
+	Genode::Env       &_env;
+	Genode::Heap       _heap   { _env.ram(), _env.rm() };
+	Timer::Connection _timer   { _env };
+	Thread_list       _threads { };
 
-	unsigned long _percent = 100;
+	uint64_t          _start_ms { 0 };
+	unsigned short    _percent  { 100 };
+	bool              _burning  { false };
 
-	void _handle_config(unsigned)
+	Genode::Attached_rom_dataspace _config { _env, "config" };
+
+	void _handle_config()
 	{
-		Genode::config()->reload();
+		_config.update();
 
-		_percent = 100;
-		try {
-			Genode::config()->xml_node().attribute("percent").value(&_percent);
-		} catch (...) { }
+		if (!_config.valid())
+			return;
+
+		_percent = _config.xml().attribute_value("percent", 100L);
+		if (_percent > 100)
+			_percent = 100;
 	}
 
-	Genode::Signal_dispatcher<Cpu_burner> _config_dispatcher;
+	Genode::Signal_handler<Cpu_burner> _config_handler {
+		_env.ep(), *this, &Cpu_burner::_handle_config };
 
-	unsigned _burn_per_iteration = 10;
-
-	void _handle_period(unsigned)
+	void _handle_period()
 	{
-		unsigned long const start_ms = _timer.elapsed_ms();
+		uint64_t next_timer_ms = 1000;
+		bool     stop_burner   = false;
+		bool     start_burner  = false;
 
-		unsigned iterations = 0;
-		for (;; iterations++) {
+		if (_burning) {
+			uint64_t const curr_ms   = _timer.elapsed_ms();
+			uint64_t const passed_ms = curr_ms - _start_ms;
 
-			unsigned long const curr_ms = _timer.elapsed_ms();
-			unsigned long passed_ms     = curr_ms - start_ms;
+			if (_percent < 100) {
+				stop_burner = (passed_ms >= 10*_percent);
+				if (stop_burner)
+					next_timer_ms = (100 - _percent) * 10;
+				else
+					next_timer_ms = 10*_percent - passed_ms;
+			}
+		} else
+			start_burner = true;
 
-			if (passed_ms >= 10*_percent)
-				break;
+		if (stop_burner) {
+			for (auto t = _threads.first(); t; t = t->next()) {
+				auto thread = t->object();
+				if (!thread)
+					continue;
 
-			/* burn some time */
-			for (unsigned volatile i = 0; i < _burn_per_iteration; i++)
-				for (unsigned volatile j = 0; j < 1000*1000; j++)
-					(void) (i*j);
+				thread->_stop = true;
+			}
+			_burning = false;
 		}
 
-		/* adjust busy loop duration */
-		if (iterations > 10)
-			_burn_per_iteration *= 2;
+		if (start_burner) {
+			for (auto t = _threads.first(); t; t = t->next()) {
+				auto thread = t->object();
+				if (!thread)
+					continue;
 
-		if (iterations < 5)
-			_burn_per_iteration /= 2;
+				thread->_block.wakeup();
+			}
+			_burning  = true;
+			_start_ms = _timer.elapsed_ms();
+		}
+
+		_timer.trigger_once(next_timer_ms*1000);
 	}
 
-	Genode::Signal_dispatcher<Cpu_burner> _period_dispatcher;
+	Genode::Signal_handler<Cpu_burner> _period_handler {
+		_env.ep(), *this, &Cpu_burner::_handle_period };
 
-	Cpu_burner(Genode::Signal_receiver &sig_rec)
-	:
-		_config_dispatcher(sig_rec, *this, &Cpu_burner::_handle_config),
-		_period_dispatcher(sig_rec, *this, &Cpu_burner::_handle_period)
+	Cpu_burner(Genode::Env &env) : _env(env)
 	{
-		Genode::config()->sigh(_config_dispatcher);
-		_handle_config(0);
+		_config.sigh(_config_handler);
+		_handle_config();
 
-		_timer.sigh(_period_dispatcher);
-		_timer.trigger_periodic(1000*1000);
+		_timer.sigh(_period_handler);
+		_timer.trigger_once(1000*1000);
+
+		Affinity::Space space = env.cpu().affinity_space();
+
+		for (unsigned i = 0; i < space.total(); i++) {
+			Affinity::Location location = env.cpu().affinity_space().location_of_index(i);
+			Cpu_burn *t = new (_heap) Cpu_burn(env, location);
+			t->start();
+
+			_threads.insert(&t->_list_element);
+		}
 	}
 };
 
 
-int main(int argc, char **argv)
+void Component::construct(Genode::Env &env)
 {
-
-	static Genode::Signal_receiver sig_rec;
-
-	static Cpu_burner cpu_burner(sig_rec);
-
-	while (1) {
-
-		Genode::Signal signal = sig_rec.wait_for_signal();
-
-		Genode::Signal_dispatcher_base *dispatcher =
-			static_cast<Genode::Signal_dispatcher_base *>(signal.context());
-
-		dispatcher->dispatch(signal.num());
-	}
+	static Cpu_burner cpu_burner(env);
 }

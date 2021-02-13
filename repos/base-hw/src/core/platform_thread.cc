@@ -6,14 +6,13 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
-#include <assert.h>
 #include <platform_thread.h>
 #include <platform_pd.h>
 #include <core_env.h>
@@ -22,6 +21,7 @@
 
 /* base-internal includes */
 #include <base/internal/native_utcb.h>
+#include <base/internal/capability_space.h>
 
 /* kernel includes */
 #include <kernel/pd.h>
@@ -42,62 +42,67 @@ Platform_thread::~Platform_thread()
 	if (_main_thread) {
 		Locked_ptr<Address_space> locked_ptr(_address_space);
 		if (locked_ptr.valid())
-			locked_ptr->flush((addr_t)_utcb_pd_addr, sizeof(Native_utcb));
+			locked_ptr->flush((addr_t)_utcb_pd_addr, sizeof(Native_utcb),
+			                  Address_space::Core_local_addr{0});
 	}
 
 	/* free UTCB */
-	core_env()->ram_session()->free(_utcb);
+	core_env().pd_session()->free(_utcb);
 }
 
 
-void Platform_thread::quota(size_t const quota) {
-	Kernel::thread_quota(kernel_object(), quota); }
-
-
-Platform_thread::Platform_thread(const char * const label,
-                                 Native_utcb * utcb)
-: Kernel_object<Kernel::Thread>(true, Kernel::Cpu_priority::MAX, 0, _label),
-  _pd(Kernel::core_pd()->platform_pd()),
-  _pager(nullptr),
-  _utcb_core_addr(utcb),
-  _utcb_pd_addr(utcb),
-  _main_thread(false)
+void Platform_thread::quota(size_t const quota)
 {
-	strncpy(_label, label, LABEL_MAX_LEN);
+	_quota = quota;
+	Kernel::thread_quota(*_kobj, quota);
+}
 
+
+Platform_thread::Platform_thread(Label const &label, Native_utcb &utcb)
+:
+	_label(label),
+	_pd(&Kernel::core_pd().platform_pd()),
+	_pager(nullptr),
+	_utcb_core_addr(&utcb),
+	_utcb_pd_addr(&utcb),
+	_main_thread(false),
+	_location(Affinity::Location()),
+	_kobj(true, _label.string())
+{
 	/* create UTCB for a core thread */
 	void *utcb_phys;
-	if (!platform()->ram_alloc()->alloc(sizeof(Native_utcb), &utcb_phys)) {
-		PERR("failed to allocate UTCB");
-		throw Cpu_session::Out_of_metadata();
+	if (!platform().ram_alloc().alloc(sizeof(Native_utcb), &utcb_phys)) {
+		error("failed to allocate UTCB");
+		throw Out_of_ram();
 	}
 	map_local((addr_t)utcb_phys, (addr_t)_utcb_core_addr,
 	          sizeof(Native_utcb) / get_page_size());
 }
 
 
-Platform_thread::Platform_thread(size_t const quota,
-                                 const char * const label,
-                                 unsigned const virt_prio,
-                                 Affinity::Location location,
-                                 addr_t const utcb)
-: Kernel_object<Kernel::Thread>(true, _priority(virt_prio), quota, _label),
-  _pd(nullptr),
-  _pager(nullptr),
-  _utcb_pd_addr((Native_utcb *)utcb),
-  _main_thread(false)
+Platform_thread::Platform_thread(size_t             const  quota,
+                                 Label              const &label,
+                                 unsigned           const  virt_prio,
+                                 Affinity::Location const  location,
+                                 addr_t             const  utcb)
+:
+	_label(label),
+	_pd(nullptr),
+	_pager(nullptr),
+	_utcb_pd_addr((Native_utcb *)utcb),
+	_priority(_scale_priority(virt_prio)),
+	_quota(quota),
+	_main_thread(false),
+	_location(location),
+	_kobj(true, _priority, _quota, _label.string())
 {
-	strncpy(_label, label, LABEL_MAX_LEN);
-
 	try {
-		_utcb = core_env()->ram_session()->alloc(sizeof(Native_utcb),
-		                                         CACHED);
+		_utcb = core_env().pd_session()->alloc(sizeof(Native_utcb), CACHED);
 	} catch (...) {
-		PERR("failed to allocate UTCB");
-		throw Cpu_session::Out_of_metadata();
+		error("failed to allocate UTCB");
+		throw Out_of_ram();
 	}
-	_utcb_core_addr = (Native_utcb *)core_env()->rm_session()->attach(_utcb);
-	affinity(location);
+	_utcb_core_addr = (Native_utcb *)core_env().rm_session()->attach(_utcb);
 }
 
 
@@ -106,7 +111,7 @@ void Platform_thread::join_pd(Platform_pd * pd, bool const main_thread,
 {
 	/* check if thread is already in another protection domain */
 	if (_pd && _pd != pd) {
-		PERR("thread already in another protection domain");
+		error("thread already in another protection domain");
 		return;
 	}
 
@@ -117,9 +122,9 @@ void Platform_thread::join_pd(Platform_pd * pd, bool const main_thread,
 }
 
 
-void Platform_thread::affinity(Affinity::Location const & location)
+void Platform_thread::affinity(Affinity::Location const &)
 {
-	_location = location;
+	/* yet no migration support, don't claim wrong location, e.g. for tracing */
 }
 
 
@@ -138,74 +143,81 @@ int Platform_thread::start(void * const ip, void * const sp)
 			/* lock the address space */
 			Locked_ptr<Address_space> locked_ptr(_address_space);
 			if (!locked_ptr.valid()) {
-				PERR("invalid RM client");
+				error("invalid RM client");
 				return -1;
 			};
-			Page_flags const flags = Page_flags::apply_mapping(true, CACHED, false);
-			_utcb_pd_addr           = utcb_main_thread();
+			_utcb_pd_addr = (Native_utcb *)user_utcb_main_thread();
 			Hw::Address_space * as = static_cast<Hw::Address_space*>(&*locked_ptr);
 			if (!as->insert_translation((addr_t)_utcb_pd_addr, dsc->phys_addr(),
-			                            sizeof(Native_utcb), flags)) {
-				PERR("failed to attach UTCB");
+			                            sizeof(Native_utcb), Hw::PAGE_FLAGS_UTCB)) {
+				error("failed to attach UTCB");
 				return -1;
 			}
 			return 0;
 		};
-		if (core_env()->entrypoint()->apply(_utcb, lambda)) return -1;
+		if (core_env().entrypoint().apply(_utcb, lambda)) return -1;
 	}
 
 	/* initialize thread registers */
-	kernel_object()->ip = reinterpret_cast<addr_t>(ip);
-	kernel_object()->sp = reinterpret_cast<addr_t>(sp);
+	_kobj->regs->ip = reinterpret_cast<addr_t>(ip);
+	_kobj->regs->sp = reinterpret_cast<addr_t>(sp);
 
 	/* start executing new thread */
 	if (!_pd) {
-		PWRN("No protection domain associated!");
+		error("no protection domain associated!");
 		return -1;
 	}
 
 	unsigned const cpu =
-		_location.valid() ? _location.xpos() : Cpu::primary_id();
+		_location.valid() ? _location.xpos() : 0;
 
-	Native_utcb * utcb = Thread::myself()->utcb();
+	Native_utcb &utcb = *Thread::myself()->utcb();
 
 	/* reset capability counter */
-	utcb->cap_cnt(0);
-	utcb->cap_add(_cap.dst());
+	utcb.cap_cnt(0);
+	utcb.cap_add(Capability_space::capid(_kobj.cap()));
 	if (_main_thread) {
-		utcb->cap_add(_pd->parent().dst());
-		utcb->cap_add(_utcb.dst());
+		utcb.cap_add(Capability_space::capid(_pd->parent()));
+		utcb.cap_add(Capability_space::capid(_utcb));
 	}
-	Kernel::start_thread(kernel_object(), cpu, _pd->kernel_pd(),
-	                     _utcb_core_addr);
+	Kernel::start_thread(*_kobj, cpu, _pd->kernel_pd(), *_utcb_core_addr);
 	return 0;
 }
 
 
-void Platform_thread::pager(Pager_object * const pager)
+void Platform_thread::pager(Pager_object &pager)
 {
 	using namespace Kernel;
 
-	if (route_thread_event(kernel_object(), Thread_event_id::FAULT,
-	                       pager ? pager->cap().dst() : cap_id_invalid()))
-		PERR("failed to set pager object for thread %s", label());
-
-	_pager = pager;
+	thread_pager(*_kobj, Capability_space::capid(pager.cap()));
+	_pager = &pager;
 }
 
 
-Genode::Pager_object * Platform_thread::pager() { return _pager; }
+Genode::Pager_object &Platform_thread::pager()
+{
+	if (_pager)
+		return *_pager;
+
+	ASSERT_NEVER_CALLED;
+}
 
 
 Thread_state Platform_thread::state()
 {
-	Thread_state_base bstate(*kernel_object());
+	Thread_state bstate(*_kobj->regs);
 	return Thread_state(bstate);
 }
 
 
 void Platform_thread::state(Thread_state thread_state)
 {
-	Cpu_state * cstate = static_cast<Cpu_state *>(kernel_object());
+	Cpu_state * cstate = static_cast<Cpu_state *>(&*_kobj->regs);
 	*cstate = static_cast<Cpu_state>(thread_state);
+}
+
+
+void Platform_thread::restart()
+{
+	Kernel::restart_thread(Capability_space::capid(_kobj.cap()));
 }

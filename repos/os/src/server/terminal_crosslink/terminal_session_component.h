@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _TERMINAL_SESSION_COMPONENT_H_
@@ -16,11 +16,11 @@
 
 /* Genode includes */
 #include <base/rpc_server.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 #include <os/ring_buffer.h>
 #include <terminal_session/terminal_session.h>
 
-namespace Terminal {
+namespace Terminal_crosslink {
 
 	using namespace Genode;
 
@@ -32,25 +32,25 @@ namespace Terminal {
 	{
 		private:
 
+			Env                        &_env;
+
 			Session_component          &_partner;
-			Rpc_entrypoint              _ep;
 			Genode::Session_capability  _session_cap;
 
-			Attached_ram_dataspace  _io_buffer;
+			Attached_ram_dataspace      _io_buffer;
 
 			typedef Genode::Ring_buffer<unsigned char, BUFFER_SIZE+1> Local_buffer;
 
-			Local_buffer              _buffer;
-			size_t                    _cross_num_bytes_avail;
-			Lock                      _write_avail_lock;
-			Signal_context_capability _read_avail_sigh;
+			Local_buffer                _buffer { };
+			size_t                      _cross_num_bytes_avail;
+			Signal_context_capability   _read_avail_sigh { };
 
 		public:
 
 			/**
 			 * Constructor
 			 */
-			Session_component(Session_component &partner, Cap_session &cap_session, const char *ep_name);
+			Session_component(Env &env, Session_component &partner);
 
 			Session_capability cap();
 
@@ -68,22 +68,24 @@ namespace Terminal {
 			 ** Terminal session interface **
 			 ********************************/
 
-			Size size();
+			Size size() override;
 
-			bool avail();
+			bool avail() override;
 
 			Genode::size_t _read(Genode::size_t dst_len);
 
-			void _write(Genode::size_t num_bytes);
+			Genode::size_t _write(Genode::size_t num_bytes);
 
 			Genode::Dataspace_capability _dataspace();
 
-			void connected_sigh(Genode::Signal_context_capability sigh);
+			void connected_sigh(Genode::Signal_context_capability sigh) override;
 
-			void read_avail_sigh(Genode::Signal_context_capability sigh);
+			void read_avail_sigh(Genode::Signal_context_capability sigh) override;
 
-			Genode::size_t read(void *, Genode::size_t);
-			Genode::size_t write(void const *, Genode::size_t);
+			void size_changed_sigh(Genode::Signal_context_capability) override { }
+
+			Genode::size_t read(void *, Genode::size_t) override;
+			Genode::size_t write(void const *, Genode::size_t) override;
 	};
 
 }

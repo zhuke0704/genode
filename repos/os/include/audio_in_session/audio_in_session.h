@@ -14,10 +14,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__AUDIO_IN_SESSION__AUDIO_IN_SESSION_H_
@@ -269,7 +269,12 @@ class Audio_in::Session : public Genode::Session
 
 	public:
 
+		/**
+		 * \noapi
+		 */
 		static const char *service_name() { return "Audio_in"; }
+
+		enum { CAP_QUOTA = 4 };
 
 		/**
 		 * Return stream of this session, see 'Stream' above

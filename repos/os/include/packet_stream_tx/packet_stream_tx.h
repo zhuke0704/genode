@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PACKET_STREAM_TX__PACKET_STREAM_TX_H_
@@ -21,7 +21,7 @@ namespace Packet_stream_tx { template <typename> struct Channel; }
 
 
 template <typename PACKET_STREAM_POLICY>
-struct Packet_stream_tx::Channel
+struct Packet_stream_tx::Channel : Genode::Interface
 {
 	typedef Genode::Packet_stream_source<PACKET_STREAM_POLICY> Source;
 	typedef Genode::Packet_stream_sink<PACKET_STREAM_POLICY>   Sink;

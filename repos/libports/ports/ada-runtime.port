@@ -1,0 +1,11 @@
+LICENSE   := AGPLv3 + GCC runtime library exception
+VERSION   := 0
+DOWNLOADS := ada-runtime.git ada-runtime-alis.git
+
+URL(ada-runtime) := https://github.com/m-stein/ada-runtime.git
+REV(ada-runtime) := c3e46dbb46a088cc305addee4556062c7624eb90
+DIR(ada-runtime) := ada-runtime
+
+URL(ada-runtime-alis) := https://github.com/m-stein/ada-runtime-alis.git
+REV(ada-runtime-alis) := 8d970b545ff9717ef005fa28688b9c35f1f4a609
+DIR(ada-runtime-alis) := ada-runtime-alis

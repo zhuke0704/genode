@@ -1,34 +1,34 @@
 /*
- * \brief  Linux kit memory allocator
+ * \brief  Linux kit printf backend
  * \author Sebastian Sumpf
  * \date   2016-04-20
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <base/console.h>
-#include <base/printf.h>
+#include <base/log.h>
+#include <util/string.h>
 
 /* local includes */
 #include <lx_emul.h>
 
 
-namespace Lx { class Console; }
+namespace Lx {
+	class Console;
+	class Format_command;
+}
 
-extern "C" int stdout_write(const char *s);
-
-static const bool verbose_console = false;
 
 /**
  * Format string command representation
  */
-class Format_command
+class Lx::Format_command
 {
 	public:
 
@@ -78,7 +78,7 @@ class Format_command
 			if (!format[++consumed]) return;
 
 			/* check for %$x syntax */
-			prefix = (format[consumed] == '#');
+			prefix = (format[consumed] == '#') || (format[consumed] == '.');
 			if (prefix && !format[++consumed]) return;
 
 			/* heading zero indicates zero-padding */
@@ -194,7 +194,7 @@ class Lx::Console
 				return;
 
 			_buf[_idx] = 0;
-			stdout_write(_buf);
+			Genode::log(Genode::Cstring(_buf));
 			_idx = 0;
 		}
 
@@ -300,7 +300,6 @@ class Lx::Console
 
 		void vprintf(const char *format, va_list list)
 		{
-		
 			while (*format) {
 
 				/* eat and output plain characters */
@@ -345,7 +344,7 @@ class Lx::Console
 				switch (cmd.type) {
 
 					case Format_command::INT:
-		
+
 						if (cmd.length == Format_command::LONG_LONG)
 							_out_signed<long long>(numeric_arg, cmd.base);
 						else
@@ -432,8 +431,6 @@ class Lx::Console
 
 void lx_printf(char const *fmt, ...)
 {
-	if (verbose_console)
-		PDBG("[%p] %s", __builtin_return_address(0), fmt);
 	va_list va;
 	va_start(va, fmt);
 	Lx::Console::c().vprintf(fmt, va);

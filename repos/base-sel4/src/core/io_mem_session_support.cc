@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -18,9 +18,7 @@
 using namespace Genode;
 
 
-void Io_mem_session_component::_unmap_local(addr_t base, size_t size)
-{ }
+void Io_mem_session_component::_unmap_local(addr_t, size_t) { }
 
 
-addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
-{ return 0; }
+addr_t Io_mem_session_component::_map_local(addr_t, size_t) { return 0; }

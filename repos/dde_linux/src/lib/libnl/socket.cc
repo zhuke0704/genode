@@ -1,19 +1,19 @@
-/**
+/*
  * \brief  Linux emulation code
  * \author Josef Soentgen
  * \date   2014-07-28
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/snprintf.h>
 #include <util/list.h>
 #include <util/string.h>
@@ -52,7 +52,7 @@ extern "C" {
 static const bool trace = true;
 #define TRACE() \
 	do { if (trace) \
-			PDBG("called from: %p", __builtin_return_address(0)); \
+			Genode::log("called from: ", __builtin_return_address(0)); \
 	} while (0)
 
 
@@ -61,12 +61,10 @@ using namespace Wifi;
 extern Socket_call socket_call;
 
 
-struct Socket_fd : public Genode::List<Socket_fd>::Element
+struct Socket_fd
 {
 	Socket *s;
 	int     fd;
-
-	Socket_fd(Socket *s, int fd) : s(s), fd(fd) { }
 };
 
 
@@ -74,49 +72,79 @@ class Socket_registry
 {
 	private :
 
-		/* abritary value (it goes to eleven!) */
-		enum { SOCKETS_INITIAL_VALUE = 11, };
+		enum {
+			/* lower FDs might be special */
+			SOCKETS_OFFSET_VALUE = 100,
+			MAX_SOCKETS = 7,
+		};
 
+		static Socket_fd _socket_fd[MAX_SOCKETS];
 		static unsigned _sockets;
 
-		static Genode::List<Socket_fd> *_list() /* XXX ptr array instead of list? */
+		template <typename FUNC>
+		static void _for_each_socket_fd(FUNC const & func)
 		{
-			static Genode::List<Socket_fd> _l;
-			return &_l;
+			for (int i = 0; i < MAX_SOCKETS; i++) {
+				if (func(_socket_fd[i])) { break; }
+			}
 		}
 
 	public:
 
 		static int insert(Socket *s)
 		{
-			Socket_fd *sfd = new (Genode::env()->heap()) Socket_fd(s, ++_sockets);
+			int fd = -1;
 
-			_list()->insert(sfd);
+			auto lambda = [&] (Socket_fd &sfd) {
+				if (sfd.s != nullptr) { return false; }
 
-			return sfd->fd;
+				sfd.s  = s;
+				sfd.fd = (++_sockets & 0xff) + SOCKETS_OFFSET_VALUE;
+
+				/* return fd */
+				fd = sfd.fd;
+				return true;
+			};
+
+			_for_each_socket_fd(lambda);
+
+			return fd;
 		}
 
 		static void remove(Socket *s)
 		{
-			for (Socket_fd *sfd = _list()->first(); sfd; sfd = sfd->next())
-				if (sfd->s == s) {
-					_list()->remove(sfd);
-					destroy(Genode::env()->heap(), sfd);
-					break;
-				}
+			auto lambda = [&] (Socket_fd &sfd) {
+				if (sfd.s != s) { return false; }
+
+				sfd.s  = nullptr;
+				sfd.fd = 0;
+
+				return true;
+			};
+
+			_for_each_socket_fd(lambda);
 		}
 
 		static Socket *find(int fd)
 		{
-			for (Socket_fd *sfd = _list()->first(); sfd; sfd = sfd->next())
-				if (sfd->fd == fd)
-					return sfd->s;
+			Socket *s = nullptr;
 
-			return 0;
+			auto lambda = [&] (Socket_fd &sfd) {
+				if (sfd.fd != fd) { return false; }
+
+				/* return socket */
+				s = sfd.s;
+				return true;
+			};
+
+			_for_each_socket_fd(lambda);
+
+			return s;
 		}
 };
 
-unsigned Socket_registry::_sockets = Socket_registry::SOCKETS_INITIAL_VALUE;
+Socket_fd Socket_registry::_socket_fd[MAX_SOCKETS] = {};
+unsigned Socket_registry::_sockets = 0;
 
 
 extern "C" {
@@ -168,7 +196,7 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
 {
 	Socket *s = Socket_registry::find(sockfd);
 	if (!s) {
-		PERR("sockfd %d not in registry", sockfd);
+		Genode::error("sockfd ", sockfd, " not in registry");
 		errno = EBADF;
 		return -1;
 	}
@@ -203,8 +231,8 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
 	}
 
 	if (msg->msg_iovlen > Wifi::Msghdr::MAX_IOV_LEN) {
-		PERR("%s: %d exceeds maximum iov length (%d)",
-		     __func__, msg->msg_iovlen, Wifi::Msghdr::MAX_IOV_LEN);
+		Genode::error(__func__, ": ", msg->msg_iovlen, " exceeds maximum iov "
+		              "length (", (int)Wifi::Msghdr::MAX_IOV_LEN, ")");
 		errno = EINVAL;
 		return -1;
 	}
@@ -257,18 +285,18 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
 	}
 
 	if (msg->msg_iovlen > Wifi::Msghdr::MAX_IOV_LEN) {
-		PERR("%s: %d exceeds maximum iov length (%d)",
-		     __func__, msg->msg_iovlen, Wifi::Msghdr::MAX_IOV_LEN);
+		Genode::error(__func__, ": ", msg->msg_iovlen, " exceeds maximum iov "
+		              "length (", (int)Wifi::Msghdr::MAX_IOV_LEN, ")");
 		errno = EINVAL;
 		return -1;
 	}
 	if (msg->msg_controllen != 0) {
-		PERR("%s: msg_control not supported", __func__);
+		Genode::error(__func__, ": msg_control not supported");
 		errno = EINVAL;
 		return -1;
 	}
 	if (flags != 0) {
-		PERR("%s: flags not supported", __func__);
+		Genode::error(__func__, ": flags not supported");
 		errno = EOPNOTSUPP;
 		return -1;
 	}
@@ -365,17 +393,20 @@ int setsockopt(int sockfd, int level, int optname, const void *optval,
 	if (!s)
 		return -1;
 
-	/* FIXME optval values */
-	int const err = socket_call.setsockopt(s,
-	                                       sockopt_level(level),
-	                                       sockopt_name(level, optname),
-	                                       optval, optlen);
-	if (err < 0) {
-		errno = -err;
-		return 1;
-	}
+	try {
+		/* FIXME optval values */
+		int const err =
+			socket_call.setsockopt(s,
+		                           sockopt_level(level),
+		                           sockopt_name(level, optname),
+		                           optval, optlen);
+		if (err < 0) {
+			errno = -err;
+			return 1;
+		}
+	} catch (Invalid_arg) { return -1; }
 
-	return err;
+	return 0;
 }
 
 
@@ -437,7 +468,7 @@ int fcntl(int fd, int cmd, ... /* arg */ )
 			return 0;
 		}
 	default:
-		PWRN("fcntl: unknown request: %d", cmd);
+		Genode::warning("fcntl: unknown request: ", cmd);
 		break;
 	}
 
@@ -449,10 +480,36 @@ int fcntl(int fd, int cmd, ... /* arg */ )
  ** sys/poll.h **
  ****************/
 
+static bool _ctrl_fd_set = false;
+
+
+extern "C" void nl_set_wpa_ctrl_fd()
+{
+	_ctrl_fd_set = true;
+}
+
+static bool special_fd(int fd)
+{
+	/*
+	 * This range is used by the CTRL and RFKILL fds.
+	 */
+	return (fd > 40 && fd < 60);
+}
+
 int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 {
 	Poll_socket_fd sockets[Wifi::MAX_POLL_SOCKETS];
 	unsigned num = 0;
+	int nready = 0;
+
+	/* handle special FDs first */
+	for (nfds_t i = 0; i < nfds; i++) {
+		if (!special_fd(fds[i].fd)) { continue; }
+
+		fds[i].revents  = 0;
+		fds[i].revents |= POLLIN;
+		nready++;
+	}
 
 	for (nfds_t i = 0; i < nfds; i++) {
 		Socket *s = Socket_registry::find(fds[i].fd);
@@ -473,11 +530,16 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
 		num++;
 	}
 
-	int nready = socket_call.poll_all(sockets, num, timeout);
-	if (!nready)
-		return 0;
-	if (nready < 0)
-		return -1;
+	/* make sure we do not block in poll_all */
+	if (_ctrl_fd_set) {
+		_ctrl_fd_set = false;
+		timeout = 0;
+	}
+
+	int sready = socket_call.poll_all(sockets, num, timeout);
+	if (sready < 0 || sready == 0)  { return nready; }
+
+	nready += sready;
 
 	for (unsigned i = 0; i < num; i++) {
 		int revents  = sockets[i].revents;

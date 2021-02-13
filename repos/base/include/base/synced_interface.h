@@ -5,21 +5,21 @@
  */
 
 /*
- * Copyright (C) 2013-2016 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__SYNCED_INTERFACE_H_
 #define _INCLUDE__BASE__SYNCED_INTERFACE_H_
 
 /* Genode includes */
-#include <base/lock.h>
+#include <base/mutex.h>
 
 namespace Genode {
 
-	template <typename, typename LOCK = Genode::Lock> class Synced_interface;
+	template <typename, typename LOCK = Genode::Mutex> class Synced_interface;
 }
 
 
@@ -48,14 +48,19 @@ class Genode::Synced_interface
 				Guard(LOCK &lock, IF *interface)
 				: _lock(lock), _interface(interface)
 				{
-					_lock.lock();
+					_lock.acquire();
 				}
 
 				friend class Synced_interface;
 
+				Guard &operator = (Guard const &);
+
 			public:
 
-				~Guard() { _lock.unlock(); }
+				~Guard() { _lock.release(); }
+
+				Guard(Guard const &other)
+				: _lock(other._lock), _interface(other._interface) { }
 
 				IF *operator -> () { return _interface; }
 		};

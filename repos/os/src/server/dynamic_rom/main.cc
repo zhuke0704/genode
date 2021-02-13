@@ -5,35 +5,35 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
 #include <util/arg_string.h>
 #include <base/heap.h>
-#include <base/env.h>
-#include <root/component.h>
-#include <os/server.h>
-#include <os/config.h>
-#include <os/attached_ram_dataspace.h>
-#include <os/server.h>
+#include <base/component.h>
+#include <base/session_label.h>
+#include <base/log.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 #include <rom_session/rom_session.h>
 #include <timer_session/connection.h>
+#include <root/component.h>
 
 
 namespace Dynamic_rom {
-	using Server::Entrypoint;
+	using Genode::Entrypoint;
 	using Genode::Rpc_object;
 	using Genode::Sliced_heap;
-	using Genode::env;
-	using Genode::Lazy_volatile_object;
+	using Genode::Env;
+	using Genode::Constructible;
 	using Genode::Signal_context_capability;
+	using Genode::Signal_handler;
 	using Genode::Xml_node;
-	using Genode::Signal_rpc_member;
 	using Genode::Arg_string;
 
 	class  Session_component;
@@ -46,15 +46,16 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 {
 	private:
 
+		Env                      &_env;
 		bool                     &_verbose;
 		Xml_node                  _rom_node;
 		Timer::Connection         _timer;
 		unsigned                  _curr_idx = 0;
 		bool                      _has_content = false;
 		unsigned                  _last_content_idx = ~0;
-		Signal_context_capability _sigh;
+		Signal_context_capability _sigh { };
 
-		Lazy_volatile_object<Genode::Attached_ram_dataspace> _ram_ds;
+		Constructible<Genode::Attached_ram_dataspace> _ram_ds { };
 
 		void _notify_client()
 		{
@@ -64,18 +65,17 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 			Genode::Signal_transmitter(_sigh).submit();
 		}
 
+		/**
+		 * Print message prefixed with ROM name
+		 */
 		template <typename... ARGS>
-		void _log(char const *format, ARGS... args)
+		void _log(ARGS&&... args)
 		{
 			if (!_verbose)
 				return;
 
-			char name[200];
-			_rom_node.attribute("name").value(name, sizeof(name));
-
-			Genode::printf("%s: ", name);
-			Genode::printf(format, args...);
-			Genode::printf("\n");
+			typedef Genode::String<160> Name;
+			Genode::log(_rom_node.attribute_value("name", Name()), ": ", args...);
 		}
 
 		enum Execution_state { EXEC_CONTINUE, EXEC_BLOCK };
@@ -94,10 +94,9 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 				_notify_client();
 
 				if (curr_step.has_attribute("description")) {
-					char desc[200];
-					desc[0] = 0;
-					curr_step.attribute("description").value(desc, sizeof(desc));
-					_log("change (%s)", desc);
+					typedef Genode::String<200> Desc;
+					Desc desc = curr_step.attribute_value("description", Desc());
+					_log("change (", desc.string(), ")");
 				} else {
 					_log("change");
 				}
@@ -121,10 +120,11 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 			if (curr_step.has_type("sleep")
 			 && curr_step.has_attribute("milliseconds")) {
 
-				unsigned long milliseconds = 0;
-				curr_step.attribute("milliseconds").value(&milliseconds);
+				Genode::uint64_t const milliseconds =
+					curr_step.attribute_value("milliseconds", (Genode::uint64_t)0);
+
 				_timer.trigger_once(milliseconds*1000);
-				_log("sleep %ld milliseconds", milliseconds);
+				_log("sleep ", milliseconds, " milliseconds");
 
 				return EXEC_BLOCK;
 			}
@@ -144,21 +144,21 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 			}
 		}
 
-		void _timer_handler(unsigned) { _execute_steps_until_sleep(); }
+		void _handle_timer() { _execute_steps_until_sleep(); }
 
 		Entrypoint &_ep;
 
 		typedef Session_component This;
-		Signal_rpc_member<This> _timer_dispatcher = { _ep, *this, &This::_timer_handler };
+		Signal_handler<This> _timer_handler = { _ep, *this, &This::_handle_timer };
 
 	public:
 
-		Session_component(Entrypoint &ep, Xml_node rom_node, bool &verbose)
+		Session_component(Env &env, Xml_node rom_node, bool &verbose)
 		:
-			_verbose(verbose), _rom_node(rom_node), _ep(ep)
+			_env(env), _verbose(verbose), _rom_node(rom_node), _timer(env), _ep(env.ep())
 		{
 			/* init timer signal handler */
-			_timer.sigh(_timer_dispatcher);
+			_timer.sigh(_timer_handler);
 
 			/* execute first step immediately at session-creation time */
 			_execute_steps_until_sleep();
@@ -172,13 +172,12 @@ class Dynamic_rom::Session_component : public Rpc_object<Genode::Rom_session>
 				return Rom_dataspace_capability();
 
 			/* replace dataspace by new one */
-			_ram_ds.construct(env()->ram_session(), _rom_node.size());
+			_ram_ds.construct(_env.ram(), _env.rm(), _rom_node.size());
 
 			/* fill with content of current step */
 			Xml_node step_node = _rom_node.sub_node(_last_content_idx);
-			memcpy(_ram_ds->local_addr<char>(),
-			       step_node.content_addr(),
-			       step_node.content_size());
+			step_node.with_raw_content([&] (char const *start, size_t size) {
+				memcpy(_ram_ds->local_addr<char>(), start, size); });
 
 			/* cast RAM into ROM dataspace capability */
 			Dataspace_capability ds_cap = static_cap_cast<Dataspace>(_ram_ds->cap());
@@ -196,19 +195,19 @@ class Dynamic_rom::Root : public Genode::Root_component<Session_component>
 {
 	private:
 
-		Entrypoint &_ep;
+		Env        &_env;
 		Xml_node    _config_node;
 		bool       &_verbose;
 
 		class Nonexistent_rom_module { };
 
-		Xml_node _lookup_rom_node_in_config(char const *name)
+		Xml_node _lookup_rom_node_in_config(Genode::Session_label const &name)
 		{
 			/* lookup ROM module in config */
 			for (unsigned i = 0; i < _config_node.num_sub_nodes(); i++) {
 				Xml_node node = _config_node.sub_node(i);
 				if (node.has_attribute("name")
-				 && node.attribute("name").has_value(name))
+				 && node.attribute("name").has_value(name.string()))
 					return node;
 			}
 			throw Nonexistent_rom_module();
@@ -216,67 +215,54 @@ class Dynamic_rom::Root : public Genode::Root_component<Session_component>
 
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *args) override
 		{
+			using namespace Genode;
+
 			/* read name of ROM module from args */
-			char name[200];
-			Arg_string::find_arg(args, "filename").string(name, sizeof(name), "");
+			Session_label const label = label_from_args(args);
+			Session_label const module_name = label.last_element();
 
 			try {
 				return new (md_alloc())
-					Session_component(_ep,
-					                  _lookup_rom_node_in_config(name),
+					Session_component(_env,
+					                  _lookup_rom_node_in_config(module_name),
 					                  _verbose);
-
-			} catch (Nonexistent_rom_module) {
-				PERR("ROM module lookup for \"%s\" failed.", name);
-				throw Root::Invalid_args();
+			}
+			catch (Nonexistent_rom_module) {
+				error("ROM module lookup of '", label.string(), "' failed");
+				throw Service_denied();
 			}
 		}
 
 	public:
 
-		Root(Entrypoint &ep, Genode::Allocator &md_alloc,
+		Root(Env &env, Genode::Allocator &md_alloc,
 		     Xml_node config_node, bool &verbose)
 		:
-			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
-			_ep(ep), _config_node(config_node), _verbose(verbose)
+			Genode::Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _config_node(config_node), _verbose(verbose)
 		{ }
 };
 
 
 struct Dynamic_rom::Main
 {
-	bool _verbose_config()
+	Env &env;
+
+	Genode::Attached_rom_dataspace config { env, "config" };
+
+	bool verbose = config.xml().attribute_value("verbose", false);
+
+	Sliced_heap sliced_heap { env.ram(), env.rm() };
+
+	Root root { env, sliced_heap, config.xml(), verbose };
+
+	Main(Env &env) : env(env)
 	{
-		Xml_node config = Genode::config()->xml_node();
-
-		return config.attribute_value("verbose", false);
-	}
-
-	bool verbose = _verbose_config();
-
-	Entrypoint &ep;
-
-	Sliced_heap sliced_heap = { env()->ram_session(), env()->rm_session() };
-
-	Root root = { ep, sliced_heap, Genode::config()->xml_node(), verbose };
-
-	Main(Entrypoint &ep) : ep(ep)
-	{
-		env()->parent()->announce(ep.manage(root));
+		env.parent().announce(env.ep().manage(root));
 	}
 };
 
 
-namespace Server {
-
-	char const *name() { return "dynamic_rom_ep"; }
-
-	size_t stack_size() { return 4*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Dynamic_rom::Main main(ep);
-	}
-}
+void Component::construct(Genode::Env &env) { static Dynamic_rom::Main main(env); }

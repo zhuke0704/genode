@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__ALLOCATOR_AVL_H_
@@ -16,9 +16,10 @@
 
 #include <base/allocator.h>
 #include <base/tslab.h>
-#include <base/printf.h>
+#include <base/output.h>
 #include <util/avl_tree.h>
 #include <util/misc_math.h>
+#include <util/construct_at.h>
 
 namespace Genode {
 
@@ -47,7 +48,13 @@ class Genode::Allocator_avl_base : public Range_allocator
 	private:
 
 		static bool _sum_in_range(addr_t addr, addr_t offset) {
-			return (~0UL - addr > offset); }
+			return (addr + offset - 1) >= addr; }
+
+		/*
+		 * Noncopyable
+		 */
+		Allocator_avl_base(Allocator_avl_base const &);
+		Allocator_avl_base &operator = (Allocator_avl_base const &);
 
 	protected:
 
@@ -55,11 +62,12 @@ class Genode::Allocator_avl_base : public Range_allocator
 		{
 			private:
 
-				addr_t _addr;       /* base address    */
-				size_t _size;       /* size of block   */
-				bool   _used;       /* block is in use */
-				short  _id;         /* for debugging   */
-				size_t _max_avail;  /* biggest free block size of subtree */
+				addr_t _addr      { 0 };     /* base address    */
+				size_t _size      { 0 };     /* size of block   */
+				bool   _used      { false }; /* block is in use */
+				short  _id        { 0 };     /* for debugging   */
+				size_t _max_avail { 0 };     /* biggest free block size of
+				                                sub tree */
 
 				/**
 				 * Request max_avail value of subtree
@@ -84,6 +92,12 @@ class Genode::Allocator_avl_base : public Range_allocator
 					return (a >= addr()) && _sum_in_range(a, n) &&
 					       (a - addr() + n <= avail()) && (a + n - 1 <= to);
 				}
+
+				/*
+				 * Noncopyable
+				 */
+				Block(Block const &);
+				Block &operator = (Block const &);
 
 			public:
 
@@ -112,9 +126,7 @@ class Genode::Allocator_avl_base : public Range_allocator
 
 				inline void used(bool used) { _used = used; }
 
-
 				enum { FREE = false, USED = true };
-
 
 				/**
 				 * Constructor
@@ -122,7 +134,7 @@ class Genode::Allocator_avl_base : public Range_allocator
 				 * This constructor is called from meta-data allocator during
 				 * initialization of new meta-data blocks.
 				 */
-				Block() : _addr(0), _size(0), _used(0), _max_avail(0) { }
+				Block();
 
 				/**
 				 * Constructor
@@ -151,27 +163,13 @@ class Genode::Allocator_avl_base : public Range_allocator
 				 * Return sum of available memory in subtree
 				 */
 				size_t avail_in_subtree(void);
-
-				/**
-				 * Debug hook
-				 *
-				 * \noapi
-				 */
-				void dump();
-
-				/**
-				 * Debug hook
-				 *
-				 * \noapi
-				 */
-				void dump_dot(int indent = 0);
 		};
 
 	private:
 
-		Avl_tree<Block>  _addr_tree;      /* blocks sorted by base address */
-		Allocator       *_md_alloc;       /* meta-data allocator           */
-		size_t           _md_entry_size;  /* size of block meta-data entry */
+		Avl_tree<Block> _addr_tree        { };  /* blocks sorted by base address */
+		Allocator      *_md_alloc { nullptr };  /* meta-data allocator           */
+		size_t          _md_entry_size  { 0 };  /* size of block meta-data entry */
 
 		/**
 		 * Alloc meta-data block
@@ -207,10 +205,12 @@ class Genode::Allocator_avl_base : public Range_allocator
 
 	protected:
 
+		Avl_tree<Block> const & _block_tree() const { return _addr_tree; }
+
 		/**
 		 * Clean up the allocator and detect dangling allocations
 		 *
-		 * This function is called at the destruction time of the allocator. It
+		 * This method is called at the destruction time of the allocator. It
 		 * makes sure that the allocator instance releases all memory obtained
 		 * from the meta-data allocator.
 		 */
@@ -253,12 +253,7 @@ class Genode::Allocator_avl_base : public Range_allocator
 		 */
 		bool any_block_addr(addr_t *out_addr);
 
-		/**
-		 * Debug hook
-		 *
-		 * \noapi
-		 */
-		void dump_addr_tree(Block *addr_node = 0);
+		void print(Output &out) const;
 
 
 		/*******************************
@@ -328,6 +323,8 @@ class Genode::Allocator_avl_tpl : public Allocator_avl_base
 
 	public:
 
+		struct Assign_metadata_failed : Exception { };
+
 		/**
 		 * Constructor
 		 *
@@ -341,7 +338,7 @@ class Genode::Allocator_avl_tpl : public Allocator_avl_base
 		explicit Allocator_avl_tpl(Allocator *metadata_chunk_alloc) :
 			Allocator_avl_base(&_metadata, sizeof(Block)),
 			_metadata((metadata_chunk_alloc) ? metadata_chunk_alloc : this,
-			          (Slab_block *)&_initial_md_block) { }
+			          (Block *)&_initial_md_block) { }
 
 		~Allocator_avl_tpl() { _revert_allocations_and_ranges(); }
 
@@ -352,11 +349,27 @@ class Genode::Allocator_avl_tpl : public Allocator_avl_base
 
 		/**
 		 * Assign custom meta data to block at specified address
+		 *
+		 * \throw Assign_metadata_failed
 		 */
 		void metadata(void *addr, BMDT bmd) const
 		{
-			Block *b = static_cast<Block *>(_find_by_address((addr_t)addr));
+			Block * const b = static_cast<Block *>(_find_by_address((addr_t)addr));
 			if (b) *static_cast<BMDT *>(b) = bmd;
+			else throw Assign_metadata_failed();
+		}
+
+		/**
+		 * Construct meta-data object in place
+		 *
+		 * \param ARGS  arguments passed to the meta-data constuctor
+		 */
+		template <typename... ARGS>
+		void construct_metadata(void *addr, ARGS &&... args)
+		{
+			Block * const b = static_cast<Block *>(_find_by_address((addr_t)addr));
+			if (b) construct_at<BMDT>(static_cast<BMDT *>(b), args...);
+			else throw Assign_metadata_failed();
 		}
 
 		/**
@@ -368,7 +381,7 @@ class Genode::Allocator_avl_tpl : public Allocator_avl_base
 			return b && b->used() ? b : 0;
 		}
 
-		int add_range(addr_t base, size_t size)
+		int add_range(addr_t base, size_t size) override
 		{
 			/*
 			 * We disable the slab block allocation while
@@ -381,6 +394,26 @@ class Genode::Allocator_avl_tpl : public Allocator_avl_base
 			int ret = Allocator_avl_base::add_range(base, size);
 			_metadata.backing_store(md_bs);
 			return ret;
+		}
+
+		/**
+		 * Apply functor 'fn' to the metadata of an arbitrary
+		 * member of the allocator. This method is provided for
+		 * destructing each member of the allocator. Calling
+		 * the method repeatedly without removing or inserting
+		 * members will produce the same member.
+		 */
+		template <typename FUNC>
+		bool apply_any(FUNC const &fn)
+		{
+			addr_t addr = 0;
+			if (any_block_addr(&addr)) {
+				if (BMDT *b = metadata((void*)addr)) {
+					fn((BMDT&)*b);
+					return true;
+				}
+			}
+			return false;
 		}
 };
 

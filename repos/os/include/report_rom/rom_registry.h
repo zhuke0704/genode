@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REPORT_ROM__ROM_REGISTRY_H_
@@ -22,7 +22,7 @@ namespace Rom {
 }
 
 
-struct Rom::Registry_for_reader
+struct Rom::Registry_for_reader : Interface
 {
 	/**
 	 * Exception type
@@ -41,7 +41,7 @@ struct Rom::Registry_for_reader
 };
 
 
-struct Rom::Registry_for_writer
+struct Rom::Registry_for_writer : Interface
 {
 	virtual Module &lookup(Writer &writer, Module::Name const &name) = 0;
 

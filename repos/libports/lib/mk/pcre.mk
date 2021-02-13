@@ -27,9 +27,11 @@ INC_DIR += $(PCRE_PORT_DIR)/include/pcre \
 
 CC_OPT += -DHAVE_CONFIG_H
 
-LIBS += libc zlib readline
+LIBS += libc
 
 SHARED_LIB = yes
 
 vpath %.c $(PCRE_PORT_DIR)/src/lib/pcre
 vpath pcre_chartables.c $(REP_DIR)/src/lib/pcre
+
+CC_CXX_WARN_STRICT =

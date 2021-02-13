@@ -7,35 +7,28 @@
  */
 
 /*
- * Copyright (C) 2007-2015 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <util/arg_string.h>
 #include <util/bit_array.h>
 
 /* core includes */
 #include <irq_root.h>
+#include <irq_args.h>
 #include <irq_session_component.h>
 #include <platform.h>
 #include <util.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/icu.h>
-#include <l4/sys/irq.h>
-#include <l4/sys/factory.h>
-#include <l4/sys/types.h>
-}
+/* Fiasco.OC includes */
+#include <foc/syscall.h>
 
-namespace Genode {
-	class Interrupt_handler;
-}
-
+namespace Genode { class Interrupt_handler; }
 
 using namespace Genode;
 
@@ -43,135 +36,144 @@ using namespace Genode;
 /**
  * Dispatches interrupts from kernel
  */
-class Genode::Interrupt_handler : public Thread_deprecated<2048*sizeof(long)>
+class Genode::Interrupt_handler : public Thread
 {
 	private:
 
-		Interrupt_handler() : Thread_deprecated("irq_handler") { start(); }
+		Interrupt_handler()
+		:
+			Thread(Weight::DEFAULT_WEIGHT, "irq_handler",
+			       2048 * sizeof(long) /* stack */, Type::NORMAL)
+		{ start(); }
 
 	public:
 
-		void entry();
+		void entry() override;
 
-		static Fiasco::l4_cap_idx_t handler_cap()
+		static Foc::l4_cap_idx_t handler_cap()
 		{
 			static Interrupt_handler handler;
-			return handler._thread_cap.dst();
+			return handler._thread_cap.data()->kcap();
 		}
 
 };
 
 
 enum { MAX_MSIS = 256 };
-static class Msi_allocator : public Genode::Bit_array<MAX_MSIS>
+
+
+static struct Msi_allocator : Bit_array<MAX_MSIS>
 {
-	public:
+	Msi_allocator()
+	{
+		using namespace Foc;
 
-		Msi_allocator() {
-			using namespace Fiasco;
+		l4_icu_info_t info { };
 
-			l4_icu_info_t info { .features = 0 };
-			l4_msgtag_t res = l4_icu_info(Fiasco::L4_BASE_ICU_CAP, &info);
+		l4_msgtag_t const res = l4_icu_info(Foc::L4_BASE_ICU_CAP, &info);
 
-			if (l4_error(res) || !(info.features & L4_ICU_FLAG_MSI))
-				set(0, MAX_MSIS);
-			else
-				if (info.nr_msis < MAX_MSIS)
-					set(info.nr_msis, MAX_MSIS - info.nr_msis);
-		}
+		if (l4_error(res) || !(info.features & L4_ICU_FLAG_MSI))
+			set(0, MAX_MSIS);
+		else
+			if (info.nr_msis < MAX_MSIS)
+				set(info.nr_msis, MAX_MSIS - info.nr_msis);
+	}
+
 } msi_alloc;
 
-bool Genode::Irq_object::associate(unsigned irq, bool msi,
-                                   Irq_session::Trigger trigger,
-                                   Irq_session::Polarity polarity)
+
+bool Irq_object::associate(unsigned irq, bool msi,
+                           Irq_session::Trigger trigger,
+                           Irq_session::Polarity polarity)
 {
-	if (msi)
-		/*
-		 * Local APIC address, See Intel x86 Spec - Section MSI 10.11.
-		 *
-		 * XXX local Apic ID encoding missing - address is constructed
-		 *     assuming that local APIC id of boot CPU is 0 XXX
-		 */
-		_msi_addr = 0xfee00000UL;
+	using namespace Foc;
 
 	_irq      = irq;
 	_trigger  = trigger;
 	_polarity = polarity;
 
-	using namespace Fiasco;
-	if (l4_error(l4_factory_create_irq(L4_BASE_FACTORY_CAP,
-	                                   _capability()))) {
-		PERR("l4_factory_create_irq failed!");
-		return false;
-	}
-
-	unsigned long gsi = _irq;
-	if (_msi_addr)
-		gsi |= L4_ICU_FLAG_MSI;
-
-	if (l4_error(l4_icu_bind(L4_BASE_ICU_CAP, gsi, _capability()))) {
-		PERR("Binding IRQ %u to the ICU failed", _irq);
-		return false;
-	}
-
-	if (!_msi_addr)
+	if (msi)
+		irq |= L4_ICU_FLAG_MSI;
+	else
 		/* set interrupt mode */
-		Platform::setup_irq_mode(gsi, _trigger, _polarity);
+		Platform::setup_irq_mode(irq, _trigger, _polarity);
 
-	if (l4_error(l4_irq_attach(_capability(), reinterpret_cast<l4_umword_t>(this),
-	                           Interrupt_handler::handler_cap()))) {
-		PERR("Error attaching to IRQ %u", _irq);
+	if (l4_error(l4_factory_create_irq(L4_BASE_FACTORY_CAP, _capability()))) {
+		error("l4_factory_create_irq failed!");
+		return false;
+	}
+	if (l4_error(l4_icu_bind(L4_BASE_ICU_CAP, irq, _capability()))) {
+		error("Binding IRQ ", _irq, " to the ICU failed");
 		return false;
 	}
 
-	if (_msi_addr && l4_error(l4_icu_msi_info(L4_BASE_ICU_CAP, gsi,
-	                                          &_msi_data))) {
-		PERR("Error getting MSI info");
+	if (l4_error(l4_rcv_ep_bind_thread(_capability(), Interrupt_handler::handler_cap(),
+	                                   reinterpret_cast<l4_umword_t>(this)))) {
+		error("cannot attach to IRQ ", _irq);
 		return false;
+	}
+
+	if (msi) {
+		/**
+		 * src_id represents bit 64-84 of the Interrupt Remap Table Entry Format
+		 * for Remapped Interrupts, reference section 9.10 of the
+		 * Intel ® Virtualization Technology for Directed I/O
+		 * Architecture Specification
+		 */
+		unsigned src_id = 0x0;
+		Foc::l4_icu_msi_info_t info = l4_icu_msi_info_t();
+		if (l4_error(l4_icu_msi_info(L4_BASE_ICU_CAP, irq,
+		                             src_id, &info))) {
+			error("cannot get MSI info");
+			return false;
+		}
+		_msi_addr = info.msi_addr;
+		_msi_data = info.msi_data;
 	}
 
 	return true;
 }
 
 
-void Genode::Irq_object::ack_irq()
+void Irq_object::ack_irq()
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	int err;
 	l4_msgtag_t tag = l4_irq_unmask(_capability());
 	if ((err = l4_ipc_error(tag, l4_utcb())))
-		PERR("IRQ unmask: %d\n", err);
+		error("IRQ unmask: ", err);
 }
 
 
-Genode::Irq_object::Irq_object()
+Irq_object::Irq_object()
 :
-	 _cap(cap_map()->insert(platform_specific()->cap_id_alloc()->alloc())),
+	 _cap(cap_map().insert(platform_specific().cap_id_alloc().alloc())),
 	 _trigger(Irq_session::TRIGGER_UNCHANGED),
 	 _polarity(Irq_session::POLARITY_UNCHANGED),
 	 _irq(~0U), _msi_addr(0), _msi_data(0)
 { }
 
 
-Genode::Irq_object::~Irq_object()
+Irq_object::~Irq_object()
 {
 	if (_irq == ~0U)
 		return;
 
-	using namespace Fiasco;
+	using namespace Foc;
 
-	unsigned long gsi = _irq;
+	unsigned long irq = _irq;
+
 	if (_msi_addr)
-		gsi |= L4_ICU_FLAG_MSI;
+		irq |= L4_ICU_FLAG_MSI;
 
 	if (l4_error(l4_irq_detach(_capability())))
-		PERR("Error detaching IRQ");
+		error("cannot detach IRQ");
 
-	if (l4_error(l4_icu_unbind(L4_BASE_ICU_CAP, gsi, _capability())))
-		PERR("Error unbinding IRQ");
+	if (l4_error(l4_icu_unbind(L4_BASE_ICU_CAP, irq, _capability())))
+		error("cannot unbind IRQ");
 
-	cap_map()->remove(_cap);
+	cap_map().remove(_cap);
 }
 
 
@@ -179,66 +181,41 @@ Genode::Irq_object::~Irq_object()
  ** IRQ session component **
  ***************************/
 
-
-Irq_session_component::Irq_session_component(Range_allocator *irq_alloc,
+Irq_session_component::Irq_session_component(Range_allocator &irq_alloc,
                                              const char      *args)
 :
-	_irq_number(~0U), _irq_alloc(irq_alloc)
+	_irq_number(Arg_string::find_arg(args, "irq_number").long_value(-1)),
+	_irq_alloc(irq_alloc), _irq_object()
 {
-	long irq_number = Arg_string::find_arg(args, "irq_number").long_value(-1);
-	long msi = Arg_string::find_arg(args, "device_config_phys").long_value(0);
+	long const msi = Arg_string::find_arg(args, "device_config_phys").long_value(0);
+
 	if (msi) {
-		if (msi_alloc.get(irq_number, 1)) {
-			PERR("Unavailable MSI %ld requested.",  irq_number);
-			throw Root::Unavailable();
+		if (msi_alloc.get(_irq_number, 1)) {
+			error("unavailable MSI ", _irq_number, " requested");
+			throw Service_denied();
 		}
-		msi_alloc.set(irq_number, 1);
+		msi_alloc.set(_irq_number, 1);
 	} else {
-		if (!irq_alloc || irq_alloc->alloc_addr(1, irq_number).error()) {
-			PERR("Unavailable IRQ %ld requested.", irq_number);
-			throw Root::Unavailable();
+		if (irq_alloc.alloc_addr(1, _irq_number).error()) {
+			error("unavailable IRQ ", _irq_number, " requested");
+			throw Service_denied();
 		}
 	}
 
-	_irq_number = irq_number;
+	Irq_args const irq_args(args);
 
-	long irq_t = Arg_string::find_arg(args, "irq_trigger").long_value(-1);
-	long irq_p = Arg_string::find_arg(args, "irq_polarity").long_value(-1);
+	if (_irq_object.associate(_irq_number, msi, irq_args.trigger(),
+	                          irq_args.polarity()))
+		return;
 
-	Irq_session::Trigger irq_trigger;
-	Irq_session::Polarity irq_polarity;
-
-	switch(irq_t) {
-		case -1:
-		case Irq_session::TRIGGER_UNCHANGED:
-			irq_trigger = Irq_session::TRIGGER_UNCHANGED;
-			break;
-		case Irq_session::TRIGGER_EDGE:
-			irq_trigger = Irq_session::TRIGGER_EDGE;
-			break;
-		case Irq_session::TRIGGER_LEVEL:
-			irq_trigger = Irq_session::TRIGGER_LEVEL;
-			break;
-		default:
-			throw Root::Unavailable();
+	/* cleanup */
+	if (msi)
+		msi_alloc.clear(_irq_number, 1);
+	else {
+		addr_t const free_irq = _irq_number;
+		_irq_alloc.free((void *)free_irq);
 	}
-
-	switch(irq_p) {
-		case -1:
-		case POLARITY_UNCHANGED:
-			irq_polarity = POLARITY_UNCHANGED;
-			break;
-		case POLARITY_HIGH:
-			irq_polarity = POLARITY_HIGH;
-			break;
-		case POLARITY_LOW:
-			irq_polarity = POLARITY_LOW;
-			break;
-		default:
-			throw Root::Unavailable();
-	}
-
-	_irq_object.associate(_irq_number, msi, irq_trigger, irq_polarity);
+	throw Service_denied();
 }
 
 
@@ -250,13 +227,16 @@ Irq_session_component::~Irq_session_component()
 	if (_irq_object.msi_address()) {
 		msi_alloc.clear(_irq_number, 1);
 	} else {
-		Genode::addr_t free_irq = _irq_number;
-		_irq_alloc->free((void *)free_irq);
+		addr_t const free_irq = _irq_number;
+		_irq_alloc.free((void *)free_irq);
 	}
 }
 
 
-void Irq_session_component::ack_irq() { _irq_object.ack_irq(); }
+void Irq_session_component::ack_irq()
+{
+	_irq_object.ack_irq();
+}
 
 
 void Irq_session_component::sigh(Genode::Signal_context_capability cap)
@@ -265,10 +245,10 @@ void Irq_session_component::sigh(Genode::Signal_context_capability cap)
 }
 
 
-Genode::Irq_session::Info Irq_session_component::info()
+Irq_session::Info Irq_session_component::info()
 {
-	if (!_irq_object.msi_address() || !_irq_object.msi_value())
-		return { .type = Genode::Irq_session::Info::Type::INVALID };
+	if (!_irq_object.msi_address())
+		return { .type = Info::Type::INVALID, .address = 0, .value = 0 };
 
 	return {
 		.type    = Genode::Irq_session::Info::Type::MSI,
@@ -287,7 +267,7 @@ __attribute__((optimize("-fno-omit-frame-pointer")))
 __attribute__((noinline))
 void Interrupt_handler::entry()
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	int         err;
 	l4_msgtag_t tag;
@@ -296,7 +276,7 @@ void Interrupt_handler::entry()
 	while (true) {
 		tag = l4_ipc_wait(l4_utcb(), &label, L4_IPC_NEVER);
 		if ((err = l4_ipc_error(tag, l4_utcb())))
-			PERR("IRQ receive: %d\n", err);
+			error("IRQ receive: ", err);
 		else {
 			Irq_object * irq_object = reinterpret_cast<Irq_object *>(label);
 			irq_object->notify();

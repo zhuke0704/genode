@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <scout/misc_math.h>
@@ -222,17 +222,20 @@ void Parent_element::flush_cache(Canvas_base &canvas)
  ***********/
 
 Token::Token(Style *style, const char *str, int len)
+:
+	_str(str),
+	_len(len),
+	_style(style),
+	_col(_style ? _style->color : Color(0, 0, 0)),
+	_outline(Color(0, 0, 0, 0))
 {
-	_str               = str;
-	_len               = len;
-	_style             = style;
 	_flags.takes_focus = 0;
-	_col               = _style ? _style->color : Color(0, 0, 0);
-	_outline           = Color(0, 0, 0, 0);
 
 	if (!_style) return;
-	_min_size = Area(_style->font->str_w(str, len) + _style->font->str_w(" ", 1),
-	                 _style->font->str_h(str, len));
+
+	_min_size = Area(_style->font->string_width(str, len).decimal() +
+	                 _style->font->string_width(" ").decimal(),
+	                 _style->font->bounding_box().h());
 }
 
 
@@ -426,7 +429,7 @@ void Verbatim::format_fixed_width(int w)
  ** Link_token **
  ****************/
 
-void Link_token::handle(Event &e)
+void Link_token::handle_event(Event const &e)
 {
 	if (e.type != Event::PRESS) return;
 
@@ -444,7 +447,7 @@ void Link_token::handle(Event &e)
  ** Launcher_link_token **
  *************************/
 
-void Launcher_link_token::handle(Event &e)
+void Launcher_link_token::handle_event(Event const &e)
 {
 	if (e.type != Event::PRESS) return;
 

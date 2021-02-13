@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__NATIVE_CPU_COMPONENT_H_
@@ -25,7 +25,7 @@ namespace Genode {
 }
 
 
-class Genode::Native_cpu_component : public Rpc_object<Nova_native_cpu,
+class Genode::Native_cpu_component : public Rpc_object<Cpu_session::Native_cpu,
                                                        Native_cpu_component>
 {
 	private:
@@ -38,7 +38,7 @@ class Genode::Native_cpu_component : public Rpc_object<Nova_native_cpu,
 		Native_cpu_component(Cpu_session_component &, char const *);
 		~Native_cpu_component();
 
-		Native_capability pager_cap(Thread_capability) override;
+		void thread_type(Thread_capability, Thread_type, Exception_base) override;
 };
 
 #endif /* _CORE__INCLUDE__NATIVE_CPU_COMPONENT_H_ */

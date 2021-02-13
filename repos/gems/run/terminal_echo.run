@@ -1,22 +1,16 @@
-set build_components {
-	core init drivers/timer
-	server/terminal test/terminal_echo
-	drivers/framebuffer drivers/input
-}
-
-source ${genode_dir}/repos/base/run/platform_drv.inc
-append_platform_drv_build_components
-
-build $build_components
-
 create_boot_directory
 
-append config {
-	<config verbose="yes">
+import_from_depot [depot_user]/src/[base_src] \
+                  [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/pkg/terminal \
+                  [depot_user]/src/nitpicker \
+                  [depot_user]/src/init
+
+install_config {
+	<config>
 		<parent-provides>
 			<service name="ROM"/>
 			<service name="LOG"/>
-			<service name="RAM"/>
 			<service name="RM"/>
 			<service name="CPU"/>
 			<service name="PD"/>
@@ -24,72 +18,65 @@ append config {
 			<service name="IO_PORT"/>
 			<service name="IO_MEM"/>
 		</parent-provides>
+
 		<default-route>
 			<any-service> <parent/> <any-child/> </any-service>
 		</default-route>
-}
 
-append_if [have_spec sdl] config {
-	<start name="fb_sdl">
-		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
-		</provides>
-	</start>}
+		<default caps="100"/>
 
-append_platform_drv_config
-
-append_if [have_spec framebuffer] config {
-	<start name="fb_drv">
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Framebuffer"/></provides>
-	</start>}
-
-append_if [have_spec ps2] config {
-	<start name="ps2_drv">
-		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Input"/></provides>
-	</start> }
-
-append config {
 		<start name="timer">
 			<resource name="RAM" quantum="1M"/>
 			<provides><service name="Timer"/></provides>
 		</start>
-		<start name="terminal">
-			<resource name="RAM" quantum="2M"/>
-			<provides><service name="Terminal"/></provides>
-			<config>
-				<!-- supported built-in font sizes are 8, 12, and 16 -->
-				<font size="12" />
+
+		<start name="drivers" caps="1500" managing_system="yes">
+			<resource name="RAM" quantum="64M"/>
+			<binary name="init"/>
+			<route>
+				<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
+				<service name="Timer"> <child name="timer"/> </service>
+				<service name="Capture"> <child name="nitpicker"/> </service>
+				<service name="Event">   <child name="nitpicker"/> </service>
+				<any-service> <parent/> </any-service>
+			</route>
+		</start>
+
+		<start name="nitpicker">
+			<resource name="RAM" quantum="4M"/>
+			<provides>
+				<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+			</provides>
+			<config focus="rom">
+				<capture/> <event/>
+				<domain name="default" layer="2" content="client" label="no" hover="always"/>
+				<default-policy domain="default"/>
 			</config>
 		</start>
+
+		<start name="terminal" caps="110">
+			<resource name="RAM" quantum="6M"/>
+			<provides><service name="Terminal"/></provides>
+			<route>
+				<service name="ROM" label="config"> <parent label="terminal.config"/> </service>
+				<service name="Gui"> <child name="nitpicker" label="terminal"/> </service>
+				<any-service> <parent/> <any-child/> </any-service>
+			</route>
+		</start>
+
 		<start name="test-terminal_echo">
 			<resource name="RAM" quantum="1M"/>
 		</start>
 	</config>
 }
 
-install_config $config
+set fd [open [run_dir]/genode/focus w]
+puts $fd "<focus label=\"terminal\" domain=\"default\"/>"
+close $fd
 
-#
-# Boot modules
-#
+build { server/terminal test/terminal_echo }
 
-# generic modules
-set boot_modules {
-	core init timer terminal test-terminal_echo
-}
-
-# platform-specific modules
-lappend_if [have_spec       linux] boot_modules fb_sdl
-lappend_if [have_spec framebuffer] boot_modules fb_drv
-lappend_if [have_spec         ps2] boot_modules ps2_drv
-
-append_platform_drv_boot_modules
-
-build_boot_image $boot_modules
+build_boot_image { terminal test-terminal_echo }
 
 run_genode_until forever
 

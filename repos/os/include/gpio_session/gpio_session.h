@@ -7,10 +7,10 @@
 
 /*
  * Copyright (C) 2012 Ksys Labs LLC
- * Copyright (C) 2012-2015 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__GPIO_SESSION__GPIO_SESSION_H_
@@ -26,7 +26,12 @@ namespace Gpio { struct Session; }
 
 struct Gpio::Session : Genode::Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Gpio"; }
+
+	enum { CAP_QUOTA = 2 };
 
 	enum Direction { IN, OUT };
 

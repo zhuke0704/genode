@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2007-2015 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IRQ_OBJECT_H_
@@ -18,13 +18,13 @@
 
 namespace Genode { class Irq_object; }
 
-class Genode::Irq_object : public Thread_deprecated<4096> {
+class Genode::Irq_object : public Thread {
 
 	private:
 
-		Signal_context_capability _sig_cap;
-		Lock                      _sync_ack;
-		Lock                      _sync_bootup;
+		Signal_context_capability _sig_cap { };
+		Blockade                  _sync_ack { };
+		Blockade                  _sync_bootup { };
 		unsigned                  _irq;
 
 		bool _associate();
@@ -37,7 +37,7 @@ class Genode::Irq_object : public Thread_deprecated<4096> {
 		Irq_object(unsigned irq);
 
 		void sigh(Signal_context_capability cap) { _sig_cap = cap; }
-		void ack_irq() { _sync_ack.unlock(); }
+		void ack_irq() { _sync_ack.wakeup(); }
 
 		void start() override;
 };

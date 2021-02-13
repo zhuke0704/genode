@@ -1,9 +1,4 @@
 TARGET   = nitpicker
-LIBS     = base blit config server
-SRC_CC   = main.cc \
-           view_stack.cc \
-           view.cc \
-           user_state.cc \
-           global_keys.cc
-
+LIBS     = base blit
+SRC_CC   = $(notdir $(wildcard $(PRG_DIR)/*.cc))
 SRC_BIN  = default.tff

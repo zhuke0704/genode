@@ -5,22 +5,24 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__SESSION_POLICY_H_
 #define _INCLUDE__OS__SESSION_POLICY_H_
 
+#include <base/session_label.h>
+#include <base/log.h>
+#include <session/session.h>
 #include <util/arg_string.h>
-#include <os/config.h>
+#include <util/xml_node.h>
 
 namespace Genode {
 
 	struct Xml_node_label_score;
-	struct Session_label;
 	class  Session_policy;
 }
 
@@ -64,7 +66,7 @@ struct Genode::Xml_node_label_score
 			Prefix const prefix = node.attribute_value("label_prefix", Prefix());
 
 			if (!strcmp(label.string(), prefix.string(), prefix.length() - 1))
-				prefix_match = prefix.length()-1;
+				prefix_match = prefix.length();
 		}
 
 		if (suffix_present) {
@@ -75,7 +77,7 @@ struct Genode::Xml_node_label_score
 				unsigned const offset = label.length() - suffix.length();
 
 				if (!strcmp(label.string() + offset, suffix.string()))
-					suffix_match = suffix.length()-1;
+					suffix_match = suffix.length();
 			}
 		}
 	}
@@ -153,30 +155,6 @@ struct Genode::Xml_node_label_score
 };
 
 
-struct Genode::Session_label : String<128>
-{
-	Session_label() { }
-
-	/**
-	 * Constructor
-	 *
-	 * \param args  session arguments as null-terminated string
-	 *
-	 * The constructor extracts the label from the supplied session-argument
-	 * string.
-	 */
-	explicit Session_label(char const *args)
-	{
-		typedef String<128> String;
-
-		char buf[String::capacity()];
-		Arg_string::find_arg(args, "label").string(buf, sizeof(buf),
-		                                           "<undefined>");
-		*static_cast<String *>(this) = String(buf);
-	}
-};
-
-
 /**
  * Query server-side policy for a session request
  */
@@ -187,7 +165,7 @@ class Genode::Session_policy : public Xml_node
 		/**
 		 * Exception type
 		 */
-		class No_policy_defined { };
+		class No_policy_defined : public Service_denied { };
 
 	private:
 
@@ -222,6 +200,7 @@ class Genode::Session_policy : public Xml_node
 			try { return config.sub_node("default-policy"); }
 			catch (...) { }
 
+			warning("no policy defined for label '", label, "'");
 			throw No_policy_defined();
 		}
 
@@ -231,9 +210,7 @@ class Genode::Session_policy : public Xml_node
 		 * Constructor
 		 *
 		 * \param label   label used as the selector of a policy
-		 * \param config  XML node that contains the policies as sub nodes,
-		 *                using the component's top-level config node by
-		 *                default
+		 * \param config  XML node that contains the policies as sub nodes
 		 *
 		 * \throw No_policy_defined  the server configuration has no
 		 *                           policy defined for the specified label
@@ -247,8 +224,7 @@ class Genode::Session_policy : public Xml_node
 		 * with the longest label is selected.
 		 */
 		template <size_t N>
-		explicit Session_policy(String<N> const &label,
-		                        Xml_node config = Genode::config()->xml_node())
+		Session_policy(String<N> const &label, Xml_node config)
 		:
 			Xml_node(_query_policy(label, config))
 		{ }

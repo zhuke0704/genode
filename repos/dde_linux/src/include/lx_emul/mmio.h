@@ -9,22 +9,25 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /**********************
  ** asm-generic/io.h **
  **********************/
 
-#define writeq(value, addr) (*(volatile uint64_t *)(addr) = (value))
-#define writel(value, addr) (*(volatile uint32_t *)(addr) = (value))
-#define writew(value, addr) (*(volatile uint16_t *)(addr) = (value))
-#define writeb(value, addr) (*(volatile uint8_t *)(addr) = (value))
+#define iowmb dma_wmb
+#define iormb dma_rmb
 
-#define readq(addr) (*(volatile uint64_t *)(addr))
-#define readl(addr) (*(volatile uint32_t *)(addr))
-#define readw(addr) (*(volatile uint16_t *)(addr))
-#define readb(addr) (*(volatile uint8_t  *)(addr))
+#define writeq(value, addr) ({ iowmb(); *(volatile uint64_t *)(addr) = (value); })
+#define writel(value, addr) ({ iowmb(); *(volatile uint32_t *)(addr) = (value); })
+#define writew(value, addr) ({ iowmb(); *(volatile uint16_t *)(addr) = (value); })
+#define writeb(value, addr) ({ iowmb(); *(volatile uint8_t  *)(addr) = (value); })
+
+#define readq(addr) ({ uint64_t const r = *(volatile uint64_t *)(addr); iormb(); r; })
+#define readl(addr) ({ uint32_t const r = *(volatile uint32_t *)(addr); iormb(); r; })
+#define readw(addr) ({ uint16_t const r = *(volatile uint16_t *)(addr); iormb(); r; })
+#define readb(addr) ({ uint8_t  const r = *(volatile uint8_t  *)(addr); iormb(); r; })

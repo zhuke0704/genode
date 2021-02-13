@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef SYS_PTRACE_H
@@ -39,7 +39,7 @@ enum __ptrace_request {
 	PTRACE_GETREGSET   = 0x4204,
 };
 
-extern long ptrace(enum __ptrace_request request, ...);
+extern "C" long ptrace (enum __ptrace_request, pid_t, void*, void*);
 
 
 #endif /* SYS_PTRACE_H */

@@ -9,81 +9,72 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <audio_out_session/connection.h>
-#include <base/printf.h>
-#include <base/sleep.h>
-#include <rom_session/connection.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/log.h>
 #include <dataspace/client.h>
-#include <os/config.h>
+#include <rom_session/connection.h>
 
-
-using namespace Genode;
-
-
+using Filename = Genode::String<64>;
 using namespace Genode;
 using namespace Audio_out;
 
-static const bool verbose = false;
-
-enum {
-	CHN_CNT      = 2,                      /* number of channels */
-	FRAME_SIZE   = sizeof(float),
-	PERIOD_CSIZE = FRAME_SIZE * PERIOD,    /* size of channel packet (bytes) */
-	PERIOD_FSIZE = CHN_CNT * PERIOD_CSIZE, /* size of period in file (bytes) */
-};
+static constexpr bool const verbose = false;
+static constexpr char const * channel_names[2] = { "front left", "front right" };
 
 
-static const char *channel_names[] = { "front left", "front right" };
-
-
-class Track : Thread_deprecated<8192>
+class Track : public Thread
 {
 	private:
 
-		const char            *_file;
-		Audio_out::Connection *_audio_out[CHN_CNT];
+		/*
+		 * Noncopyable
+		 */
+		Track(Track const &);
+		Track &operator = (Track const &);
+
+		enum {
+			CHN_CNT      = 2,                      /* number of channels */
+			FRAME_SIZE   = sizeof(float),
+			PERIOD_CSIZE = FRAME_SIZE * PERIOD,    /* size of channel packet (bytes) */
+			PERIOD_FSIZE = CHN_CNT * PERIOD_CSIZE, /* size of period in file (bytes) */
+		};
+
+		Env & _env;
+		Constructible<Audio_out::Connection> _audio_out[CHN_CNT];
+
+		Filename const & _name;
+
+		Attached_rom_dataspace _sample_ds { _env, _name.string() };
+		char     const * const _base = _sample_ds.local_addr<char const>();
+		size_t           const _size = _sample_ds.size();
 
 	public:
 
-		Track(const char *file) : Thread_deprecated("track"), _file(file)
+		Track(Env & env, Filename const & name)
+		: Thread(env, "track", sizeof(size_t)*2048), _env(env), _name(name)
 		{
-			for (int i = 0; i < CHN_CNT; ++i) {
-				/* allocation signal for first channel only */
-				_audio_out[i] = new (env()->heap())
-				                Audio_out::Connection(channel_names[i],
-				                                      i == 0 ? true : false);
-			}
+			/* allocation signal for first channel only */
+			for (int i = 0; i < CHN_CNT; ++i)
+				_audio_out[i].construct(env, channel_names[i], i == 0);
+
+			start();
 		}
 
-		void entry()
+		void entry() override
 		{
-			char *base;
-			Dataspace_capability ds_cap;
-
-			try {
-				Rom_connection rom(_file);
-				rom.on_destruction(Rom_connection::KEEP_OPEN);
-				ds_cap = rom.dataspace();
-				base = env()->rm_session()->attach(ds_cap);
-			}
-			catch (...) {
-				PDBG("Error: Could not open: %s", _file);
-				return;
-			}
-
-			Dataspace_client ds_client(ds_cap);
-
 			if (verbose)
-				PDBG("%s size is %zu Bytes (attached to %p)",
-				     _file, ds_client.size(), base);
+				log(_name, " size is ", _size, " bytes "
+				    "(attached to ", (void *)_base, ")");
 
-			size_t file_size = ds_client.size();
 			for (int i = 0; i < CHN_CNT; ++i)
 				_audio_out[i]->start();
 
@@ -91,7 +82,7 @@ class Track : Thread_deprecated<8192>
 			while (1) {
 
 				for (size_t offset = 0, cnt = 1;
-				     offset < file_size;
+				     offset < _size;
 				     offset += PERIOD_FSIZE, ++cnt) {
 
 					/*
@@ -99,8 +90,8 @@ class Track : Thread_deprecated<8192>
 					 * is the size of the period except at the end of the
 					 * file.
 					 */
-					size_t chunk = (offset + PERIOD_FSIZE > file_size)
-					               ? (file_size - offset) / CHN_CNT / FRAME_SIZE
+					size_t chunk = (offset + PERIOD_FSIZE > _size)
+					               ? (_size - offset) / CHN_CNT / FRAME_SIZE
 					               : PERIOD;
 
 					Packet *p[CHN_CNT];
@@ -118,7 +109,7 @@ class Track : Thread_deprecated<8192>
 						p[chn] = _audio_out[chn]->stream()->get(pos);
 
 					/* copy channel contents into sessions */
-					float *content = (float *)(base + offset);
+					float *content = (float *)(_base + offset);
 					for (unsigned c = 0; c < CHN_CNT * chunk; c += CHN_CNT)
 						for (int i = 0; i < CHN_CNT; ++i)
 							p[i]->content()[c / 2] = content[c + i];
@@ -131,88 +122,69 @@ class Track : Thread_deprecated<8192>
 					}
 
 					if (verbose)
-						PDBG("%s submit packet %u", _file,
-						     _audio_out[0]->stream()->packet_position((p[0])));
+						log(_name, " submit packet ",
+						    _audio_out[0]->stream()->packet_position((p[0])));
 
 					for (int i = 0; i < CHN_CNT; i++)
 						_audio_out[i]->submit(p[i]);
 				}
 
-				PLOG("played '%s' %u time(s)", _file, ++cnt);
+				log("played '", _name, "' ", ++cnt, " time(s)");
 			}
-		}
-
-		void ready()
-		{
-			start();
 		}
 };
 
 
-static int process_config(const char ***files)
+struct Main
 {
 	enum { MAX_FILES = 16 };
 
-	static char  file_mem[64][MAX_FILES];
-	static const char *file_p[MAX_FILES];
-	int cnt = 0;
+	Env &                  env;
+	Heap                   heap { env.ram(), env.rm() };
+	Attached_rom_dataspace config { env, "config" };
+	Filename               filenames[MAX_FILES];
+	unsigned               track_count = 0;
 
-	Xml_node config_node = config()->xml_node();
+	void handle_config();
 
-	for (unsigned i = 0; i < config_node.num_sub_nodes(); ++i) {
-
-		if (!(i < MAX_FILES)) {
-			PWRN("Test supports max %d files. Skipping...", MAX_FILES);
-			break;
-		}
-
-		Xml_node file_node = config_node.sub_node(i);
-
-		if (!config_node.has_type("config")) {
-			printf("Error: Root node of config file is not a <config> tag.\n");
-			return -1;
-		}
-
-		if (file_node.has_type("filename")) {
-			memcpy(file_mem[cnt], file_node.content_addr(), file_node.content_size());
-			file_p[cnt] = file_mem[cnt];
-			file_mem[cnt][file_node.content_size()] = '\0';
-			cnt++;
-		}
-	}
-
-	*files = file_p;
-	return cnt;
-}
+	Main(Env & env);
+};
 
 
-int main(int argc, char **argv)
+void Main::handle_config()
 {
-	PDBG("--- Audio_out test ---\n");
-
-	const char *defaults[] = { "1.raw", "2.raw" };
-	const char **files     = defaults;
-	int cnt                = 2;
-
 	try {
-		cnt = process_config(&files);
+		config.xml().for_each_sub_node("filename",
+		                               [this] (Xml_node const & node)
+		{
+			if (!(track_count < MAX_FILES)) {
+				warning("test supports max ", (int)MAX_FILES,
+				        " files. Skipping...");
+				return;
+			}
+
+			node.with_raw_content([&] (char const *start, size_t length) {
+				filenames[track_count++] = Filename(Cstring(start, length)); });
+		});
 	}
 	catch (...) {
-		PWRN("Couldn't get input files, failing back to defaults");
+		warning("couldn't get input files, failing back to defaults");
+		filenames[0] = Filename("1.raw");
+		filenames[1] = Filename("2.raw");
+		track_count  = 2;
 	}
-
-	Track *track[cnt];
-
-	for (int i = 0; i < cnt; ++i) {
-		track[i] = new (env()->heap()) Track(files[i]);
-	}
-
-	/* start playback after constrution of all tracks */
-	for (int i = 0; i < cnt; i++)
-		track[i]->ready();
-
-	sleep_forever();
-	return 0;
 }
 
 
+Main::Main(Env & env) : env(env)
+{
+	log("--- Audio_out test ---");
+
+	handle_config();
+
+	for (unsigned i = 0; i < track_count; ++i)
+		new (heap) Track(env, filenames[i]);
+}
+
+
+void Component::construct(Env & env) { static Main main(env); }

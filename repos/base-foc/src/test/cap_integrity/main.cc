@@ -7,33 +7,42 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/env.h>
+/* Genode includes */
+#include <base/component.h>
 #include <log_session/connection.h>
+#include <foc/capability_space.h>
+
+/* base-internal includes */
+#include <base/internal/cap_map.h> /* cap_idx_alloc */
 
 using namespace Genode;
-using namespace Fiasco;
+using namespace Foc;
 
-int main(int argc, char **argv)
+
+struct Main { Main(Env &env); };
+
+
+Main::Main(Env &env)
 {
-	printf("--- capability integrity test ---\n");
+	log("--- capability integrity test ---");
 
 	enum { COUNT = 1000 };
 
-	Cap_index*           idx = cap_idx_alloc()->alloc_range(COUNT);
-	Fiasco::l4_cap_idx_t tid = env()->ram_session_cap().dst();
+	Cap_index        *idx = cap_idx_alloc().alloc_range(COUNT);
+	Foc::l4_cap_idx_t tid = Capability_space::kcap(env.pd_session_cap());
 
 	/* try the first 1000 local name IDs */
 	for (int local_name = 0; local_name < COUNT; local_name++, idx++) {
 		idx->id(local_name);
 		l4_task_map(L4_BASE_TASK_CAP, L4_BASE_TASK_CAP,
-                    l4_obj_fpage(tid, 0, L4_FPAGE_RWX),
-                    idx->kcap() | L4_ITEM_MAP);
+		            l4_obj_fpage(tid, 0, L4_FPAGE_RWX),
+		            idx->kcap() | L4_ITEM_MAP);
 
 		Log_session_capability log_session_cap =
 			reinterpret_cap_cast<Log_session>(Native_capability(idx));
@@ -43,6 +52,9 @@ int main(int argc, char **argv)
 		} catch(...) { }
 	}
 
-	printf("--- finished capability integrity test ---\n");
-	return 0;
+	log("--- finished capability integrity test ---");
+	env.parent().exit(0);
 }
+
+
+void Component::construct(Env &env) { static Main main(env); }

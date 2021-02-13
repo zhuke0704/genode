@@ -7,14 +7,13 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
-#include <os/server.h>
 #include <base/tslab.h>
 #include <timer_session/connection.h>
 
@@ -45,7 +44,6 @@ class Lx_kit::Timer : public Lx::Timer
 			void              *timer;
 			bool               pending { false };
 			unsigned long      timeout { INVALID_TIMEOUT }; /* absolute in jiffies */
-			bool               programmed { false };
 
 			Context(struct timer_list *timer) : type(LIST), timer(timer) { }
 			Context(struct hrtimer    *timer) : type(HR),   timer(timer) { }
@@ -62,8 +60,14 @@ class Lx_kit::Timer : public Lx::Timer
 				case LIST:
 					{
 						timer_list *t = static_cast<timer_list *>(timer);
-						if (t->function)
-							t->function(t->data);
+						if (t->function) {
+							/*
+							 * Pass 't->data' instead of 't' for compatibility
+							 * with 4.4.3 drivers. When set up with
+							 * 'timer_setup()', 't->data' matches 't'.
+							 */
+							t->function((struct timer_list*)t->data);
+						}
 					}
 					break;
 
@@ -82,11 +86,11 @@ class Lx_kit::Timer : public Lx::Timer
 
 		unsigned long                               &_jiffies;
 		::Timer::Connection                          _timer_conn;
+		::Timer::Connection                          _timer_conn_modern;
 		Lx_kit::List<Context>                        _list;
 		Lx::Task                                     _timer_task;
-		Genode::Signal_rpc_member<Lx_kit::Timer>     _dispatcher;
+		Genode::Signal_handler<Lx_kit::Timer>        _dispatcher;
 		Genode::Tslab<Context, 32 * sizeof(Context)> _timer_alloc;
-		Lx::jiffies_update_func                      _jiffies_func = nullptr;
 
 		/**
 		 * Lookup local timer
@@ -102,11 +106,6 @@ class Lx_kit::Timer : public Lx::Timer
 
 		/**
 		 * Program the first timer in the list
-		 *
-		 * The first timer is programmed if the 'programmed' flag was not set
-		 * before. The second timer is flagged as not programmed as
-		 * 'Timer::trigger_once' invalidates former registered one-shot
-		 * timeouts.
 		 */
 		void _program_first_timer()
 		{
@@ -114,19 +113,10 @@ class Lx_kit::Timer : public Lx::Timer
 			if (!ctx)
 				return;
 
-			if (ctx->programmed)
-				return;
-
 			/* calculate relative microseconds for trigger */
-			unsigned long us = ctx->timeout > _jiffies ?
-			                   jiffies_to_msecs(ctx->timeout - _jiffies) * 1000 : 0;
+			Genode::uint64_t us = ctx->timeout > _jiffies ?
+			                      (Genode::uint64_t)jiffies_to_msecs(ctx->timeout - _jiffies) * 1000 : 0;
 			_timer_conn.trigger_once(us);
-
-			ctx->programmed = true;
-
-			/* possibly programmed successor must be reprogrammed later */
-			if (Context *next = ctx->next())
-				next->programmed = false;
 		}
 
 		/**
@@ -141,10 +131,10 @@ class Lx_kit::Timer : public Lx::Timer
 
 			ctx->timeout    = expires;
 			ctx->pending    = true;
-			ctx->programmed = false;
+
 			/*
 			 * Also write the timeout value to the expires field in
-			 * struct timer_list because the wireless stack checks
+			 * struct timer_list because some code the checks
 			 * it directly.
 			 */
 			ctx->expires(expires);
@@ -161,7 +151,7 @@ class Lx_kit::Timer : public Lx::Timer
 		/**
 		 * Handle trigger_once signal
 		 */
-		void _handle(unsigned)
+		void _handle()
 		{
 			_timer_task.unblock();
 
@@ -173,15 +163,19 @@ class Lx_kit::Timer : public Lx::Timer
 		/**
 		 * Constructor
 		 */
-		Timer(Server::Entrypoint &ep, unsigned long &jiffies)
+		Timer(Genode::Env &env, Genode::Entrypoint &ep,
+		      Genode::Allocator &alloc, unsigned long &jiffies)
 		:
 			_jiffies(jiffies),
+			_timer_conn(env),
+			_timer_conn_modern(env),
 			_timer_task(Timer::run_timer, reinterpret_cast<void*>(this),
 			            "timer", Lx::Task::PRIORITY_2, Lx::scheduler()),
 			_dispatcher(ep, *this, &Lx_kit::Timer::_handle),
-			_timer_alloc(Genode::env()->heap())
+			_timer_alloc(&alloc)
 		{
 			_timer_conn.sigh(_dispatcher);
+			update_jiffies();
 		}
 
 		Context* first() { return _list.first(); }
@@ -215,6 +209,7 @@ class Lx_kit::Timer : public Lx::Timer
 		/*************************
 		 ** Lx::Timer interface **
 		 *************************/
+
 		void add(void *timer, Type type)
 		{
 			Context *t = nullptr;
@@ -238,7 +233,7 @@ class Lx_kit::Timer : public Lx::Timer
 			if (!ctx)
 				return 0;
 
-			int rv = ctx->timeout != Context::INVALID_TIMEOUT ? 1 : 0;
+			int rv = ctx->pending ? 1 : 0;
 
 			_list.remove(ctx);
 			destroy(&_timer_alloc, ctx);
@@ -250,7 +245,7 @@ class Lx_kit::Timer : public Lx::Timer
 		{
 			Context *ctx = _find_context(timer);
 			if (!ctx) {
-				PERR("schedule unknown timer %p", timer);
+				Genode::error("schedule unknown timer ", timer);
 				return -1; /* XXX better use 0 as rv? */
 			}
 
@@ -258,7 +253,7 @@ class Lx_kit::Timer : public Lx::Timer
 			 * If timer was already active return 1, otherwise 0. The return
 			 * value is needed by mod_timer().
 			 */
-			int rv = ctx->timeout != Context::INVALID_TIMEOUT ? 1 : 0;
+			int rv = ctx->pending ? 1 : 0;
 
 			_schedule_timer(ctx, expires);
 
@@ -289,11 +284,17 @@ class Lx_kit::Timer : public Lx::Timer
 			return false;
 		}
 
-		void update_jiffies() {
-			_jiffies = _jiffies_func ? _jiffies_func() : msecs_to_jiffies(_timer_conn.elapsed_ms()); }
+		void update_jiffies()
+		{
+			/*
+			 * Do not use lx_emul usecs_to_jiffies(unsigned int) because
+			 * of implicit truncation!
+			 */
+			_jiffies = (Genode::uint64_t)_timer_conn_modern.curr_time().trunc_to_plain_ms().value / JIFFIES_TICK_MS;
+		}
 
-		void register_jiffies_func(Lx::jiffies_update_func func) {
-			_jiffies_func = func; }
+		void usleep(Genode::uint64_t us) {
+			_timer_conn.usleep(us); }
 };
 
 
@@ -301,9 +302,11 @@ class Lx_kit::Timer : public Lx::Timer
  ** Lx::Timer implementation **
  ******************************/
 
-Lx::Timer &Lx::timer(Server::Entrypoint *ep, unsigned long *jiffies)
+Lx::Timer &Lx::timer(Genode::Env *env, Genode::Entrypoint *ep,
+                     Genode::Allocator *md_alloc,
+                     unsigned long *jiffies)
 {
-	static Lx_kit::Timer inst(*ep, *jiffies);
+	static Lx_kit::Timer inst(*env, *ep, *md_alloc, *jiffies);
 	return inst;
 }
 
@@ -311,10 +314,4 @@ Lx::Timer &Lx::timer(Server::Entrypoint *ep, unsigned long *jiffies)
 void Lx::timer_update_jiffies()
 {
 	timer().update_jiffies();
-}
-
-
-void Lx::register_jiffies_func(jiffies_update_func func)
-{
-	dynamic_cast<Lx_kit::Timer &>(timer()).register_jiffies_func(func);
 }

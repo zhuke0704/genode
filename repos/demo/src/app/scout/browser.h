@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _BROWSER_H_
@@ -25,13 +25,21 @@ namespace Scout {
 
 class Scout::Browser
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Browser(Browser const &);
+		Browser &operator = (Browser const &);
+
 	protected:
 
-		Document *_document;
+		Document *_document = nullptr;
 		Document *_about;
-		History   _history;
+		History   _history { };
 		int       _voffset;
-		int       _ypos;
+		int       _ypos = 0;
 
 		/**
 		 * Define content to present in browser window
@@ -49,12 +57,7 @@ class Scout::Browser
 		 * Constructor
 		 */
 		explicit Browser(int voffset = 0)
-		{
-			_document = 0;
-			_about    = create_about();
-			_ypos     = 0;
-			_voffset  = voffset;
-		}
+		: _about(create_about()), _voffset(voffset) { }
 
 		virtual ~Browser() { }
 

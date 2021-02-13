@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/sleep.h>
-#include <base/rpc_server.h>
-#include <cap_session/connection.h>
+#include <base/log.h>
+#include <base/component.h>
+#include <base/heap.h>
 #include <root/component.h>
 
 /* platform includes */
@@ -42,9 +41,6 @@ class Platform::Session_component : public Genode::Rpc_object<Platform::Session>
 
 	public:
 
-		/**
-		 * Constructor
-		 */
 		Session_component(Mbox &mbox) : _mbox(mbox) { }
 
 
@@ -52,14 +48,14 @@ class Platform::Session_component : public Genode::Rpc_object<Platform::Session>
 		 **  Platform session interface  **
 		 **********************************/
 
-		void setup_framebuffer(Framebuffer_info &info)
+		void setup_framebuffer(Framebuffer_info &info) override
 		{
 			auto const &msg = _mbox.message<Framebuffer_message>(info);
 			_mbox.call<Framebuffer_message>();
 			info = msg;
 		}
 
-		bool power_state(Power id)
+		bool power_state(Power id) override
 		{
 			auto &msg = _mbox.message<Property_message>();
 			auto const &res = msg.append<Property_command::Get_power_state>(id);
@@ -67,14 +63,14 @@ class Platform::Session_component : public Genode::Rpc_object<Platform::Session>
 			return res.state;
 		}
 
-		void power_state(Power id, bool enable)
+		void power_state(Power id, bool enable) override
 		{
 			auto &msg = _mbox.message<Property_message>();
 			msg.append_no_response<Property_command::Set_power_state>(id, enable, true);
 			_mbox.call<Property_message>();
 		}
 
-		uint32_t clock_rate(Clock id)
+		uint32_t clock_rate(Clock id) override
 		{
 			auto &msg = _mbox.message<Property_message>();
 			auto const &res = msg.append<Property_command::Get_clock_rate>(id);
@@ -92,27 +88,31 @@ class Platform::Root : public Genode::Root_component<Platform::Session_component
 
 	protected:
 
-		Session_component *_create_session(const char *args) {
+		Session_component *_create_session(const char *) override {
 			return new (md_alloc()) Session_component(_mbox); }
 
 	public:
 
-		Root(Rpc_entrypoint *session_ep, Allocator *md_alloc)
-		: Root_component<Session_component>(session_ep, md_alloc) { }
+		Root(Env& env, Allocator & md_alloc)
+		: Root_component<Session_component>(env.ep(), md_alloc), _mbox(env)
+		{ }
 };
 
 
-int main(int, char **)
+struct Main
 {
-	using namespace Platform;
+	Genode::Env &  env;
+	Genode::Heap   heap { env.ram(), env.rm() };
+	Platform::Root root { env, heap };
 
-	PINF("--- Raspberry Pi platform driver ---\n");
+	Main(Genode::Env & env) : env(env) {
+		env.parent().announce(env.ep().manage(root)); }
+};
 
-	static Cap_connection cap;
-	static Rpc_entrypoint ep(&cap, 4096, "rpi_plat_ep");
-	static Platform::Root plat_root(&ep, env()->heap());
-	env()->parent()->announce(ep.manage(&plat_root));
 
-	sleep_forever();
-	return 0;
+void Component::construct(Genode::Env &env)
+{
+	Genode::log("--- Raspberry Pi platform driver ---");
+
+	static Main main(env);
 }

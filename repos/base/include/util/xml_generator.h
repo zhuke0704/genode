@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__XML_GENERATOR_H_
@@ -59,6 +59,9 @@ class Genode::Xml_generator
 					_check_advance(len);
 					_used += len;
 				}
+
+				void undo_append(size_t const len) {
+					_used = len < _used ? _used - len : 0; }
 
 				/**
 				 * Append character
@@ -162,12 +165,13 @@ class Genode::Xml_generator
 				unsigned const _indent_level;
 
 				Node * const _parent_node = 0;
+				bool   const _parent_was_indented;
+				bool   const _parent_had_content;
 
 				Out_buffer _out_buffer;
 
 				bool _has_content    = false;
 				bool _is_indented    = false;
-				bool _has_attributes = false;
 
 				/**
 				 * Cursor position of next attribute to insert
@@ -195,6 +199,20 @@ class Genode::Xml_generator
 					_is_indented = indented;
 
 					return _out_buffer.remainder();
+				}
+
+				void _undo_content_buffer(bool indented,
+				                          bool was_indented,
+				                          bool had_content)
+				{
+					_is_indented = was_indented;
+					_has_content = had_content;
+
+					if (indented)
+						_out_buffer.undo_append(1);
+
+					if (!_has_content)
+						_out_buffer.undo_append(1);
 				}
 
 				/**
@@ -229,6 +247,16 @@ class Genode::Xml_generator
 					_commit_content(content_buffer);
 				}
 
+				/**
+				 * Append character, sanitize it if needed
+				 */
+				void append_sanitized(char const c)
+				{
+					Out_buffer content_buffer = _content_buffer(false);
+					content_buffer.append_sanitized(c);
+					_commit_content(content_buffer);
+				}
+
 				void append_sanitized(char const *src, size_t src_len)
 				{
 					Out_buffer content_buffer = _content_buffer(false);
@@ -241,6 +269,8 @@ class Genode::Xml_generator
 				:
 					_indent_level(xml._curr_indent),
 					_parent_node(xml._curr_node),
+					_parent_was_indented(_parent_node ? _parent_node->is_indented() : false),
+					_parent_had_content (_parent_node ? _parent_node->has_content() : false),
 					_out_buffer(_parent_node ? _parent_node->_content_buffer(true)
 					                         : xml._out_buffer)
 				{
@@ -252,10 +282,19 @@ class Genode::Xml_generator
 					xml._curr_node = this;
 					xml._curr_indent++;
 
-					/*
-					 * Process attributes and sub nodes
-					 */
-					func();
+					try {
+						/*
+						 * Process attributes and sub nodes
+						 */
+						func();
+					} catch (...) {
+						/* reset and drop changes by not committing it */
+						xml._curr_node = _parent_node;
+						xml._curr_indent--;
+						if (_parent_node) {
+							_parent_node->_undo_content_buffer(true, _parent_was_indented, _parent_had_content); }
+						throw;
+					}
 
 					xml._curr_node = _parent_node;
 					xml._curr_indent--;
@@ -279,6 +318,9 @@ class Genode::Xml_generator
 
 					_out_buffer.append('\0');
 				}
+
+				bool has_content() { return _has_content; }
+				bool is_indented() { return _is_indented; }
 		};
 
 		Out_buffer _out_buffer;
@@ -296,6 +338,7 @@ class Genode::Xml_generator
 			if (dst) {
 				node(name, func);
 				_out_buffer.append('\n');
+				_out_buffer.append('\0');
 			}
 		}
 
@@ -357,6 +400,12 @@ class Genode::Xml_generator
 			attribute(name, static_cast<unsigned long long>(value));
 		}
 
+		void attribute(char const *name, double value)
+		{
+			String<64> buf(value);
+			_curr_node->insert_attribute(name, buf.string());
+		}
+
 		/**
 		 * Append content to XML node
 		 *
@@ -375,6 +424,33 @@ class Genode::Xml_generator
 		void append_sanitized(char const *str, size_t str_len = ~0UL)
 		{
 			_curr_node->append_sanitized(str, str_len == ~0UL ? strlen(str) : str_len);
+		}
+
+		/**
+		 * Append printable objects to XML node as sanitized content
+		 *
+		 * This method must not be followed by calls of 'attribute'.
+		 */
+		template <typename... ARGS>
+		void append_content(ARGS &&... args)
+		{
+			struct Node_output : Genode::Output
+			{
+				Node &node; Node_output(Node &n) : node(n) { }
+
+				/******************************
+				 ** Genode::Output interface **
+				 ******************************/
+
+				void out_char(char c) override {
+					node.append_sanitized(c); }
+
+				void out_string(char const *str, size_t n) override {
+					node.append_sanitized(str, n); }
+
+			} output { *_curr_node };
+
+			Output::out_args(output, args...);
 		}
 
 		size_t used() const { return _out_buffer.used(); }

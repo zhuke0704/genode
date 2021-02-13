@@ -23,10 +23,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__UNMANAGED_SINGLETON_H_
@@ -40,7 +40,7 @@
  *
  * \param p  destination address
  */
-inline void * operator new(Genode::size_t, void * p) { return p; }
+inline void * operator new(__SIZE_TYPE__, void * p) { return p; }
 
 /**
  * Helper class for the use of unmanaged_singleton with the singleton pattern

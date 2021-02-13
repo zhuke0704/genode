@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__TRACE__POLICY_REGISTRY_H_
 #define _CORE__INCLUDE__TRACE__POLICY_REGISTRY_H_
 
 /* Genode includes */
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <util/list.h>
 
 namespace Genode { namespace Trace {
@@ -25,7 +25,7 @@ namespace Genode { namespace Trace {
 } }
 
 
-class Genode::Trace::Policy_owner { };
+class Genode::Trace::Policy_owner : Interface { };
 
 
 class Genode::Trace::Policy : public Genode::List<Genode::Trace::Policy>::Element
@@ -75,14 +75,14 @@ class Genode::Trace::Policy_registry
 
 	private:
 
-		Lock         _lock;
-		List<Policy> _policies;
+		Mutex        _mutex    { };
+		List<Policy> _policies { };
 
-		Policy *_unsynchronized_lookup(Policy_owner const &owner, Policy_id id)
+		Policy &_unsynchronized_lookup(Policy_owner const &owner, Policy_id id)
 		{
 			for (Policy *p = _policies.first(); p; p = p->next())
 				if (p->owned_by(owner) && p->has_id(id))
-					return p;
+					return *p;
 
 			throw Nonexistent_policy();
 		}
@@ -93,14 +93,14 @@ class Genode::Trace::Policy_registry
 				if (p->owned_by(owner))
 					return p;
 
-			return 0;
+			return nullptr;
 		}
 
 	public:
 
 		~Policy_registry()
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			while (Policy *p = _policies.first())
 				_policies.remove(p);
@@ -109,15 +109,15 @@ class Genode::Trace::Policy_registry
 		void insert(Policy_owner const &owner, Policy_id const id,
 		            Allocator &md_alloc, Dataspace_capability ds, size_t size)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
-			Policy *policy = new (&md_alloc) Policy(owner, id, md_alloc, ds, size);
-			_policies.insert(policy);
+			Policy &policy = *new (&md_alloc) Policy(owner, id, md_alloc, ds, size);
+			_policies.insert(&policy);
 		}
 
 		void remove(Policy_owner &owner, Policy_id id)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			for (Policy *p = _policies.first(); p; ) {
 				Policy *tmp = p;
@@ -132,7 +132,7 @@ class Genode::Trace::Policy_registry
 
 		void destroy_policies_owned_by(Policy_owner const &owner)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			while (Policy *p = _any_policy_owned_by(owner)) {
 				_policies.remove(p);
@@ -142,16 +142,16 @@ class Genode::Trace::Policy_registry
 
 		Dataspace_capability dataspace(Policy_owner &owner, Policy_id id)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
-			return _unsynchronized_lookup(owner, id)->dataspace();
+			return _unsynchronized_lookup(owner, id).dataspace();
 		}
 
 		size_t size(Policy_owner &owner, Policy_id id)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
-			return _unsynchronized_lookup(owner, id)->size();
+			return _unsynchronized_lookup(owner, id).size();
 		}
 };
 

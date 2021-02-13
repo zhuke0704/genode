@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__PARENT_ELEMENT_H_
@@ -23,10 +23,18 @@ namespace Scout {
 
 class Scout::Parent_element : public Element
 {
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Parent_element(Parent_element const &);
+		Parent_element &operator = (Parent_element const &);
+
 	protected:
 
-		Element *_first;
-		Element *_last;
+		Element *_first = nullptr;
+		Element *_last  = nullptr;
 
 		/**
 		 * Format child element by a given width an horizontal offset
@@ -63,12 +71,12 @@ class Scout::Parent_element : public Element
 		/**
 		 * Element interface
 		 */
-		void     draw(Canvas_base &, Point);
-		Element *find(Point);
-		Element *find_by_y(int);
-		void     fill_cache(Canvas_base &);
-		void     flush_cache(Canvas_base &);
-		void     geometry(Rect);
+		void     draw(Canvas_base &, Point) override;
+		Element *find(Point)                override;
+		Element *find_by_y(int)             override;
+		void     fill_cache(Canvas_base &)  override;
+		void     flush_cache(Canvas_base &) override;
+		void     geometry(Rect)             override;
 
 		/**
 		 * Execute function on each child

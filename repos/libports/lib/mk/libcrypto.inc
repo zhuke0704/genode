@@ -13,7 +13,8 @@ CC_OPT += -DRAND_GENODE
 # crypto base source
 #
 SRC_C = cryptlib.c mem.c mem_dbg.c cversion.c ex_data.c cpt_err.c mem_clr.c \
-        ebcdic.c uid.c o_time.c o_str.c o_dir.c o_fips.c o_init.c fips_ers.c
+        ebcdic.c uid.c o_time.c o_str.c o_dir.c o_fips.c o_init.c fips_ers.c \
+        getenv.c
 
 #
 # Excluded 'aes_x86core.c'
@@ -60,7 +61,7 @@ SRC_C_cast     = c_skey.c c_ecb.c c_enc.c c_cfb64.c c_ofb64.c
 SRC_C_cmac     = cm_ameth.c cm_pmeth.c cmac.c
 SRC_C_cms      = cms_lib.c cms_asn1.c cms_att.c cms_io.c cms_smime.c \
                  cms_err.c cms_sd.c cms_dd.c cms_cd.c cms_env.c \
-                 cms_enc.c cms_ess.c cms_pwri.c
+                 cms_enc.c cms_ess.c cms_pwri.c cms_kari.c
 SRC_C_comp     = comp_lib.c comp_err.c c_rle.c c_zlib.c
 SRC_C_conf     = conf_err.c conf_lib.c conf_api.c conf_def.c conf_mod.c \
                  conf_mall.c conf_sap.c
@@ -71,7 +72,8 @@ SRC_C_des      = cbc_cksm.c cbc_enc.c  cfb64enc.c cfb_enc.c \
                  str2key.c  cfb64ede.c ofb64ede.c ede_cbcm_enc.c \
                  des_old.c des_old2.c read2pwd.c
 SRC_C_dh       = dh_asn1.c dh_gen.c dh_key.c dh_lib.c dh_check.c \
-                 dh_err.c dh_depr.c dh_ameth.c dh_pmeth.c dh_prn.c
+                 dh_err.c dh_depr.c dh_ameth.c dh_pmeth.c dh_prn.c \
+                 dh_rfc5114.c dh_kdf.c
 SRC_C_dsa      = dsa_gen.c dsa_key.c dsa_lib.c dsa_asn1.c dsa_vrf.c \
                  dsa_sign.c dsa_err.c dsa_ossl.c dsa_depr.c \
                  dsa_ameth.c dsa_pmeth.c dsa_prn.c
@@ -83,7 +85,7 @@ SRC_C_ec       = ec_lib.c ecp_smpl.c ecp_mont.c ecp_nist.c ec_cvt.c \
                  ec_pmeth.c eck_prn.c ecp_nistp224.c ecp_nistp256.c \
                  ecp_nistp521.c ecp_nistputil.c ecp_oct.c ec2_oct.c \
                  ec_oct.c
-SRC_C_ecdh     = ech_lib.c ech_ossl.c ech_key.c ech_err.c
+SRC_C_ecdh     = ech_lib.c ech_ossl.c ech_key.c ech_err.c ech_kdf.c
 SRC_C_ecdsa    = ecs_lib.c ecs_asn1.c ecs_ossl.c ecs_sign.c \
                  ecs_vrf.c ecs_err.c
 SRC_C_engine   = eng_err.c eng_lib.c eng_list.c eng_init.c \
@@ -91,7 +93,7 @@ SRC_C_engine   = eng_err.c eng_lib.c eng_list.c eng_init.c \
                  eng_all.c tb_rsa.c tb_dsa.c tb_ecdsa.c tb_dh.c \
                  tb_ecdh.c tb_rand.c tb_store.c tb_cipher.c \
                  tb_digest.c tb_pkmeth.c tb_asnmth.c eng_openssl.c \
-                 eng_cnf.c eng_dyn.c eng_cryptodev.c eng_rsax.c \
+                 eng_cnf.c eng_dyn.c eng_cryptodev.c \
                  eng_rdrand.c
 SRC_C_err      = err.c err_all.c err_prn.c
 
@@ -108,8 +110,8 @@ SRC_C_evp      = encode.c digest.c evp_cnf.c evp_enc.c evp_key.c evp_acnf.c \
                  evp_err.c e_null.c c_all.c c_allc.c c_alld.c \
                  evp_lib.c bio_ok.c evp_pkey.c evp_pbe.c p5_crpt.c \
                  p5_crpt2.c e_old.c pmeth_lib.c pmeth_fn.c pmeth_gn.c \
-                 m_sigver.c evp_fips.c e_aes_cbc_hmac_sha1.c \
-                 e_rc4_hmac_md5.c
+                 m_sigver.c e_aes_cbc_hmac_sha1.c \
+                 e_rc4_hmac_md5.c e_aes_cbc_hmac_sha256.c
 
 SRC_C_hmac     = hmac.c hm_ameth.c hm_pmeth.c
 SRC_C_idea     = i_cbc.c i_cfb64.c i_ecb.c i_ofb64.c i_skey.c
@@ -120,7 +122,7 @@ SRC_C_md5      = md5_dgst.c md5_one.c
 SRC_C_mdc2     = mdc2_one.c mdc2dgst.c
 SRC_C_objects  = o_names.c obj_dat.c obj_err.c obj_lib.c obj_xref.c
 SRC_C_modes    = cbc128.c ctr128.c cts128.c cfb128.c ofb128.c \
-                 gcm128.c ccm128.c xts128.c
+                 gcm128.c ccm128.c xts128.c wrap128.c
 SRC_C_ocsp     = ocsp_asn.c ocsp_ext.c ocsp_ht.c ocsp_lib.c \
                  ocsp_cl.c ocsp_srv.c ocsp_prn.c ocsp_vfy.c \
                  ocsp_err.c
@@ -171,7 +173,7 @@ SRC_C_x509v3   = v3_bcons.c v3_bitst.c v3_conf.c v3_extku.c \
                  v3_pmaps.c v3_pcons.c v3_ncons.c v3_pcia.c \
                  v3_pci.c pcy_cache.c pcy_node.c pcy_data.c \
                  pcy_map.c pcy_tree.c pcy_lib.c v3_asid.c \
-                 v3_addr.c
+                 v3_addr.c v3_scts.c
 
 SRC_DIR = aes asn1 bf bio bn buffer camellia cast cmac cms comp conf des dh \
           dsa dso ec ecdh ecdsa engine err evp hmac idea krb5 lhash md2 md4 md5 \
@@ -179,6 +181,12 @@ SRC_DIR = aes asn1 bf bio bn buffer camellia cast cmac cms comp conf des dh \
           ripemd rsa seed sha srp stack store ts txt_db ui whrlpool x509 x509v3
 
 SRC_C += $(foreach dir,$(SRC_DIR),$(addprefix $(dir)/,$(SRC_C_$(dir))))
+
+#
+# Suppress warning "right-hand operand of comma expression has no effect" for
+# the HOST_c2l(c,l) macro.
+#
+CC_OPT_md5/md5_dgst := -Wno-unused-value
 
 INC_DIR += $(LIBCRYPTO_DIR)/asn1
 INC_DIR += $(LIBCRYPTO_DIR)/evp

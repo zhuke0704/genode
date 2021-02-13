@@ -3,28 +3,29 @@
  * \author Norman Feske
  * \date   2015-06-22
  *
- * The 'Scene' class template contains the code for setting up a nitpicker
+ * The 'Scene' class template contains the code for setting up a GUI
  * view with a triple-buffer for rendering tearing-free animations.
  * A derrived class implements the to-be-displayed content in the virtual
  * 'render' method.
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NANO3D__SCENE_H_
 #define _INCLUDE__NANO3D__SCENE_H_
 
 /* Genode includes */
+#include <base/entrypoint.h>
 #include <timer_session/connection.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <os/surface.h>
 #include <os/pixel_alpha8.h>
-#include <os/attached_dataspace.h>
+#include <base/attached_dataspace.h>
 #include <input/event.h>
 
 namespace Nano3d {
@@ -34,7 +35,7 @@ namespace Nano3d {
 }
 
 
-struct Nano3d::Input_handler
+struct Nano3d::Input_handler : Genode::Interface
 {
 	virtual void handle_input(Input::Event const [], unsigned num_events) = 0;
 };
@@ -54,30 +55,32 @@ class Nano3d::Scene
 
 	private:
 
-		Genode::Signal_receiver &_sig_rec;
+		/**
+		 * Noncopyable
+		 */
+		Scene(Scene const &);
+		Scene &operator = (Scene const &);
+
+		Genode::Env &_env;
 
 		/**
-		 * Position and size of nitpicker view
+		 * Position and size of GUI view
 		 */
-		Nitpicker::Point const _pos;
-		Nitpicker::Area  const _size;
+		Gui::Point const _pos;
+		Gui::Area  const _size;
 
-		Nitpicker::Connection _nitpicker;
+		Gui::Connection _gui { _env };
 
 		struct Mapped_framebuffer
 		{
 			enum { NUM_BUFFERS = 3 };
 
-			static Framebuffer::Session &
-			_init_framebuffer(Nitpicker::Connection &nitpicker,
-			                  Nitpicker::Area const size)
-			{
-				Framebuffer::Mode::Format const format = nitpicker.mode().format();
-				if (format != Framebuffer::Mode::RGB565) {
-					PERR("framebuffer mode %d is not supported\n", format);
-					throw Unsupported_color_depth();
-				}
+			Genode::Region_map &rm;
 
+			static Framebuffer::Session &
+			_init_framebuffer(Gui::Connection &gui,
+			                  Gui::Area const size)
+			{
 				/*
 				 * Dimension the virtual framebuffer 3 times as high as the
 				 * visible view because it contains the visible buffer, the
@@ -85,10 +88,10 @@ class Nano3d::Scene
 				 */
 				bool     const use_alpha = true;
 				unsigned const height    = size.h()*NUM_BUFFERS;
-				nitpicker.buffer(Framebuffer::Mode(size.w(), height, format),
+				gui.buffer(Framebuffer::Mode { .area = { size.w(), height } },
 				                 use_alpha);
 
-				return *nitpicker.framebuffer();
+				return *gui.framebuffer();
 			}
 
 			Framebuffer::Session &framebuffer;
@@ -98,12 +101,12 @@ class Nano3d::Scene
 			/**
 			 * Return visible size
 			 */
-			Nitpicker::Area size() const
+			Gui::Area size() const
 			{
-				return Nitpicker::Area(mode.width(), mode.height()/NUM_BUFFERS);
+				return Gui::Area(mode.area.w(), mode.area.h()/NUM_BUFFERS);
 			}
 
-			Genode::Attached_dataspace ds { framebuffer.dataspace() };
+			Genode::Attached_dataspace ds { rm, framebuffer.dataspace() };
 
 			PT *pixel_base(unsigned i)
 			{
@@ -133,14 +136,15 @@ class Nano3d::Scene
 				               NUM_BUFFERS*size().count());
 			}
 
-			Mapped_framebuffer(Nitpicker::Connection &nitpicker, Nitpicker::Area size)
+			Mapped_framebuffer(Gui::Connection &gui, Gui::Area size,
+			                   Genode::Region_map &rm)
 			:
-				framebuffer(_init_framebuffer(nitpicker, size))
+				rm(rm), framebuffer(_init_framebuffer(gui, size))
 			{ }
 
-		} _framebuffer { _nitpicker, _size };
+		} _framebuffer { _gui, _size, _env.rm() };
 
-		Nitpicker::Session::View_handle _view_handle = _nitpicker.create_view();
+		Gui::Session::View_handle _view_handle = _gui.create_view();
 
 		typedef Genode::Surface<PT>                   Pixel_surface;
 		typedef Genode::Surface<Genode::Pixel_alpha8> Alpha_surface;
@@ -186,28 +190,28 @@ class Nano3d::Scene
 
 		bool _do_sync = false;
 
-		Timer::Connection _timer;
+		Timer::Connection _timer { _env };
 
-		Genode::Attached_dataspace _input_ds { _nitpicker.input()->dataspace() };
+		Genode::Attached_dataspace _input_ds { _env.rm(), _gui.input()->dataspace() };
 
-		Input_handler *_input_handler = nullptr;
+		Input_handler *_input_handler_callback = nullptr;
 
-		void _handle_input(unsigned)
+		void _handle_input()
 		{
-			if (!_input_handler)
+			if (!_input_handler_callback)
 				return;
 
-			while (int num = _nitpicker.input()->flush()) {
+			while (int num = _gui.input()->flush()) {
 
 				auto const *ev_buf = _input_ds.local_addr<Input::Event>();
 
-				if (_input_handler)
-					_input_handler->handle_input(ev_buf, num);
+				if (_input_handler_callback)
+					_input_handler_callback->handle_input(ev_buf, num);
 			}
 		}
 
-		Genode::Signal_dispatcher<Scene> _input_dispatcher {
-			_sig_rec, *this, &Scene::_handle_input };
+		Genode::Signal_handler<Scene> _input_handler {
+			_env.ep(), *this, &Scene::_handle_input };
 
 		void _swap_back_and_front_surfaces()
 		{
@@ -223,7 +227,7 @@ class Nano3d::Scene
 			_surface_front    = tmp;
 		}
 
-		void _handle_period(unsigned)
+		void _handle_period()
 		{
 			if (_do_sync)
 				return;
@@ -238,10 +242,10 @@ class Nano3d::Scene
 			_do_sync = true;
 		}
 
-		Genode::Signal_dispatcher<Scene> _periodic_dispatcher {
-			_sig_rec, *this, &Scene::_handle_period };
+		Genode::Signal_handler<Scene> _periodic_handler {
+			_env.ep(), *this, &Scene::_handle_period };
 
-		void _handle_sync(unsigned)
+		void _handle_sync()
 		{
 			/* rendering of scene is not complete, yet */
 			if (!_do_sync)
@@ -256,57 +260,48 @@ class Nano3d::Scene
 			                : (_surface_visible == &_surface_1) ? -h
 			                : -2*h;
 
-			Nitpicker::Point const offset(0, buf_y);
-			_nitpicker.enqueue<Command::Offset>(_view_handle, offset);
-			_nitpicker.execute();
+			Gui::Point const offset(0, buf_y);
+			_gui.enqueue<Command::Offset>(_view_handle, offset);
+			_gui.execute();
 
 			_do_sync = false;
 		}
 
-		Genode::Signal_dispatcher<Scene> _sync_dispatcher {
-			_sig_rec, *this, &Scene::_handle_sync };
+		Genode::Signal_handler<Scene> _sync_handler {
+			_env.ep(), *this, &Scene::_handle_sync };
 
-		typedef Nitpicker::Session::Command Command;
+		typedef Gui::Session::Command Command;
 
 	public:
 
-		Scene(Genode::Signal_receiver &sig_rec, unsigned update_rate_ms,
-		      Nitpicker::Point pos, Nitpicker::Area size)
+		Scene(Genode::Env &env, Genode::uint64_t update_rate_ms,
+		      Gui::Point pos, Gui::Area size)
 		:
-			_sig_rec(sig_rec), _pos(pos), _size(size)
+			_env(env), _pos(pos), _size(size)
 		{
-			Nitpicker::Rect rect(_pos, _size);
-			_nitpicker.enqueue<Command::Geometry>(_view_handle, rect);
-			_nitpicker.enqueue<Command::To_front>(_view_handle);
-			_nitpicker.execute();
+			typedef Gui::Session::View_handle View_handle;
 
-			_nitpicker.input()->sigh(_input_dispatcher);
+			Gui::Rect rect(_pos, _size);
+			_gui.enqueue<Command::Geometry>(_view_handle, rect);
+			_gui.enqueue<Command::To_front>(_view_handle, View_handle());
+			_gui.execute();
 
-			_timer.sigh(_periodic_dispatcher);
+			_gui.input()->sigh(_input_handler);
+
+			_timer.sigh(_periodic_handler);
 			_timer.trigger_periodic(1000*update_rate_ms);
 
-			_framebuffer.framebuffer.sync_sigh(_sync_dispatcher);
+			_framebuffer.framebuffer.sync_sigh(_sync_handler);
 		}
 
-		static void dispatch_signals_loop(Genode::Signal_receiver &sig_rec)
-		{
-			while (1) {
+		virtual ~Scene() { }
 
-				Genode::Signal signal = sig_rec.wait_for_signal();
-
-				Genode::Signal_dispatcher_base *dispatcher =
-					static_cast<Genode::Signal_dispatcher_base *>(signal.context());
-
-				dispatcher->dispatch(signal.num());
-			}
-		}
-
-		unsigned long elapsed_ms() const { return _timer.elapsed_ms(); }
+		Genode::uint64_t elapsed_ms() const { return _timer.elapsed_ms(); }
 
 		void input_handler(Input_handler *input_handler)
 		{
 			_framebuffer.input_mask(input_handler ? true : false);
-			_input_handler = input_handler;
+			_input_handler_callback = input_handler;
 		}
 };
 

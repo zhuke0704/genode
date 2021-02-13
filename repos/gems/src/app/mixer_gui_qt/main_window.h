@@ -5,18 +5,17 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _MAIN_WINDOW_H_
 #define _MAIN_WINDOW_H_
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/lock.h>
+#include <base/env.h>
 #include <util/xml_node.h>
 
 /* Qt includes */
@@ -68,7 +67,7 @@ class Main_window : public Compound_widget<QWidget, QHBoxLayout>
 
 	public:
 
-		Main_window();
+		Main_window(Genode::Env &);
 
 		~Main_window();
 };

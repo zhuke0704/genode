@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__VMM__UTCB_GUARD_H_
 #define _INCLUDE__VMM__UTCB_GUARD_H_
 
 /* Genode includes */
-#include <base/printf.h>
 #include <util/string.h>
 
 /* NOVA syscalls */
@@ -45,19 +44,19 @@ class Vmm::Utcb_guard
 			Nova::Utcb *utcb =
 				reinterpret_cast<Nova::Utcb *>(Thread::myself()->utcb());
 
-			unsigned header_len = (char *)utcb->msg - (char *)utcb;
+			unsigned header_len = (char *)utcb->msg() - (char *)utcb;
 			unsigned len = header_len + utcb->msg_words() * sizeof(Nova::mword_t);
 			Genode::memcpy(&_backup_utcb, utcb, len);
 
 			if (utcb->msg_items())
-				PWRN("Error: msg items on UTCB are not saved and restored!");
+				Genode::warning("Error: msg items on UTCB are not saved and restored!");
 		}
 
 		~Utcb_guard()
 		{
 			Nova::Utcb *utcb = reinterpret_cast<Nova::Utcb *>(&_backup_utcb);
 
-			unsigned header_len = (char *)utcb->msg - (char *)utcb;
+			unsigned header_len = (char *)utcb->msg() - (char *)utcb;
 			unsigned len = header_len + utcb->msg_words() * sizeof(Nova::mword_t);
 			Genode::memcpy(Thread::myself()->utcb(), utcb, len);
 		}

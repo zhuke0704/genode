@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014-2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__SPIN_LOCK_H_
@@ -35,7 +35,8 @@ static inline void spinlock_lock(volatile T *lock_variable)
 	using Genode::cmpxchg;
 
 	Genode::Thread * myself = Genode::Thread::myself();
-	T const tid = myself ? myself->native_thread().ec_sel : Nova::PT_SEL_MAIN_EC;
+	T const tid = myself ? myself->native_thread().ec_sel
+	                     : (Genode::addr_t)Nova::EC_SEL_THREAD;
 
 	unsigned help_counter = 0;
 

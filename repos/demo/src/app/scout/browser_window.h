@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _BROWSER_WINDOW_H_
@@ -61,7 +61,9 @@ class Scout::Browser_window : public Scrollbar_listener,
 		/**
 		 * General properties
 		 */
-		int  _attr;   /* attribute mask */
+		Config const &_config;
+
+		int _attr = _config.browser_attr;   /* attribute mask */
 
 		/**
 		 * Remember graphics backend used as texture allocator
@@ -71,8 +73,8 @@ class Scout::Browser_window : public Scrollbar_listener,
 		/**
 		 * Widgets
 		 */
-		Titlebar<PT>               _titlebar;
-		Sky_texture<PT, 512, 512>  _texture;
+		Titlebar<PT>               _titlebar  { };
+		Sky_texture<PT, 512, 512>  _texture   { _config.background_detail };
 		PT                         _icon_fg        [_NUM_ICONS][_IH][_IW];
 		unsigned char              _icon_fg_alpha  [_NUM_ICONS][_IH][_IW];
 		Refracted_icon<PT, short>  _icon           [_NUM_ICONS];
@@ -80,21 +82,21 @@ class Scout::Browser_window : public Scrollbar_listener,
 		PT                         _panel_fg       [_PANEL_H][_PANEL_W];
 		unsigned char              _panel_fg_alpha [_PANEL_H][_PANEL_W];
 		short                      _panel_distmap  [_PANEL_H*2][_PANEL_W*2];
-		Refracted_icon<PT, short>  _panel;
+		Refracted_icon<PT, short>  _panel     { };
 		PT                         _panel_backbuf  [_PANEL_H*2][_PANEL_W*2];
-		Horizontal_shadow<PT, 160> _shadow;
-		Scrollbar<PT>              _scrollbar;
+		Horizontal_shadow<PT, 160> _shadow    { };
+		Scrollbar<PT>              _scrollbar { };
 		Fade_icon<PT, _IW, _IH>    _glow_icon[_NUM_ICONS];
-		Docview                    _docview;
-		Fade_icon<PT, 32, 32>      _sizer;
+		Docview                    _docview   { };
+		Fade_icon<PT, 32, 32>      _sizer     { };
 
 	protected:
 
 		/**
 		 * Browser interface
 		 */
-		void _content(Element *content);
-		Element *_content();
+		void _content(Element *content) override;
+		Element *_content() override;
 
 	public:
 
@@ -112,7 +114,7 @@ class Scout::Browser_window : public Scrollbar_listener,
 		 */
 		Browser_window(Document *content, Graphics_backend &gfx_backend,
 		               Point position, Area size, Area max_size,
-		               int attr = ATTR_SIZER | ATTR_TITLEBAR);
+		               Config const &config);
 
 		/**
 		 * Return visible document offset
@@ -130,15 +132,15 @@ class Scout::Browser_window : public Scrollbar_listener,
 		/**
 		 * Browser interface
 		 */
-		void     format(Area);
-		void     ypos(int ypos) { ypos_sb(ypos, 1); }
-		Anchor  *curr_anchor();
+		void     format(Area)   override;
+		void     ypos(int ypos) override { ypos_sb(ypos, 1); }
+		Anchor  *curr_anchor()  override;
 		Browser *browser() { return this; }
 
 		/**
 		 * Element interface
 		 */
-		void draw(Canvas_base &canvas, Point abs_position)
+		void draw(Canvas_base &canvas, Point abs_position) override
 		{
 			Parent_element::draw(canvas, abs_position);
 
@@ -154,7 +156,7 @@ class Scout::Browser_window : public Scrollbar_listener,
 		/**
 		 * Scrollbar listener interface
 		 */
-		void handle_scroll(int view_pos);
+		void handle_scroll(int view_pos) override;
 };
 
 #endif /* _BROWSER_WINDOW_H_ */

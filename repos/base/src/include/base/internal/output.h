@@ -5,19 +5,16 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__OUTPUT_H_
 #define _INCLUDE__BASE__INTERNAL__OUTPUT_H_
 
-
 #include <base/output.h>
-
-using namespace Genode;
 
 
 /**
@@ -108,53 +105,53 @@ static inline void out_unsigned(T value, unsigned base, int pad,
 }
 
 
-namespace Genode { template <size_t, typename> class Buffered_output; }
-
-
 /**
- * Implementation of the output interface that buffers characters
- *
- * \param BUF_SIZE  maximum number of characters to buffer before writing
- * \param WRITE_FN  functor called to writing the buffered characters to a
- *                  backend.
- *
- * The 'WRITE_FN' functor is called with a null-terminated 'char const *'
- * as argument.
+ * Output floating point value
  */
-template <size_t BUF_SIZE, typename BACKEND_WRITE_FN>
-class Genode::Buffered_output : public Output
+template <typename T, typename OUT_CHAR_FN>
+static inline void out_float(T value, unsigned base, unsigned length, OUT_CHAR_FN const &out_char)
 {
-	private:
+	using namespace Genode;
 
-		BACKEND_WRITE_FN _write_fn;
-		char             _buf[BUF_SIZE];
-		unsigned         _num_chars = 0;
+	/*
+	 * If the compiler decides to move a value from the FPU to the stack and
+	 * back, the value can slightly change because of different encodings. This
+	 * can cause problems if the value is assumed to stay the same in a chain
+	 * of calculations. For example, if casting 6.999 to int results in 6, this
+	 * number 6 needs to be subtracted from 6.999 in the next step and not from
+	 * 7 after an unexpected conversion, otherwise the next cast for a decimal
+	 * place would result in 10 instead of 9.
+	 * By storing the value in a volatile variable, the conversion step between
+	 * FPU and stack happens in a more deterministic way, which gives more
+	 * consistent results with this function.
+	 */
+	T volatile volatile_value = value;
 
-		void _flush()
-		{
-			/* null-terminate string */
-			_buf[_num_chars] = 0;
-			_write_fn(_buf);
+	/* set flag if value is negative */
+	int neg = volatile_value < 0 ? 1 : 0;
 
-			/* restart with empty buffer */
-			_num_chars = 0;
-		}
+	/* get absolute value */
+	volatile_value = volatile_value < 0 ? -volatile_value : volatile_value;
 
-	public:
+	uint64_t integer = (uint64_t)volatile_value;
 
-		Buffered_output(BACKEND_WRITE_FN const &write_fn) : _write_fn(write_fn) { }
+	if (neg)
+		out_char('-');
 
-		void out_char(char c) override
-		{
-			/* ensure enough buffer space for complete escape sequence */
-			if ((c == 27) && (_num_chars + 8 > BUF_SIZE)) _flush();
+	out_unsigned(integer, base, 0, out_char);
+	out_char('.');
 
-			_buf[_num_chars++] = c;
+	if (length) {
+		do {
+			volatile_value -= integer;
+			volatile_value = volatile_value*base;
 
-			/* flush immediately on line break */
-			if (c == '\n' || _num_chars >= sizeof(_buf) - 1)
-				_flush();
-		}
-};
+			integer = (int64_t)volatile_value;
+			out_char(ascii(integer));
+
+			length--;
+		} while (length && (volatile_value > 0.0));
+	}
+}
 
 #endif /* _INCLUDE__BASE__INTERNAL__OUTPUT_H_ */

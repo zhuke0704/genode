@@ -5,16 +5,17 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
+#include <base/component.h>
+#include <base/heap.h>
 #include <root/component.h>
-#include <os/server.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 #include <terminal_session/terminal_session.h>
 #include <log_session/log_session.h>
 
@@ -50,7 +51,7 @@ class Buffered_output
 			_buf[_index] = 0;
 
 			/* flush buffered characters to LOG */
-			Genode::printf(_buf);
+			Genode::log(Genode::Cstring(_buf));
 
 			/* reset */
 			_index = 0;
@@ -67,9 +68,10 @@ class Buffered_output
 
 			for (unsigned i = 0; i < consume_bytes; i++) {
 				char const c = src[i];
-				_buf[_index++] = c;
 				if (c == '\n')
 					_flush();
+				else
+					_buf[_index++] = c;
 			}
 
 			if (_remaining_capacity() == 0)
@@ -93,13 +95,15 @@ class Terminal::Session_component : public Rpc_object<Session, Session_component
 		 */
 		Attached_ram_dataspace _io_buffer;
 
-		Buffered_output _output;
+		Buffered_output _output { };
 
 	public:
 
-		Session_component(size_t io_buffer_size)
+		Session_component(Ram_allocator &ram,
+		                  Region_map    &rm,
+		                  size_t         io_buffer_size)
 		:
-			_io_buffer(env()->ram_session(), io_buffer_size)
+			_io_buffer(ram, rm, io_buffer_size)
 		{ }
 
 
@@ -107,29 +111,34 @@ class Terminal::Session_component : public Rpc_object<Session, Session_component
 		 ** Terminal session interface **
 		 ********************************/
 
-		Size size() { return Size(0, 0); }
+		Size size() override { return Size(0, 0); }
 
-		bool avail() { return false; }
+		bool avail() override { return false; }
 
-		size_t _read(size_t dst_len) { return 0; }
+		size_t _read(size_t) { return 0; }
 
-		void _write(Genode::size_t num_bytes)
+		size_t _write(Genode::size_t num_bytes)
 		{
 			/* sanitize argument */
 			num_bytes = Genode::min(num_bytes, _io_buffer.size());
 
 			char const *src = _io_buffer.local_addr<char>();
 
-			for (size_t written_bytes = 0; written_bytes < num_bytes; )
+			size_t written_bytes;
+			for (written_bytes = 0; written_bytes < num_bytes; )
 				written_bytes += _output.write(src + written_bytes,
 				                               num_bytes - written_bytes);
+
+			return written_bytes;
 		}
 
 		Dataspace_capability _dataspace() { return _io_buffer.cap(); }
 
-		void read_avail_sigh(Signal_context_capability) { }
+		void read_avail_sigh(Signal_context_capability) override { }
 
-		void connected_sigh(Signal_context_capability sigh)
+		void size_changed_sigh(Signal_context_capability) override { }
+
+		void connected_sigh(Signal_context_capability sigh) override
 		{
 			/*
 			 * Immediately reflect connection-established signal to the
@@ -139,57 +148,52 @@ class Terminal::Session_component : public Rpc_object<Session, Session_component
 			Signal_transmitter(sigh).submit();
 		}
 
-		size_t read(void *buf, size_t) { return 0; }
-		size_t write(void const *buf, size_t) { return 0; }
+		size_t read(void *, size_t) override { return 0; }
+		size_t write(void const *, size_t) override { return 0; }
 };
 
 
 class Terminal::Root_component : public Genode::Root_component<Session_component>
 {
+	private:
+
+		Ram_allocator &_ram;
+		Region_map    &_rm;
+
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *) override
 		{
 			size_t const io_buffer_size = 4096;
-			return new (md_alloc()) Session_component(io_buffer_size);
+			return new (md_alloc()) Session_component(_ram, _rm, io_buffer_size);
 		}
 
 	public:
 
-		Root_component(Server::Entrypoint &ep, Genode::Allocator  &md_alloc)
+		Root_component(Entrypoint    &ep,
+		               Allocator     &md_alloc,
+		               Ram_allocator &ram,
+		               Region_map    &rm)
 		:
-			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc)
+			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
+			_ram(ram), _rm(rm)
 		{ }
 };
 
 
 struct Terminal::Main
 {
-	Server::Entrypoint &ep;
+	Env &_env;
 
-	Sliced_heap sliced_heap = { env()->ram_session(), env()->rm_session() };
+	Sliced_heap sliced_heap { _env.ram(), _env.rm() };
 
-	Root_component terminal_root = { ep, sliced_heap };
+	Root_component terminal_root { _env.ep(), sliced_heap,
+	                               _env.ram(), _env.rm() };
 
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Main(Env &env) : _env(env)
 	{
-		env()->parent()->announce(ep.manage(terminal_root));
+		env.parent().announce(env.ep().manage(terminal_root));
 	}
 };
 
-
-/************
- ** Server **
- ************/
-
-namespace Server {
-
-	char const *name() { return "log_terminal_ep"; }
-
-	size_t stack_size() { return 4*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Terminal::Main terminal(ep);
-	}
-}
+void Component::construct(Genode::Env &env) { static Terminal::Main main(env); }

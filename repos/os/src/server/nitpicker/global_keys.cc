@@ -5,53 +5,50 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
-
-/* Genode includes */
-#include <os/config.h>
 
 /* local includes */
 #include "global_keys.h"
+
+using namespace Nitpicker;
 
 
 Global_keys::Policy *Global_keys::_lookup_policy(char const *key_name)
 {
 	for (unsigned i = 0; i < NUM_POLICIES; i++)
-		if (Genode::strcmp(key_name, Input::key_name((Input::Keycode)i)) == 0)
+		if (strcmp(key_name, Input::key_name((Input::Keycode)i)) == 0)
 			return &_policies[i];
 
 	return 0;
 }
 
 
-void Global_keys::apply_config(Session_list &session_list)
+void Global_keys::apply_config(Xml_node config, Session_list &session_list)
 {
 	for (unsigned i = 0; i < NUM_POLICIES; i++)
 		_policies[i] = Policy();
 
 	char const *node_type = "global-key";
 
-	using Genode::Xml_node;
 	try {
-		Xml_node node = Genode::config()->xml_node().sub_node(node_type);
+		Xml_node node = config.sub_node(node_type);
 
 		for (; ; node = node.next(node_type)) {
 
 			if (!node.has_attribute("name")) {
-				PWRN("attribute 'name' missing in <global-key> config node");
+				warning("attribute 'name' missing in <global-key> config node");
 				continue;
 			}
 
-			char name[32]; name[0] = 0;
-			node.attribute("name").value(name, sizeof(name));
-
-			Policy * policy = _lookup_policy(name);
+			typedef String<32> Name;
+			Name name = node.attribute_value("name", Name());
+			Policy * policy = _lookup_policy(name.string());
 			if (!policy) {
-				PWRN("invalid key name \"%s\"", name);
+				warning("invalid key name \"", name, "\"");
 				continue;
 			}
 
@@ -60,12 +57,12 @@ void Global_keys::apply_config(Session_list &session_list)
 				continue;
 
 			if (!node.has_attribute("label")) {
-				PWRN("missing 'label' attribute for key %s", name);
+				warning("missing 'label' attribute for key ", name);
 				continue;
 			}
 
 			/* assign policy to matching client session */
-			for (Session *s = session_list.first(); s; s = s->next())
+			for (Gui_session *s = session_list.first(); s; s = s->next())
 				if (node.attribute("label").has_value(s->label().string()))
 					policy->client(s);
 		}

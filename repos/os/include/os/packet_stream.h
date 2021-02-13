@@ -66,10 +66,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__PACKET_STREAM_H_
@@ -78,6 +78,7 @@
 /* Genode includes */
 #include <base/env.h>
 #include <base/signal.h>
+#include <base/allocator.h>
 #include <dataspace/client.h>
 #include <util/string.h>
 #include <util/construct_at.h>
@@ -130,6 +131,11 @@ class Genode::Packet_descriptor
 		enum Alignment { PACKET_ALIGNMENT = 0 };
 
 		/**
+		 * Exception type thrown by packet streams
+		 */
+		class Invalid_packet { };
+
+		/**
 		 * Constructor
 		 */
 		Packet_descriptor(Genode::off_t offset, Genode::size_t size) :
@@ -156,9 +162,16 @@ class Genode::Packet_descriptor_queue
 {
 	private:
 
-		unsigned          _head;
-		unsigned          _tail;
-		PACKET_DESCRIPTOR _queue[QUEUE_SIZE];
+		/*
+		 * The anonymous struct is needed to skip the initialization of the
+		 * members, which are shared by both sides of the packet stream.
+		 */
+		struct
+		{
+			unsigned volatile _head;
+			unsigned volatile _tail;
+			PACKET_DESCRIPTOR _queue[QUEUE_SIZE];
+		};
 
 	public:
 
@@ -259,15 +272,22 @@ class Genode::Packet_descriptor_transmitter
 	private:
 
 		/* facility to receive ready-to-transmit signals */
-		Genode::Signal_receiver           _tx_ready;
-		Genode::Signal_context            _tx_ready_context;
+		Genode::Signal_receiver           _tx_ready         { };
+		Genode::Signal_context            _tx_ready_context { };
 		Genode::Signal_context_capability _tx_ready_cap;
 
 		/* facility to send ready-to-receive signals */
-		Genode::Signal_transmitter         _rx_ready;
+		Genode::Signal_transmitter         _rx_ready { };
 
-		Genode::Lock _tx_queue_lock;
-		TX_QUEUE    *_tx_queue;
+		Genode::Mutex  _tx_queue_mutex { };
+		TX_QUEUE      *_tx_queue;
+		bool           _tx_wakeup_needed = false;
+
+		/*
+		 * Noncopyable
+		 */
+		Packet_descriptor_transmitter(Packet_descriptor_transmitter const &);
+		Packet_descriptor_transmitter &operator = (Packet_descriptor_transmitter const &);
 
 	public:
 
@@ -305,13 +325,13 @@ class Genode::Packet_descriptor_transmitter
 
 		bool ready_for_tx()
 		{
-			Genode::Lock::Guard lock_guard(_tx_queue_lock);
+			Genode::Mutex::Guard mutex_guard(_tx_queue_mutex);
 			return !_tx_queue->full();
 		}
 
 		void tx(typename TX_QUEUE::Packet_descriptor packet)
 		{
-			Genode::Lock::Guard lock_guard(_tx_queue_lock);
+			Genode::Mutex::Guard mutex_guard(_tx_queue_mutex);
 
 			do {
 				/* block for signal if tx queue is full */
@@ -328,6 +348,36 @@ class Genode::Packet_descriptor_transmitter
 
 			if (_tx_queue->single_element())
 				_rx_ready.submit();
+		}
+
+		bool try_tx(typename TX_QUEUE::Packet_descriptor packet)
+		{
+			Genode::Mutex::Guard mutex_guard(_tx_queue_mutex);
+
+			if (_tx_queue->full())
+				return false;
+
+			_tx_queue->add(packet);
+
+			if (_tx_queue->single_element())
+				_tx_wakeup_needed = true;
+
+			return true;
+		}
+
+		bool tx_wakeup()
+		{
+			Genode::Mutex::Guard mutex_guard(_tx_queue_mutex);
+
+			bool signal_submitted = false;
+
+			if (_tx_wakeup_needed) {
+				_rx_ready.submit();
+				signal_submitted = true;
+			}
+
+			_tx_wakeup_needed = false;
+			return signal_submitted;
 		}
 
 		/**
@@ -348,15 +398,22 @@ class Genode::Packet_descriptor_receiver
 	private:
 
 		/* facility to receive ready-to-receive signals */
-		Genode::Signal_receiver           _rx_ready;
-		Genode::Signal_context            _rx_ready_context;
+		Genode::Signal_receiver           _rx_ready         { };
+		Genode::Signal_context            _rx_ready_context { };
 		Genode::Signal_context_capability _rx_ready_cap;
 
 		/* facility to send ready-to-transmit signals */
-		Genode::Signal_transmitter        _tx_ready;
+		Genode::Signal_transmitter        _tx_ready { };
 
-		Genode::Lock mutable  _rx_queue_lock;
-		RX_QUEUE             *_rx_queue;
+		Genode::Mutex mutable  _rx_queue_mutex { };
+		RX_QUEUE              *_rx_queue;
+		bool                   _rx_wakeup_needed = false;
+
+		/*
+		 * Noncopyable
+		 */
+		Packet_descriptor_receiver(Packet_descriptor_receiver const &);
+		Packet_descriptor_receiver &operator = (Packet_descriptor_receiver const &);
 
 	public:
 
@@ -394,13 +451,13 @@ class Genode::Packet_descriptor_receiver
 
 		bool ready_for_rx()
 		{
-			Genode::Lock::Guard lock_guard(_rx_queue_lock);
+			Genode::Mutex::Guard mutex_guard(_rx_queue_mutex);
 			return !_rx_queue->empty();
 		}
 
 		void rx(typename RX_QUEUE::Packet_descriptor *out_packet)
 		{
-			Genode::Lock::Guard lock_guard(_rx_queue_lock);
+			Genode::Mutex::Guard mutex_guard(_rx_queue_mutex);
 
 			while (_rx_queue->empty())
 				_rx_ready.wait_for_signal();
@@ -411,9 +468,40 @@ class Genode::Packet_descriptor_receiver
 				_tx_ready.submit();
 		}
 
+		typename RX_QUEUE::Packet_descriptor try_rx()
+		{
+			Genode::Mutex::Guard mutex_guard(_rx_queue_mutex);
+
+			typename RX_QUEUE::Packet_descriptor packet { };
+
+			if (!_rx_queue->empty())
+				packet = _rx_queue->get();
+
+			if (_rx_queue->single_slot_free())
+				_rx_wakeup_needed = true;
+
+			return packet;
+		}
+
+		bool rx_wakeup()
+		{
+			Genode::Mutex::Guard mutex_guard(_rx_queue_mutex);
+
+			bool signal_submitted = false;
+
+			if (_rx_wakeup_needed) {
+				_tx_ready.submit();
+				signal_submitted = true;
+			}
+
+			_rx_wakeup_needed = false;
+
+			return signal_submitted;
+		}
+
 		typename RX_QUEUE::Packet_descriptor rx_peek() const
 		{
-			Genode::Lock::Guard lock_guard(_rx_queue_lock);
+			Genode::Mutex::Guard mutex_guard(_rx_queue_mutex);
 			return _rx_queue->peek();
 		}
 };
@@ -431,15 +519,25 @@ class Genode::Packet_stream_base
 		 */
 		class Transport_dataspace_too_small { };
 
+	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Packet_stream_base(Packet_stream_base const &);
+		Packet_stream_base &operator = (Packet_stream_base const &);
+
 	protected:
 
+		Genode::Region_map          &_rm;
 		Genode::Dataspace_capability _ds_cap;
 		void                        *_ds_local_base;
+		Genode::size_t               _ds_size { 0 };
 
 		Genode::off_t  _submit_queue_offset;
 		Genode::off_t  _ack_queue_offset;
 		Genode::off_t  _bulk_buffer_offset;
-		Genode::size_t _bulk_buffer_size;
+		Genode::size_t _bulk_buffer_size { 0 };
 
 		/**
 		 * Constructor
@@ -449,22 +547,24 @@ class Genode::Packet_stream_base
 		 * \throw                    'Transport_dataspace_too_small'
 		 */
 		Packet_stream_base(Genode::Dataspace_capability transport_ds,
+		                   Genode::Region_map &rm,
 		                   Genode::size_t submit_queue_size,
 		                   Genode::size_t ack_queue_size)
 		:
-			_ds_cap(transport_ds),
+			_rm(rm), _ds_cap(transport_ds),
 
 			/* map dataspace locally */
-			_ds_local_base(Genode::env()->rm_session()->attach(_ds_cap)),
+			_ds_local_base(rm.attach(_ds_cap)),
 			_submit_queue_offset(0),
 			_ack_queue_offset(_submit_queue_offset + submit_queue_size),
-			_bulk_buffer_offset(_ack_queue_offset + ack_queue_size)
+			_bulk_buffer_offset(align_addr(_ack_queue_offset + ack_queue_size, 6))
 		{
 			Genode::size_t ds_size = Genode::Dataspace_client(_ds_cap).size();
 
 			if ((Genode::size_t)_bulk_buffer_offset >= ds_size)
 				throw Transport_dataspace_too_small();
 
+			_ds_size = ds_size;
 			_bulk_buffer_size = ds_size - _bulk_buffer_offset;
 		}
 
@@ -479,7 +579,7 @@ class Genode::Packet_stream_base
 			 */
 			try {
 				/* unmap transport dataspace locally */
-				Genode::env()->rm_session()->detach(_ds_local_base);
+				_rm.detach(_ds_local_base);
 			} catch (...) { }
 		}
 
@@ -501,6 +601,27 @@ class Genode::Packet_stream_base
 		 * Return communication buffer
 		 */
 		Genode::Dataspace_capability _dataspace() { return _ds_cap; }
+
+		bool packet_valid(Packet_descriptor packet)
+		{
+			return !packet.size() || (packet.offset() >= _bulk_buffer_offset
+				 && packet.offset() < _bulk_buffer_offset + (Genode::off_t)_bulk_buffer_size
+				 && packet.offset() + packet.size() <= _bulk_buffer_offset + _bulk_buffer_size);
+		}
+
+		template<typename CONTENT_TYPE>
+		CONTENT_TYPE *packet_content(Packet_descriptor packet)
+		{
+			if (!packet.size()) return nullptr;
+
+			if (!packet_valid(packet) || packet.size() < sizeof(CONTENT_TYPE))
+				throw Packet_descriptor::Invalid_packet();
+
+			return (CONTENT_TYPE *)((Genode::addr_t)_ds_local_base + packet.offset());
+		}
+
+		Genode::addr_t ds_local_base() const { return (Genode::addr_t)_ds_local_base; }
+		Genode::addr_t ds_size()       const { return _ds_size; }
 };
 
 
@@ -541,7 +662,7 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		typedef typename POLICY::Ack_queue    Ack_queue;
 		typedef typename POLICY::Content_type Content_type;
 
-		Genode::Range_allocator *_packet_alloc;
+		Genode::Range_allocator &_packet_alloc;
 
 		Packet_descriptor_transmitter<Submit_queue> _submit_transmitter;
 		Packet_descriptor_receiver<Ack_queue>       _ack_receiver;
@@ -558,6 +679,7 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		 *
 		 * \param transport_ds  dataspace used for communication buffer shared
 		 *                      between source and sink
+		 * \param rm            region to map buffer dataspace into
 		 * \param packet_alloc  allocator for managing packet allocation within
 		 *                      the shared communication buffer
 		 *
@@ -565,10 +687,11 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		 * initialized by the constructor using dataspace-relative offsets
 		 * rather than pointers.
 		 */
-		Packet_stream_source(Genode::Range_allocator      *packet_alloc,
-		                     Genode::Dataspace_capability  transport_ds_cap)
+		Packet_stream_source(Genode::Dataspace_capability  transport_ds_cap,
+		                     Genode::Region_map           &rm,
+		                     Genode::Range_allocator      &packet_alloc)
 		:
-			Packet_stream_base(transport_ds_cap,
+			Packet_stream_base(transport_ds_cap, rm,
 			                   sizeof(Submit_queue),
 			                   sizeof(Ack_queue)),
 			_packet_alloc(packet_alloc),
@@ -580,15 +703,17 @@ class Genode::Packet_stream_source : private Packet_stream_base
 			                                      Ack_queue::CONSUMER))
 		{
 			/* initialize packet allocator */
-			_packet_alloc->add_range(_bulk_buffer_offset,
+			_packet_alloc.add_range(_bulk_buffer_offset,
 			                         _bulk_buffer_size);
 		}
 
 		~Packet_stream_source()
 		{
-			_packet_alloc->remove_range(_bulk_buffer_offset,
+			_packet_alloc.remove_range(_bulk_buffer_offset,
 			                            _bulk_buffer_size);
 		}
+
+		using Packet_stream_base::packet_valid;
 
 		/**
 		 * Return the size of the bulk buffer.
@@ -643,38 +768,27 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		Packet_descriptor alloc_packet(Genode::size_t size, int align = POLICY::Packet_descriptor::PACKET_ALIGNMENT)
 		{
 			void *base = 0;
-			if (size && _packet_alloc->alloc_aligned(size, &base, align).error())
+			if (size && _packet_alloc.alloc_aligned(size, &base, align).error())
 				throw Packet_alloc_failed();
 
 			return Packet_descriptor((Genode::off_t)base, size);
 		}
 
-		bool packet_valid(Packet_descriptor packet)
-		{
-			return (packet.offset() >= _bulk_buffer_offset
-				 && packet.offset() < _bulk_buffer_offset + (Genode::off_t)_bulk_buffer_size
-				 && packet.offset() + packet.size() <= _bulk_buffer_offset + _bulk_buffer_size);
-		}
-
 		/**
 		 * Get pointer to the content of the specified packet
 		 *
-		 * \return 0 if the packet is invalid
+		 * \throw Packet_descriptor::Invalid_packet  raise an exception if
+		                                             the packet is invalid
 		 */
-		Content_type *packet_content(Packet_descriptor packet)
-		{
-			if (!packet_valid(packet) || packet.size() < sizeof(Content_type))
-				return 0;
-
-			return (Content_type *)((Genode::addr_t)_ds_local_base + packet.offset());
-		}
+		Content_type *packet_content(Packet_descriptor packet) {
+			return Packet_stream_base::packet_content<Content_type>(packet); }
 
 		/**
-		 * Return true if submit queue can hold another packet
+		 * Return true if submit queue can hold 'count' additional packets
 		 */
-		bool ready_to_submit()
+		bool ready_to_submit(unsigned count = 1)
 		{
-			return _submit_transmitter.ready_for_tx();
+			return _submit_transmitter.tx_slots_free() >= count;
 		}
 
 		/**
@@ -683,6 +797,30 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		void submit_packet(Packet_descriptor packet)
 		{
 			_submit_transmitter.tx(packet);
+		}
+
+		/**
+		 * Submit the specified packet to the server if possible
+		 *
+		 * \return false if the submit queue is congested
+		 *
+		 * This method never blocks.
+		 */
+		bool try_submit_packet(Packet_descriptor packet)
+		{
+			return _submit_transmitter.try_tx(packet);
+		}
+
+		/**
+		 * Wake up the packet sink if needed
+		 *
+		 * This method assumes that the same signal handler is used for
+		 * the submit transmitter and the ack receiver.
+		 */
+		void wakeup()
+		{
+			/* submit only one signal */
+			_submit_transmitter.tx_wakeup() || _ack_receiver.rx_wakeup();
 		}
 
 		/**
@@ -701,12 +839,22 @@ class Genode::Packet_stream_source : private Packet_stream_base
 		}
 
 		/**
+		 * Return next acknowledgement from sink, or an invalid packet
+		 *
+		 * This method never blocks.
+		 */
+		Packet_descriptor try_get_acked_packet()
+		{
+			return _ack_receiver.try_rx();
+		}
+
+		/**
 		 * Release bulk-buffer space consumed by the packet
 		 */
 		void release_packet(Packet_descriptor packet)
 		{
 			if (packet.size())
-				_packet_alloc->free((void *)packet.offset(), packet.size());
+				_packet_alloc.free((void *)packet.offset(), packet.size());
 		}
 
 		void debug_print_buffers() {
@@ -714,6 +862,9 @@ class Genode::Packet_stream_source : private Packet_stream_base
 
 		Genode::Dataspace_capability dataspace() {
 			return Packet_stream_base::_dataspace(); }
+
+		Genode::addr_t ds_local_base() const { return reinterpret_cast<Genode::addr_t>(_ds_local_base); }
+		Genode::addr_t ds_size()       const { return Packet_stream_base::_ds_size; }
 };
 
 
@@ -743,9 +894,10 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 		 * \param transport_ds  dataspace used for communication buffer shared between
 		 *                      source and sink
 		 */
-		Packet_stream_sink(Genode::Dataspace_capability transport_ds)
+		Packet_stream_sink(Genode::Dataspace_capability transport_ds,
+		                   Genode::Region_map &rm)
 		:
-			Packet_stream_base(transport_ds, sizeof(Submit_queue), sizeof(Ack_queue)),
+			Packet_stream_base(transport_ds, rm, sizeof(Submit_queue), sizeof(Ack_queue)),
 
 			/* construct packet-descriptor queues */
 			_submit_receiver(construct_at<Submit_queue>(_submit_queue_local_base(),
@@ -753,6 +905,8 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 			_ack_transmitter(construct_at<Ack_queue>(_ack_queue_local_base(),
 			                                         Ack_queue::PRODUCER))
 		{ }
+
+		using Packet_stream_base::packet_valid;
 
 		/**
 		 * Register signal handler to notify that new acknowledgements
@@ -796,16 +950,6 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 		bool packet_avail() { return _submit_receiver.ready_for_rx(); }
 
 		/**
-		 * Check if packet descriptor refers to a range within the bulk buffer
-		 */
-		bool packet_valid(Packet_descriptor packet)
-		{
-			return (packet.offset() >= _bulk_buffer_offset
-				 && packet.offset() < _bulk_buffer_offset + (Genode::off_t)_bulk_buffer_size
-				 && packet.offset() + packet.size() <= _bulk_buffer_offset + _bulk_buffer_size);
-		}
-
-		/**
 		 * Get next packet from source
 		 *
 		 * This method blocks if no packets are available.
@@ -815,6 +959,28 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 			Packet_descriptor packet;
 			_submit_receiver.rx(&packet);
 			return packet;
+		}
+
+		/**
+		 * Return next packet from source, or an invalid packet
+		 *
+		 * This method never blocks.
+		 */
+		Packet_descriptor try_get_packet()
+		{
+			return _submit_receiver.try_rx();
+		}
+
+		/**
+		 * Wake up the packet source if needed
+		 *
+		 * This method assumes that the same signal handler is used for
+		 * the submit receiver and the ack transmitter.
+		 */
+		void wakeup()
+		{
+			/* submit only one signal */
+			_submit_receiver.rx_wakeup() || _ack_transmitter.tx_wakeup();
 		}
 
 		/**
@@ -830,15 +996,11 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 		/**
 		 * Get pointer to the content of the specified packet
 		 *
-		 * \return 0 if the packet is invalid
+		 * \throw Packet_descriptor::Invalid_packet  raise an exception if
+		                                             the packet is invalid
 		 */
-		Content_type *packet_content(Packet_descriptor packet)
-		{
-			if (!packet_valid(packet) || packet.size() < sizeof(Content_type))
-				return 0;
-
-			return (Content_type *)((Genode::addr_t)_ds_local_base + packet.offset());
-		}
+		Content_type *packet_content(Packet_descriptor packet) {
+			return Packet_stream_base::packet_content<Content_type>(packet); }
 
 		/**
 		 * Returns true if no further acknowledgements can be submitted
@@ -861,11 +1023,26 @@ class Genode::Packet_stream_sink : private Packet_stream_base
 			_ack_transmitter.tx(packet);
 		}
 
+		/**
+		 * Acknowledge the specified packet to the client if possible
+		 *
+		 * \return false if the acknowledgement queue is congested
+		 *
+		 * This method never blocks.
+		 */
+		bool try_ack_packet(Packet_descriptor packet)
+		{
+			return _ack_transmitter.try_tx(packet);
+		}
+
 		void debug_print_buffers() {
 			Packet_stream_base::_debug_print_buffers(); }
 
 		Genode::Dataspace_capability dataspace() {
 			return Packet_stream_base::_dataspace(); }
+
+		Genode::addr_t ds_local_base() const { return reinterpret_cast<Genode::addr_t>(_ds_local_base); }
+		Genode::addr_t ds_size()       const { return Packet_stream_base::_ds_size; }
 };
 
 #endif /* _INCLUDE__OS__PACKET_STREAM_H_ */

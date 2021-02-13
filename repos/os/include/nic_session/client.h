@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NIC_SESSION__CLIENT_H_
@@ -38,11 +38,12 @@ class Nic::Session_client : public Genode::Rpc_client<Session>
 		 *                         transmission buffer
 		 */
 		Session_client(Session_capability       session,
-		               Genode::Range_allocator *tx_buffer_alloc)
+		               Genode::Range_allocator &tx_buffer_alloc,
+		               Genode::Region_map      &rm)
 		:
 			Genode::Rpc_client<Session>(session),
-			_tx(call<Rpc_tx_cap>(), tx_buffer_alloc),
-			_rx(call<Rpc_rx_cap>())
+			_tx(call<Rpc_tx_cap>(), rm, tx_buffer_alloc),
+			_rx(call<Rpc_rx_cap>(),rm )
 		{ }
 
 
@@ -52,10 +53,10 @@ class Nic::Session_client : public Genode::Rpc_client<Session>
 
 		Mac_address mac_address() override { return call<Rpc_mac_address>(); }
 
-		Tx *tx_channel() { return &_tx; }
-		Rx *rx_channel() { return &_rx; }
-		Tx::Source *tx() { return _tx.source(); }
-		Rx::Sink   *rx() { return _rx.sink(); }
+		Tx *tx_channel() override { return &_tx; }
+		Rx *rx_channel() override { return &_rx; }
+		Tx::Source *tx() override { return _tx.source(); }
+		Rx::Sink   *rx() override { return _rx.sink(); }
 
 		void link_state_sigh(Genode::Signal_context_capability sigh) override
 		{

@@ -5,18 +5,18 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__RPC_CAP_FACTORY_H_
 #define _CORE__INCLUDE__RPC_CAP_FACTORY_H_
 
 #include <base/allocator.h>
-#include <base/lock.h>
 #include <base/capability.h>
+#include <base/mutex.h>
 
 namespace Genode { class Rpc_cap_factory; }
 
@@ -25,7 +25,7 @@ class Genode::Rpc_cap_factory
 	private:
 
 		static long _unique_id_cnt;
-		static Lock &_lock();
+		static Mutex &_mutex();
 
 	public:
 
@@ -33,7 +33,7 @@ class Genode::Rpc_cap_factory
 
 		Native_capability alloc(Native_capability ep)
 		{
-			Lock::Guard lock_guard(_lock());
+			Mutex::Guard lock_guard(_mutex());
 
 			return Native_capability(ep.dst(), ++_unique_id_cnt);
 		}

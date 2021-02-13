@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PD_SESSION__CONNECTION_H_
@@ -22,31 +22,19 @@ namespace Genode { struct Pd_connection; }
 
 struct Genode::Pd_connection : Connection<Pd_session>, Pd_session_client
 {
-	enum { RAM_QUOTA = 20*1024*sizeof(long) };
+	enum { RAM_QUOTA = 24*1024*sizeof(long)};
+	enum Virt_space { UNCONSTRAIN = 0, CONSTRAIN = 1 };
 
 	/**
 	 * Constructor
 	 *
 	 * \param label  session label
 	 */
-	Pd_connection(Env &env, char const *label = "")
+	Pd_connection(Env &env, char const *label = "", Virt_space space = CONSTRAIN)
 	:
 		Connection<Pd_session>(env, session(env.parent(),
-		                                    "ram_quota=%u, label=\"%s\"",
-		                                    RAM_QUOTA, label)),
-		Pd_session_client(cap())
-	{ }
-
-	/**
-	 * Constructor
-	 *
-	 * \noapi
-	 * \deprecated  Use the constructor with 'Env &' as first
-	 *              argument instead
-	 */
-	Pd_connection(char const *label = "")
-	:
-		Connection<Pd_session>(session("ram_quota=%u, label=\"%s\"", RAM_QUOTA, label)),
+		                                    "ram_quota=%u, cap_quota=%u, label=\"%s\", virt_space=%u",
+		                                    RAM_QUOTA, CAP_QUOTA, label, space)),
 		Pd_session_client(cap())
 	{ }
 };

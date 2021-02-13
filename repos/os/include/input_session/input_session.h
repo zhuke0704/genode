@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__INPUT_SESSION__INPUT_SESSION_H_
@@ -24,7 +24,17 @@ namespace Input { struct Session; }
 
 struct Input::Session : Genode::Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Input"; }
+
+	/*
+	 * An input session consumes a dataspace capability for the server's
+	 * session-object allocation, a dataspace capability for the input
+	 * buffer, and its session capability.
+	 */
+	enum { CAP_QUOTA = 3 };
 
 	virtual ~Session() { }
 
@@ -39,14 +49,6 @@ struct Input::Session : Genode::Session
 	 * \return  true if new events are available
 	 */
 	virtual bool pending() const = 0;
-
-	/**
-	 * Request input state
-	 *
-	 * \noapi
-	 * \deprecated  use 'pending' instead
-	 */
-	bool is_pending() const { return pending(); }
 
 	/**
 	 * Flush pending events to event buffer

@@ -5,20 +5,21 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/sleep.h>
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
+#include <base/internal/capability_space_tpl.h>
 
-/* Core includes */
+/* core includes */
 #include <ipc_pager.h>
 #include <pager.h>
 
@@ -39,9 +40,11 @@ using namespace Pistachio;
  *************/
 
 Mapping::Mapping(addr_t dst_addr, addr_t src_addr,
-                 Cache_attribute, bool io_mem, unsigned l2size,
-                 bool rw, bool grant)
+                 Cache_attribute, bool, unsigned l2size,
+                 bool rw, bool)
 {
+	bool const grant = false;
+
 	L4_Fpage_t fpage = L4_FpageLog2(src_addr, l2size);
 
 	fpage += rw ? L4_FullyAccessible : L4_Readable;
@@ -71,11 +74,10 @@ void Ipc_pager::wait_for_fault()
 		result = L4_Wait(&sender);
 		failed = L4_IpcFailed(result);
 		if (failed)
-			PERR("Page fault IPC error. (continuable)");
+			error("page fault IPC error (continuable)");
 
 		if (L4_UntypedWords(result) != 2) {
-			PERR("Malformed page-fault ipc. (sender = 0x%08lx)",
-			 sender.raw);
+			error("malformed page-fault ipc (sender=", sender, ")");
 			failed = true;
 		}
 
@@ -109,13 +111,13 @@ void Ipc_pager::reply_and_wait_for_fault()
 	L4_MsgTag_t result = L4_ReplyWait(_last, &_last);
 
 	if (L4_IpcFailed(result)) {
-		PERR("Page fault IPC error. (continuable)");
+		error("page fault IPC error (continuable)");
 		wait_for_fault();
 		return;
 	}
 
 	if (L4_UntypedWords(result) != 2) {
-		PERR("Malformed page-fault ipc. (sender = 0x%08lx)", _last.raw);
+		error("malformed page-fault ipc. (sender=", _last, ")");
 		wait_for_fault();
 		return;
 	}
@@ -142,5 +144,5 @@ void Ipc_pager::acknowledge_wakeup()
 
 Untyped_capability Pager_entrypoint::_pager_object_cap(unsigned long badge)
 {
-	return Untyped_capability(native_thread().l4id, badge);
+	return Capability_space::import(native_thread().l4id, Rpc_obj_key(badge));
 }

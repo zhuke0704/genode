@@ -7,22 +7,20 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/lock.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/sleep.h>
 #include <base/thread.h>
 #include <timer_session/connection.h>
 
 /* Linux emulation environment includes */
-#include <lx_kit/internal/debug.h>
 #include <lx_kit/scheduler.h>
 
 #include <lx_kit/timer.h>
@@ -40,7 +38,6 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 		bool verbose = false;
 
 		Lx_kit::List<Lx::Task> _present_list;
-		Genode::Lock           _present_list_mutex;
 
 		Lx::Task *_current = nullptr; /* currently scheduled task */
 
@@ -68,23 +65,24 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 			return _ansi_esc_black();
 		}
 
-		struct Logger : Genode::Thread_deprecated<0x4000>
+		struct Logger : Genode::Thread
 		{
-			Timer::Connection  _timer;
-			Lx::Scheduler     &_scheduler;
-			unsigned     const _interval;
+			Timer::Connection       _timer;
+			Lx::Scheduler          &_scheduler;
+			Genode::uint64_t const  _interval;
 
-			Logger(Lx::Scheduler &scheduler, unsigned interval_seconds)
+			Logger(Genode::Env &env, Lx::Scheduler &scheduler,
+			       Genode::uint64_t interval_seconds)
 			:
-				Genode::Thread_deprecated<0x4000>("logger"),
-				_scheduler(scheduler), _interval(interval_seconds)
+				Genode::Thread(env, "logger", 0x4000),
+				_timer(env), _scheduler(scheduler),
+				_interval(interval_seconds)
 			{
 				start();
 			}
 
 			void entry()
 			{
-				PWRN("Scheduler::Logger is up");
 				_timer.msleep(1000 * _interval);
 				while (true) {
 					_scheduler.log_state("LOGGER");
@@ -93,12 +91,13 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 			}
 		};
 
+		Genode::Constructible<Logger> _logger;
+
 	public:
 
-		Scheduler()
+		Scheduler(Genode::Env &env)
 		{
-			if (verbose)
-				new (Genode::env()->heap()) Logger(*this, 10);
+			if (verbose) { _logger.construct(env, *this, 10); }
 		}
 
 		/*****************************
@@ -108,7 +107,7 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 		Lx::Task *current() override
 		{
 			if (!_current) {
-				PERR("BUG: _current is zero!");
+				Genode::error("BUG: _current is zero!");
 				Genode::sleep_forever();
 			}
 
@@ -168,7 +167,7 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 			}
 
 			if (!at_least_one) {
-				PWRN("schedule() called without runnable tasks");
+				Genode::warning("schedule() called without runnable tasks");
 				log_state("SCHEDULE");
 			}
 
@@ -181,9 +180,11 @@ class Lx_kit::Scheduler : public Lx::Scheduler
 			unsigned  i;
 			Lx::Task *t;
 			for (i = 0, t = _present_list.first(); t; t = t->next(), ++i) {
-				Genode::printf("%s [%u] prio: %u state: %s%u%s %s\n",
-				               prefix, i, t->priority(), _state_color(t->state()),
-				               t->state(), _ansi_esc_reset(), t->name());
+				Genode::log(prefix, " [", i, "] "
+				            "prio: ", (int)t->priority(), " "
+				            "state: ", _state_color(t->state()), (int)t->state(),
+				                       _ansi_esc_reset(), " ",
+				            t->name());
 			}
 		}
 };
@@ -202,7 +203,8 @@ Lx::Task::Task(void (*func)(void*), void *arg, char const *name,
 	scheduler.add(this);
 
 	if (verbose)
-		PDBG("name: '%s' func: %p arg: %p prio: %u t: %p", name, func, arg, priority, this);
+		Genode::log("name: '", name, "' " "func: ", func, " "
+		            "arg: ",   arg, " prio: ", (int)priority, " t: ", this);
 }
 
 
@@ -219,8 +221,8 @@ Lx::Task::~Task()
  ** Lx::Scheduler implementation **
  **********************************/
 
-Lx::Scheduler &Lx::scheduler()
+Lx::Scheduler &Lx::scheduler(Genode::Env *env)
 {
-	static Lx_kit::Scheduler inst;
+	static Lx_kit::Scheduler inst { *env };
 	return inst;
 }

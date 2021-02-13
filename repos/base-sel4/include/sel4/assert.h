@@ -5,21 +5,21 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SEL4__ASSERT_H_
 #define _INCLUDE__SEL4__ASSERT_H_
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 #define seL4_Assert(v) do { \
 	if (!(v)) { \
-		PDBG("assertion failed: %s", #v); \
+		Genode::error("assertion failed: ", #v); \
 		for (;;); \
 	} } while (0);
 

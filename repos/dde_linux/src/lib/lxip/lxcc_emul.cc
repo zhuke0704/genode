@@ -1,14 +1,16 @@
-/**
+/*
  * \brief  Linux emulation code
  * \author Sebastian Sumpf
+ * \author Emery Hemingway
+ * \author Christian Helmuth
  * \date   2013-08-28
  */
 
 /*
- * Copyright (C) 2013-2016 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Genode includes */
@@ -18,13 +20,16 @@
 #include <base/snprintf.h>
 #include <dataspace/client.h>
 #include <region_map/client.h>
-#include <timer_session/connection.h>
 #include <trace/timestamp.h>
+#include <timer_session/connection.h>
 
 /* local includes */
 #include <lx_emul.h>
 #include <lx.h>
 
+
+/* Lx_kit */
+#include <lx_kit/env.h>
 
 /*********************************
  ** Lx::Backend_alloc interface **
@@ -32,13 +37,32 @@
 
 #include <lx_kit/backend_alloc.h>
 
+struct Memory_object_base;
+
+static Lx_kit::Env *lx_env;
+
+static Genode::Object_pool<Memory_object_base> *memory_pool_ptr;
+
+
+void Lx::lxcc_emul_init(Lx_kit::Env &env)
+{
+	static Genode::Object_pool<Memory_object_base> memory_pool;
+
+	memory_pool_ptr = &memory_pool;
+
+	lx_env = &env;
+
+	LX_MUTEX_INIT(dst_gc_mutex);
+	LX_MUTEX_INIT(proto_list_mutex);
+}
+
 
 struct Memory_object_base : Genode::Object_pool<Memory_object_base>::Entry
 {
 	Memory_object_base(Genode::Ram_dataspace_capability cap)
 	: Genode::Object_pool<Memory_object_base>::Entry(cap) {}
 
-	void free() { Genode::env()->ram_session()->free(ram_cap()); }
+	void free() { lx_env->ram().free(ram_cap()); }
 
 	Genode::Ram_dataspace_capability ram_cap()
 	{
@@ -48,18 +72,15 @@ struct Memory_object_base : Genode::Object_pool<Memory_object_base>::Entry
 };
 
 
-static Genode::Object_pool<Memory_object_base> memory_pool;
-
-
 Genode::Ram_dataspace_capability
 Lx::backend_alloc(Genode::addr_t size, Genode::Cache_attribute cached)
 {
 	using namespace Genode;
 
-	Genode::Ram_dataspace_capability cap = env()->ram_session()->alloc(size);
-	Memory_object_base *o = new (env()->heap()) Memory_object_base(cap);
+	Genode::Ram_dataspace_capability cap = lx_env->ram().alloc(size);
+	Memory_object_base *o = new (lx_env->heap()) Memory_object_base(cap);
 
-	memory_pool.insert(o);
+	memory_pool_ptr->insert(o);
 	return cap;
 }
 
@@ -69,15 +90,15 @@ void Lx::backend_free(Genode::Ram_dataspace_capability cap)
 	using namespace Genode;
 
 	Memory_object_base *object;
-	memory_pool.apply(cap, [&] (Memory_object_base *o) {
+	memory_pool_ptr->apply(cap, [&] (Memory_object_base *o) {
 		if (!o) return;
 
 		o->free();
-		memory_pool.remove(o);
+		memory_pool_ptr->remove(o);
 
 		object = o; /* save for destroy */
 	});
-	destroy(env()->heap(), object);
+	destroy(lx_env->heap(), object);
 }
 
 
@@ -102,7 +123,8 @@ void *alloc_large_system_hash(const char *tablename,
 	unsigned long nlog2 = ilog2(elements);
 	nlog2 <<= (1 << nlog2) < elements ? 1 : 0;
 
-	void *table = Genode::env()->heap()->alloc(elements * bucketsize);
+	void *table;
+	lx_env->heap().alloc(elements * bucketsize, &table);
 
 	if (_hash_mask)
 		*_hash_mask = (1 << nlog2) - 1;
@@ -163,6 +185,13 @@ char *strcpy(char *to, const char *from)
 	char *save = to;
 	for (; (*to = *from); ++from, ++to);
  	return(save);
+}
+
+
+char *strncpy(char *dst, const char* src, size_t n)
+{
+	Genode::copy_cstring(dst, src, n);
+	return dst;
 }
 
 
@@ -237,13 +266,37 @@ int snprintf(char *str, size_t size, const char *format, ...)
 size_t strlcpy(char *dest, const char *src, size_t size)
 {
 	size_t ret = strlen(src);
-	
+
 	if (size) {
 		size_t len = (ret >= size) ? size - 1 : ret;
 		Genode::memcpy(dest, src, len);
 		dest[len] = '\0';
 	}
 	return ret;
+}
+
+
+/* from linux/lib/string.c */
+char *strstr(char const *s1, char const *s2)
+{
+	size_t l1, l2;
+
+	l2 = strlen(s2);
+	if (!l2)
+		return (char *)s1;
+	l1 = strlen(s1);
+	while (l1 >= l2) {
+		l1--;
+		if (!memcmp(s1, s2, l2))
+			return (char *)s1;
+		s1++;
+	}
+	return NULL;
+}
+
+void *memset(void *s, int c, size_t n)
+{
+	return Genode::memset(s, c, n);
 }
 
 
@@ -256,76 +309,6 @@ void *memcpy(void *d, const void *s, size_t n)
 void *memmove(void *d, const void *s, size_t n)
 {
 	return Genode::memmove(d, s, n);
-}
-
-
-/*******************
- ** linux/sched.h **
- *******************/
-
-static Genode::Signal_receiver *_sig_rec;
-
-
-void Lx::event_init(Genode::Signal_receiver &sig_rec)
-{
-	_sig_rec = &sig_rec;
-}
-
-
-struct Timeout : Genode::Signal_dispatcher<Timeout>
-{
-	void handle(unsigned) { update_jiffies(); }
-
-	Timeout(Timer::Session_client &timer, signed long msec)
-	: Signal_dispatcher<Timeout>(*_sig_rec, *this, &Timeout::handle)
-	{
-		if (msec > 0) {
-			timer.sigh(*this);
-			timer.trigger_once(msec*1000);
-		}
-	}
-};
-
-
-static void __wait_event(signed long timeout)
-{
-	static Timer::Connection timer;
-	Timeout to(timer, timeout);
-
-	/* dispatch signal */
-	Genode::Signal s = _sig_rec->wait_for_signal();
-	static_cast<Genode::Signal_dispatcher_base *>(s.context())->dispatch(s.num());
-}
-
-
-long schedule_timeout_uninterruptible(signed long timeout)
-{
-	return schedule_timeout(timeout);
-}
-
-
-signed long schedule_timeout(signed long timeout)
-{
-	long start = jiffies;
-	__wait_event(timeout);
-	timeout -= jiffies - start;
-	return timeout < 0 ? 0 : timeout;
-}
-
-
-void poll_wait(struct file * filp, wait_queue_head_t * wait_address, poll_table *p)
-{
-	__wait_event(0);
-}
-
-
-/******************
- ** linux/time.h **
- ******************/
-
-unsigned long get_seconds(void)
-{
-	return jiffies / HZ;
 }
 
 
@@ -387,15 +370,19 @@ class Avl_page : public Genode::Avl_node<Avl_page>
 };
 
 
-static Genode::Avl_tree<Avl_page> tree;
+static Genode::Avl_tree<Avl_page> & tree()
+{
+	static Genode::Avl_tree<Avl_page> _tree;
+	return _tree;
+}
 
 
 struct page *alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
 	Avl_page *p;
 	try {
-		p = (Avl_page *)new (Genode::env()->heap()) Avl_page(PAGE_SIZE << order);
-		tree.insert(p);
+		p = (Avl_page *)new (lx_env->heap()) Avl_page(PAGE_SIZE << order);
+		tree().insert(p);
 	} catch (...) { return 0; }
 
 	return p->page();
@@ -414,10 +401,10 @@ void *__alloc_page_frag(struct page_frag_cache *nc,
 
 void __free_page_frag(void *addr)
 {
-	Avl_page *p = tree.first()->find_by_address((Genode::addr_t)addr);
+	Avl_page *p = tree().first()->find_by_address((Genode::addr_t)addr);
 
-	tree.remove(p);
-	destroy(Genode::env()->heap(), p);
+	tree().remove(p);
+	destroy(lx_env->heap(), p);
 }
 
 
@@ -427,7 +414,7 @@ void __free_page_frag(void *addr)
 
 struct page *virt_to_head_page(const void *x)
 {
-	Avl_page *p = tree.first()->find_by_address((Genode::addr_t)x);
+	Avl_page *p = tree().first()->find_by_address((Genode::addr_t)x);
 	lx_log(DEBUG_SLAB, "virt_to_head_page: %p page %p\n", x,p ? p->page() : 0);
 	
 	return p ? p->page() : 0;
@@ -440,10 +427,10 @@ void put_page(struct page *page)
 		return;
 
 	lx_log(DEBUG_SLAB, "put_page: %p", page);
-	Avl_page *p = tree.first()->find_by_address((Genode::addr_t)page->addr);
+	Avl_page *p = tree().first()->find_by_address((Genode::addr_t)page->addr);
 
-	tree.remove(p);
-	destroy(Genode::env()->heap(), p);
+	tree().remove(p);
+	destroy(lx_env->heap(), p);
 }
 
 
@@ -480,60 +467,61 @@ extern "C" void lx_trace_event(char const *fmt, ...)
  ** linux/uio.h **
  *****************/
 
-size_t copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+static inline size_t _copy_iter(void *addr, size_t bytes,
+                                struct iov_iter *i, bool to_iter)
 {
-	if (bytes > i->count)
-		bytes = i->count;
+	if (addr == nullptr) { return 0; }
 
-	if (bytes == 0)
+	if (i->count == 0 ||
+	    i->iov == nullptr ||
+	    i->iov->iov_len == 0) {
 		return 0;
-
-	char             *kdata = reinterpret_cast<char*>(addr);
-	struct iovec const *iov = i->iov;
-
-	size_t len = bytes;
-	while (len > 0) {
-		if (iov->iov_len) {
-			size_t copy_len = (size_t)len < iov->iov_len ? len : iov->iov_len;
-			Genode::memcpy(kdata, iov->iov_base, copy_len);
-
-			len -= copy_len;
-			kdata += copy_len;
-			i->count -= copy_len; /* XXX the vanilla macro does that */
-		}
-		iov++;
 	}
 
-	return bytes;
+	if (i->nr_segs > 1) {
+		Genode::error(__func__, ": too many segments ", i->nr_segs);
+		return 0;
+	}
+
+	/* make sure the whole iter fits as there is only 1 iovec */
+	if (i->iov->iov_len < i->count) {
+		Genode::error(__func__, ": "
+		              "iov->iov_len: ", i->iov->iov_len, " < "
+		              "i->count: ", i->count);
+		return 0;
+	}
+
+	struct iovec const * const iov = i->iov;
+	size_t const           iov_len = iov->iov_len;
+	void * const              base = (iov->iov_base + i->iov_offset);
+
+	if (bytes > i->count) { bytes = i->count; }
+
+	size_t const         len = (size_t)(bytes < iov_len ? bytes : iov_len);
+	void * const         dst = to_iter ? base : addr;
+	void const * const   src = to_iter ? addr : base;
+
+	/* actual function body */
+	{
+		Genode::memcpy(dst, src, len);
+	}
+
+	i->iov_offset += len;
+	i->count      -= len;
+
+	return len;
+}
+
+
+size_t copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
+{
+	return _copy_iter(addr, bytes, i, false);
 }
 
 
 size_t copy_to_iter(void *addr, size_t bytes, struct iov_iter *i)
 {
-	if (bytes > i->count)
-		bytes = i->count;
-
-	if (bytes == 0)
-		return 0;
-
-	char             *kdata = reinterpret_cast<char*>(addr);
-	struct iovec const *iov = i->iov;
-
-	size_t len = bytes;
-	while (len > 0) {
-		if (iov->iov_len) {
-			size_t copy_len = (size_t)len < iov->iov_len ? len : iov->iov_len;
-			Genode::memcpy(iov->iov_base, kdata, copy_len);
-
-			len   -= copy_len;
-			kdata += copy_len;
-
-			i->count -= copy_len; /* XXX the vanilla macro does that */
-		}
-		iov++;
-	}
-
-	return bytes;
+	return _copy_iter(addr, bytes, i, true);
 }
 
 
@@ -551,83 +539,69 @@ size_t copy_page_from_iter(struct page *page, size_t offset, size_t bytes,
 }
 
 
-size_t csum_and_copy_from_iter(void *addr, size_t bytes, __wsum *csum, struct iov_iter *i)
+static size_t _csum_and_copy_iter(void *addr, size_t bytes, __wsum *csum,
+                                  struct iov_iter *i, bool to_iter)
 {
-	if (bytes > i->count)
-		bytes = i->count;
+	if (addr == nullptr) { return 0; }
 
-	if (bytes == 0)
+	if (i->count == 0 ||
+	    i->iov == nullptr ||
+	    i->iov->iov_len == 0) {
 		return 0;
-
-	char             *kdata = reinterpret_cast<char*>(addr);
-	struct iovec const *iov = i->iov;
-
-	__wsum sum = *csum;
-	size_t len = bytes;
-	while (len > 0) {
-		if (iov->iov_len) {
-			size_t copy_len = (size_t)len < iov->iov_len ? len : iov->iov_len;
-			int err = 0;
-			__wsum next = csum_and_copy_from_user(iov->iov_base, kdata, copy_len, 0, &err);
-
-			if (err) {
-				PERR("%s: err: %d - sleeping", __func__, err);
-				Genode::sleep_forever();
-			}
-
-			sum = csum_block_add(sum, next, bytes-len);
-
-			len   -= copy_len;
-			kdata += copy_len;
-
-			i->count -= copy_len; /* XXX the vanilla macro does that */
-		}
-		iov++;
 	}
 
-	*csum = sum;
+	if (i->nr_segs > 1) {
+		Genode::error(__func__, ": too many segments ", i->nr_segs);
+		return 0;
+	}
 
-	return bytes;
+	/* make sure the whole iter fits as there is only 1 iovec */
+	if (i->iov->iov_len < i->count) {
+		Genode::error(__func__, ": "
+		              "iov->iov_len: ", i->iov->iov_len, " < "
+		              "i->count: ", i->count);
+		return 0;
+	}
+
+	struct iovec const * const iov = i->iov;
+	size_t const           iov_len = iov->iov_len;
+	void * const              base = (iov->iov_base + i->iov_offset);
+
+	if (bytes > i->count) { bytes = i->count; }
+
+	size_t const         len = (size_t)(bytes < iov_len ? bytes : iov_len);
+	void * const         dst = to_iter ? base : addr;
+	void const * const   src = to_iter ? addr : base;
+
+	/* actual function body */
+	{
+		int err = 0;
+		__wsum next = csum_and_copy_from_user(src, dst, len, 0, &err);
+
+		if (err) {
+			Genode::error(__func__, ": err: ", err, " - sleeping");
+			Genode::sleep_forever();
+		}
+
+		*csum = csum_block_add(*csum, next, 0);
+	}
+
+	i->iov_offset += len;
+	i->count      -= len;
+
+	return len;
+}
+
+
+size_t csum_and_copy_from_iter(void *addr, size_t bytes, __wsum *csum, struct iov_iter *i)
+{
+	return _csum_and_copy_iter(addr, bytes, csum, i, false);
 }
 
 
 size_t csum_and_copy_to_iter(void *addr, size_t bytes, __wsum *csum, struct iov_iter *i)
 {
-	if (bytes > i->count)
-		bytes = i->count;
-
-	if (bytes == 0)
-		return 0;
-
-	char             *kdata = reinterpret_cast<char*>(addr);
-	struct iovec const *iov = i->iov;
-
-	__wsum sum = *csum;
-	size_t len = bytes;
-	while (len > 0) {
-		if (iov->iov_len) {
-			size_t copy_len = (size_t)len < iov->iov_len ? len : iov->iov_len;
-			int err = 0;
-			__wsum next = csum_and_copy_to_user(kdata, iov->iov_base, copy_len, 0, &err);
-
-			if (err) {
-				PERR("%s: err: %d - sleeping", __func__, err);
-				Genode::sleep_forever();
-			}
-
-			sum = csum_block_add(sum, next, bytes-len);
-
-			len   -= copy_len;
-			kdata += copy_len;
-
-			i->count -= copy_len; /* XXX the vanilla macro does that */
-		}
-		iov++;
-	}
-
-	*csum = sum;
-
-	return bytes;
+	return _csum_and_copy_iter(addr, bytes, csum, i, true);
 }
 
 
@@ -636,3 +610,36 @@ size_t csum_and_copy_to_iter(void *addr, size_t bytes, __wsum *csum, struct iov_
  ******************/
 
 void __wake_up(wait_queue_head_t *q, bool all) { }
+
+
+/***********************
+ ** linux/workqueue.h **
+ ***********************/
+
+static void execute_delayed_work(unsigned long dwork)
+{
+	delayed_work *d = (delayed_work *)dwork;
+	d->work.func(&d->work);
+}
+
+
+bool mod_delayed_work(struct workqueue_struct *wq, struct delayed_work *dwork,
+                      unsigned long delay)
+{
+	/* treat delayed work without delay like any other work */
+	if (delay == 0) {
+		execute_delayed_work((unsigned long)dwork);
+	} else {
+		if (!dwork->timer.function) {
+			setup_timer(&dwork->timer, execute_delayed_work,
+			            (unsigned long)dwork);
+		}
+		mod_timer(&dwork->timer, jiffies + delay);
+	}
+	return true;
+}
+
+int schedule_delayed_work(struct delayed_work *dwork, unsigned long delay)
+{
+	return mod_delayed_work(0, dwork, delay);
+}

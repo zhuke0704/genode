@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef LAUNCH_ENTRY_H
@@ -28,9 +28,10 @@ class Launch_entry : public QWidget
 
 		Ui::Launch_entryClass ui;
 
-		const char *_filename;
-		Genode::Dataspace_capability _config_ds;
-		Launchpad *_launchpad;
+		Launchpad_child::Name const  &_prg_name;
+		Launchpad                    *_launchpad;
+		Genode::Dataspace_capability  _config_ds;
+		Launchpad::Cap_quota          _caps;
 
 	private slots:
 
@@ -38,11 +39,12 @@ class Launch_entry : public QWidget
 
 	public:
 
-		Launch_entry(const char *filename,
+		Launch_entry(Launchpad_child::Name const &prg_name,
+		             Launchpad::Cap_quota caps,
 		             unsigned long default_quota,
 		             unsigned long max_quota,
-		             Genode::Dataspace_capability config_ds,
 		             Launchpad *launchpad,
+		             Genode::Dataspace_capability config_ds,
 		             QWidget *parent = 0);
 };
 

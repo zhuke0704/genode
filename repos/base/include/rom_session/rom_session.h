@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2006-2014 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__ROM_SESSION__ROM_SESSION_H_
@@ -25,6 +25,7 @@ namespace Genode {
 
 	struct Rom_dataspace;
 	struct Rom_session;
+	struct Rom_session_client;
 
 	typedef Capability<Rom_dataspace> Rom_dataspace_capability;
 }
@@ -35,7 +36,19 @@ struct Genode::Rom_dataspace : Dataspace { };
 
 struct Genode::Rom_session : Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "ROM"; }
+
+	/*
+	 * A ROM session consumes a dataspace capability for the session-object
+	 * allocation, a dataspace capability for the ROM dataspace, and its
+	 * session capability.
+	 */
+	enum { CAP_QUOTA = 3 };
+
+	typedef Rom_session_client Client;
 
 	virtual ~Rom_session() { }
 

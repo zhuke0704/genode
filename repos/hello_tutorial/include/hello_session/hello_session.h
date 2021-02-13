@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2016 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__HELLO_SESSION__HELLO_SESSION_H_
@@ -23,6 +23,8 @@ namespace Hello { struct Session; }
 struct Hello::Session : Genode::Session
 {
 	static const char *service_name() { return "Hello"; }
+
+	enum { CAP_QUOTA = 2 };
 
 	virtual void say_hello() = 0;
 	virtual int add(int a, int b) = 0;

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _WIDGETS_H_
@@ -27,6 +27,12 @@ namespace Scout {
 class Scout::Docview : public Parent_element
 {
 	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Docview(Docview const &);
+		Docview &operator = (Docview const &);
 
 		Element *_bg;
 		Element *_cont;
@@ -72,10 +78,10 @@ class Scout::Docview : public Parent_element
 		/**
 		 * Element interface
 		 */
-		void     format_fixed_width(int);
-		void     draw(Canvas_base &, Point);
-		Element *find(Point);
-		void     geometry(Rect);
+		void     format_fixed_width(int)    override;
+		void     draw(Canvas_base &, Point) override;
+		Element *find(Point)                override;
+		void     geometry(Rect)             override;
 };
 
 
@@ -90,9 +96,9 @@ struct Scout::Horizontal_shadow : Element
 	/**
 	 * Element interface
 	 */
-	void draw(Canvas_base &, Point);
-	Element *find(Point) { return 0; }
-	void format_fixed_width(int w) { _min_size = Area(w, _min_size.h()); }
+	void draw(Canvas_base &, Point) override;
+	Element *find(Point) override { return 0; }
+	void format_fixed_width(int w) override { _min_size = Area(w, _min_size.h()); }
 };
 
 
@@ -117,10 +123,10 @@ class Scout::Icon : public Generic_icon
 {
 	private:
 
-		PT            _pixel  [H][W];   /* icon pixels in PT pixel format */
-		unsigned char _alpha  [H][W];   /* alpha channel of icon pixels   */
-		unsigned char _shadow [H][W];   /* shadow calculation buffer      */
-		int           _icon_alpha;      /* alpha value of whole icon      */
+		PT            _pixel  [H][W];     /* icon pixels in PT pixel format */
+		unsigned char _alpha  [H][W];     /* alpha channel of icon pixels   */
+		unsigned char _shadow [H][W];     /* shadow calculation buffer      */
+		int           _icon_alpha = 255;  /* alpha value of whole icon      */
 
 	public:
 
@@ -152,8 +158,9 @@ class Scout::Icon : public Generic_icon
 		/**
 		 * Generic_icon interface
 		 */
-		int alpha() { return _icon_alpha; }
-		virtual void alpha(int alpha)
+		int alpha() override { return _icon_alpha; }
+
+		void alpha(int alpha) override
 		{
 			_icon_alpha = alpha;
 			refresh();
@@ -162,8 +169,8 @@ class Scout::Icon : public Generic_icon
 		/**
 		 * Element interface
 		 */
-		void draw(Canvas_base &, Point);
-		Element *find(Point);
+		void draw(Canvas_base &, Point) override;
+		Element *find(Point) override;
 };
 
 

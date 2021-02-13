@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__POLYGON_GFX__SHADED_POLYGON_PAINTER_H_
@@ -39,7 +39,7 @@ class Polygon::Shaded_painter : public Polygon::Painter_base
 		 */
 		struct Point : Point_base
 		{
-			Color color;
+			Color color { };
 
 			Point() { }
 			Point(int x, int y, Color color) : Point_base(x, y), color(color) { }

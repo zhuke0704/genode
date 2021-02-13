@@ -5,16 +5,14 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/console.h>
-#include <base/lock.h>
+#include <base/snprintf.h>
 #include <base/env.h>
 
 extern "C" {
@@ -28,7 +26,9 @@ extern "C" {
 		va_list list;
 		va_start(list, format);
 
-		Genode::vprintf(format, list);
+		char buf[128] { };
+		Genode::String_console(buf, sizeof(buf)).vprintf(format, list);
+		Genode::log(Genode::Cstring(buf));
 
 		va_end(list);
 	}

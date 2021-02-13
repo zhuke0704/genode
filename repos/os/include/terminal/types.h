@@ -5,17 +5,21 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _TERMINAL__TYPES_H_
 #define _TERMINAL__TYPES_H_
 
-namespace Terminal {
+/* Genode includes */
+#include <util/utf8.h>
+#include <util/interface.h>
 
+namespace Terminal {
+	using Genode::Codepoint;
 	struct Character;
 	struct Boundary;
 	struct Offset;
@@ -31,14 +35,13 @@ namespace Terminal {
  */
 struct Terminal::Character
 {
-	unsigned char c;
+	Genode::uint16_t value;
 
-	Character() : c(0) { }
-	Character(unsigned char c) : c(c) { }
+	Character() : value(0) { }
+	Character(Codepoint cp)
+	: value(cp.value < 1<<16 ? cp.value : 0) { }
 
-	bool valid() const { return c != 0; }
-
-	unsigned char ascii() const { return c; }
+	bool valid() const { return value != 0; }
 };
 
 
@@ -73,6 +76,23 @@ struct Terminal::Position
 	bool operator != (Position const &pos) const {
 		return (pos.x != x) || (pos.y != y); }
 
+	bool operator >= (Position const &other) const
+	{
+		if (y > other.y)
+			return true;
+
+		if (y == other.y && x >= other.x)
+			return true;
+
+		return false;
+	}
+
+	bool in_range(Position start, Position end) const
+	{
+		return (end >= start) ? *this >= start &&   end >= *this
+		                      : *this >= end   && start >= *this;
+	}
+
 	/**
 	 * Return true if position lies within the specified boundaries
 	 */
@@ -81,10 +101,13 @@ struct Terminal::Position
 		return x >= 0 && x < boundary.width
 		    && y >= 0 && y < boundary.height;
 	}
+
+	void print(Genode::Output &out) const {
+		Genode::print(out, y, ",", x); }
 };
 
 
-struct Terminal::Character_array
+struct Terminal::Character_array : Genode::Interface
 {
 	/**
 	 * Assign character to specified position

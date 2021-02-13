@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include "elements.h"
@@ -36,15 +36,21 @@ class Linkicon_event_handler : public Event_handler
 {
 	private:
 
-		Anchor *_dst;
-		Navbar *_navbar;
+		/*
+		 * Noncopyable
+		 */
+		Linkicon_event_handler(Linkicon_event_handler const &);
+		Linkicon_event_handler &operator = (Linkicon_event_handler const &);
+
+		Anchor *_dst    = nullptr;
+		Navbar *_navbar = nullptr;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Linkicon_event_handler() { _dst = 0; _navbar = 0; }
+		Linkicon_event_handler() { }
 
 		/**
 		 * Assign link destination
@@ -58,7 +64,7 @@ class Linkicon_event_handler : public Event_handler
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &ev)
+		void handle_event(Event const &ev) override
 		{
 			if (ev.type != Event::PRESS || !_navbar) return;
 
@@ -82,9 +88,6 @@ static Linkicon_event_handler prev_ev_handler;
 
 Navbar::Navbar()
 {
-	_next_title  = _prev_title  = 0;
-	_next_anchor = _prev_anchor = 0;
-
 	_flags.bottom = 1;
 
 	next_ev_handler.destination(0, 0);

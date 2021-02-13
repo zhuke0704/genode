@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PD_SESSION__CLIENT_H_
 #define _INCLUDE__PD_SESSION__CLIENT_H_
 
 #include <pd_session/capability.h>
-#include <base/rpc_client.h>
+#include <dataspace/client.h>
 
 namespace Genode { struct Pd_session_client; }
 
@@ -30,6 +30,8 @@ struct Genode::Pd_session_client : Rpc_client<Pd_session>
 
 	bool assign_pci(addr_t pci_config_memory_address, uint16_t bdf) override {
 		return call<Rpc_assign_pci>(pci_config_memory_address, bdf); }
+
+	void map(addr_t virt, addr_t size) override { call<Rpc_map>(virt, size); }
 
 	Signal_source_capability alloc_signal_source() override {
 		return call<Rpc_alloc_signal_source>(); }
@@ -62,7 +64,38 @@ struct Genode::Pd_session_client : Rpc_client<Pd_session>
 	Capability<Region_map> linker_area() override {
 		return call<Rpc_linker_area>(); }
 
+	void ref_account(Capability<Pd_session> pd) override {
+		call<Rpc_ref_account>(pd); }
+
+	void transfer_quota(Capability<Pd_session> pd, Cap_quota amount) override {
+		call<Rpc_transfer_cap_quota>(pd, amount); }
+
+	Cap_quota cap_quota() const override { return call<Rpc_cap_quota>(); }
+	Cap_quota used_caps() const override { return call<Rpc_used_caps>(); }
+
+	Ram_dataspace_capability alloc(size_t size,
+	                               Cache_attribute cached = CACHED) override
+	{
+		return call<Rpc_alloc>(size, cached);
+	}
+
+	void free(Ram_dataspace_capability ds) override { call<Rpc_free>(ds); }
+
+	size_t dataspace_size(Ram_dataspace_capability ds) const override
+	{
+		return ds.valid() ? Dataspace_client(ds).size() : 0;
+	}
+
+	void transfer_quota(Pd_session_capability pd_session, Ram_quota amount) override {
+		call<Rpc_transfer_ram_quota>(pd_session, amount); }
+
+	Ram_quota ram_quota() const override { return call<Rpc_ram_quota>(); }
+	Ram_quota used_ram()  const override { return call<Rpc_used_ram>(); }
+
 	Capability<Native_pd> native_pd() override { return call<Rpc_native_pd>(); }
+
+	Managing_system_state managing_system(Managing_system_state const & state) override {
+		return call<Rpc_managing_system>(state); }
 };
 
 #endif /* _INCLUDE__PD_SESSION__CLIENT_H_ */

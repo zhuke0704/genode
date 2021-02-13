@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -17,6 +17,7 @@
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
+#include <base/internal/globals.h>
 
 /* Pistachio includes */
 namespace Pistachio {
@@ -52,5 +53,5 @@ void Genode::Thread::_init_platform_thread(size_t, Type type)
 {
 	if (type == NORMAL) { return; }
 	native_thread().l4id   = main_thread_tid;
-	_thread_cap = env()->parent()->main_thread_cap();
+	_thread_cap = main_thread_cap();
 }

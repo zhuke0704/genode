@@ -5,13 +5,13 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/allocator.h>
 #include <base/sleep.h>
 
@@ -30,10 +30,10 @@ static void *try_alloc(Allocator *alloc, size_t size)
 }
 
 
-void *operator new    (size_t s, Allocator *a) { return try_alloc(a, s); }
-void *operator new [] (size_t s, Allocator *a) { return try_alloc(a, s); }
-void *operator new    (size_t s, Allocator &a) { return a.alloc(s); }
-void *operator new [] (size_t s, Allocator &a) { return a.alloc(s); }
+void *operator new    (__SIZE_TYPE__ s, Allocator *a) { return try_alloc(a, s); }
+void *operator new [] (__SIZE_TYPE__ s, Allocator *a) { return try_alloc(a, s); }
+void *operator new    (__SIZE_TYPE__ s, Allocator &a) { return a.alloc(s); }
+void *operator new [] (__SIZE_TYPE__ s, Allocator &a) { return a.alloc(s); }
 
 
 static void try_dealloc(void *ptr, Deallocator &dealloc)
@@ -43,8 +43,8 @@ static void try_dealloc(void *ptr, Deallocator &dealloc)
 	 * the size argument.
 	 */
 	if (dealloc.need_size_for_free()) {
-		PERR("C++ runtime: delete called with allocator, which needs "
-		     "'size' on free. Blocking before leaking memory...");
+		Genode::error("C++ runtime: delete called with allocator, which needs "
+		              "'size' on free. Blocking before leaking memory...");
 		sleep_forever();
 	}
 
@@ -67,8 +67,14 @@ void operator delete (void *ptr, Deallocator &dealloc) { try_dealloc(ptr,  deall
  * implementation of the 'stdcxx' library instead. To make this possible, the
  * 'delete (void *)' implementation in the 'cxx' library must be 'weak'.
  */
-__attribute__((weak)) void operator delete (void *)
+__attribute__((weak)) void operator delete (void *) noexcept
 {
-	PERR("cxx: operator delete (void *) called - not implemented. "
-	      "A working implementation is available in the 'stdcxx' library.");
+	Genode::error("cxx: operator delete (void *) called - not implemented. "
+	              "A working implementation is available in the 'stdcxx' library.");
+}
+
+__attribute__((weak)) void operator delete (void *, unsigned long)
+{
+	Genode::error("cxx: operator delete (void *, unsigned long) called - not implemented. "
+	              "A working implementation is available in the 'stdcxx' library.");
 }

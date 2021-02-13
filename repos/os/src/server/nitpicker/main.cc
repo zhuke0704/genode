@@ -1,182 +1,142 @@
 /*
- * \brief  Nitpicker main program for Genode
+ * \brief  Nitpicker main program
  * \author Norman Feske
  * \date   2006-08-04
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/env.h>
 #include <base/sleep.h>
-#include <base/printf.h>
-#include <base/allocator_guard.h>
-#include <os/attached_ram_dataspace.h>
-#include <input/event.h>
+#include <base/log.h>
+#include <base/component.h>
+#include <base/attached_rom_dataspace.h>
 #include <input/keycodes.h>
 #include <root/component.h>
-#include <dataspace/client.h>
 #include <timer_session/connection.h>
 #include <input_session/connection.h>
-#include <input_session/input_session.h>
-#include <nitpicker_session/nitpicker_session.h>
 #include <framebuffer_session/connection.h>
-#include <util/color.h>
-#include <os/pixel_rgb565.h>
 #include <os/session_policy.h>
-#include <os/server.h>
-#include <os/reporter.h>
+#include <nitpicker_gfx/tff_font.h>
+#include <util/dirty_rect.h>
 
 /* local includes */
-#include "input.h"
+#include "types.h"
+#include "user_state.h"
 #include "background.h"
 #include "clip_guard.h"
 #include "pointer_origin.h"
 #include "domain_registry.h"
-
-namespace Input       { class Session_component; }
-namespace Framebuffer { class Session_component; }
+#include "capture_session.h"
+#include "event_session.h"
 
 namespace Nitpicker {
-	class Session_component;
-	template <typename> class Root;
+	class  Gui_root;
+	class  Capture_root;
+	class  Event_root;
 	struct Main;
 }
 
-using Genode::size_t;
-using Genode::Allocator;
-using Genode::Rpc_entrypoint;
-using Genode::List;
-using Genode::Pixel_rgb565;
-using Genode::strcmp;
-using Genode::config;
-using Genode::env;
-using Genode::Arg_string;
-using Genode::Object_pool;
-using Genode::Dataspace_capability;
-using Genode::Session_label;
-using Genode::Signal_transmitter;
-using Genode::Signal_context_capability;
-using Genode::Signal_rpc_member;
-using Genode::Attached_ram_dataspace;
-using Genode::Attached_dataspace;
-using Genode::Weak_ptr;
-using Genode::Locked_ptr;
+
+/*********************************
+ ** Font used for view labeling **
+ *********************************/
+
+extern char _binary_default_tff_start[];
 
 
-Framebuffer::Session *tmp_fb;
+/************************************
+ ** Framebuffer::Session_component **
+ ************************************/
 
-
-/***************
- ** Utilities **
- ***************/
-
-static void report_session(Genode::Reporter &reporter, Session *session,
-                           bool active = false)
+void Framebuffer::Session_component::refresh(int x, int y, int w, int h)
 {
-	if (!reporter.enabled())
-		return;
+	Rect const rect(Point(x, y), Area(w, h));
 
-	Genode::Reporter::Xml_generator xml(reporter, [&] ()
-	{
-		if (session) {
-			xml.attribute("label",  session->label().string());
-			xml.attribute("domain", session->domain_name().string());
-
-			Color const color = session->color();
-			char buf[32];
-			Genode::snprintf(buf, sizeof(buf), "#%02x%02x%02x",
-			                 color.r, color.g, color.b);
-			xml.attribute("color", buf);
-
-			if (active) xml.attribute("active", "yes");
-		}
-	});
+	_view_stack.mark_session_views_as_dirty(_session, rect);
 }
 
 
-/*
- * Font initialization
- */
-extern char _binary_default_tff_start;
+/***************************************
+ ** Implementation of the GUI service **
+ ***************************************/
 
-Text_painter::Font default_font(&_binary_default_tff_start);
-
-
-template <typename PT>
-struct Screen : public Canvas<PT>
-{
-	Screen(PT *base, Area size) : Canvas<PT>(base, size) { }
-};
-
-
-class Buffer
+class Nitpicker::Gui_root : public Root_component<Gui_session>,
+                            public Visibility_controller
 {
 	private:
 
-		Area                           _size;
-		Framebuffer::Mode::Format      _format;
-		Genode::Attached_ram_dataspace _ram_ds;
+		Env                          &_env;
+		Attached_rom_dataspace const &_config;
+		Session_list                 &_session_list;
+		Domain_registry const        &_domain_registry;
+		Global_keys                  &_global_keys;
+		View_stack                   &_view_stack;
+		User_state                   &_user_state;
+		View                         &_pointer_origin;
+		View                         &_builtin_background;
+		Reporter                     &_focus_reporter;
+		Focus_updater                &_focus_updater;
+		Hover_updater                &_hover_updater;
 
-	public:
+	protected:
 
-		/**
-		 * Constructor - allocate and map dataspace for virtual frame buffer
-		 *
-		 * \throw Ram_session::Alloc_failed
-		 * \throw Rm_session::Attach_failed
-		 */
-		Buffer(Area size, Framebuffer::Mode::Format format, Genode::size_t bytes)
-		:
-			_size(size), _format(format),
-			_ram_ds(env()->ram_session(), bytes)
-		{ }
-
-		/**
-		 * Accessors
-		 */
-		Genode::Ram_dataspace_capability ds_cap() const { return _ram_ds.cap(); }
-		Area                               size() const { return _size; }
-		Framebuffer::Mode::Format        format() const { return _format; }
-		void                        *local_addr() const { return _ram_ds.local_addr<void>(); }
-};
-
-
-/**
- * Interface for triggering the re-allocation of a virtual framebuffer
- *
- * Used by 'Framebuffer::Session_component',
- * implemented by 'Nitpicker::Session_component'
- */
-struct Buffer_provider
-{
-	virtual Buffer *realloc_buffer(Framebuffer::Mode mode, bool use_alpha) = 0;
-};
-
-
-template <typename PT>
-class Chunky_dataspace_texture : public Buffer,
-                                 public Texture<PT>
-{
-	private:
-
-		Framebuffer::Mode::Format _format() {
-			return Framebuffer::Mode::RGB565; }
-
-		/**
-		 * Return base address of alpha channel or 0 if no alpha channel exists
-		 */
-		unsigned char *_alpha_base(Area size, bool use_alpha)
+		Gui_session *_create_session(const char *args) override
 		{
-			if (!use_alpha) return 0;
+			Session_label const label = label_from_args(args);
 
-			/* alpha values come right after the pixel values */
-			return (unsigned char *)local_addr() + calc_num_bytes(size, false);
+			bool const provides_default_bg = (label == "backdrop");
+
+			Gui_session *session = new (md_alloc())
+				Gui_session(_env,
+				            session_resources_from_args(args), label,
+				            session_diag_from_args(args), _view_stack,
+				            _focus_updater, _hover_updater, _pointer_origin,
+				            _builtin_background, provides_default_bg,
+				            _focus_reporter, *this);
+
+			session->apply_session_policy(_config.xml(), _domain_registry);
+			_session_list.insert(session);
+			_global_keys.apply_config(_config.xml(), _session_list);
+			_focus_updater.update_focus();
+			_hover_updater.update_hover();
+
+			return session;
+		}
+
+		void _upgrade_session(Gui_session *s, const char *args) override
+		{
+			s->upgrade(ram_quota_from_args(args));
+			s->upgrade(cap_quota_from_args(args));
+		}
+
+		void _destroy_session(Gui_session *session) override
+		{
+			/* invalidate pointers held by other sessions to the destroyed session */
+			for (Gui_session *s = _session_list.first(); s; s = s->next())
+				s->forget(*session);
+
+			_session_list.remove(session);
+			_global_keys.apply_config(_config.xml(), _session_list);
+
+			session->destroy_all_views();
+			User_state::Handle_forget_result result = _user_state.forget(*session);
+
+			Genode::destroy(md_alloc(), session);
+
+			if (result.hover_changed)
+				_hover_updater.update_hover();
+
+			/* report focus changes */
+			if (_focus_reporter.enabled() && result.focus_changed) {
+				Reporter::Xml_generator xml(_focus_reporter, [&] () {
+					_user_state.report_focused_view_owner(xml, false); });
+			}
 		}
 
 	public:
@@ -184,890 +144,188 @@ class Chunky_dataspace_texture : public Buffer,
 		/**
 		 * Constructor
 		 */
-		Chunky_dataspace_texture(Area size, bool use_alpha)
+		Gui_root(Env &env,
+		         Attached_rom_dataspace const &config,
+		         Session_list                 &session_list,
+		         Domain_registry        const &domain_registry,
+		         Global_keys                  &global_keys,
+		         View_stack                   &view_stack,
+		         User_state                   &user_state,
+		         View                         &pointer_origin,
+		         View                         &builtin_background,
+		         Allocator                    &md_alloc,
+		         Reporter                     &focus_reporter,
+		         Focus_updater                &focus_updater,
+		         Hover_updater                &hover_updater)
 		:
-			Buffer(size, _format(), calc_num_bytes(size, use_alpha)),
-			Texture<PT>((PT *)local_addr(),
-			            _alpha_base(size, use_alpha), size) { }
+			Root_component<Gui_session>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _config(config), _session_list(session_list),
+			_domain_registry(domain_registry), _global_keys(global_keys),
+			_view_stack(view_stack), _user_state(user_state),
+			_pointer_origin(pointer_origin),
+			_builtin_background(builtin_background),
+			_focus_reporter(focus_reporter), _focus_updater(focus_updater),
+			_hover_updater(hover_updater)
+		{ }
 
-		static Genode::size_t calc_num_bytes(Area size, bool use_alpha)
+
+		/*************************************
+		 ** Visibility_controller interface **
+		 *************************************/
+
+		void _session_visibility(Session_label const &label, Suffix const &suffix,
+		                         bool visible)
 		{
-			/*
-			 * If using an alpha channel, the alpha buffer follows the
-			 * pixel buffer. The alpha buffer is followed by an input
-			 * mask buffer. Hence, we have to account one byte per
-			 * alpha value and one byte for the input mask value.
-			 */
-			Genode::size_t bytes_per_pixel = sizeof(PT) + (use_alpha ? 2 : 0);
-			return bytes_per_pixel*size.w()*size.h();
+			Gui::Session::Label const selector(label, suffix);
+
+			for (Gui_session *s = _session_list.first(); s; s = s->next())
+				if (s->matches_session_label(selector))
+					s->visible(visible);
+
+			_view_stack.update_all_views();
 		}
 
-		unsigned char *input_mask_buffer()
+		void hide_matching_sessions(Session_label const &label, Suffix const &suffix) override
 		{
-			if (!Texture<PT>::alpha()) return 0;
-
-			Area const size = Texture<PT>::size();
-
-			/* input-mask values come right after the alpha values */
-			return (unsigned char *)local_addr() + calc_num_bytes(size, false)
-			                                     + size.count();
+			_session_visibility(label, suffix, false);
+		}
+	
+		void show_matching_sessions(Session_label const &label, Suffix const &suffix) override
+		{
+			_session_visibility(label, suffix, true);
 		}
 };
 
 
-/***********************
- ** Input sub session **
- ***********************/
+/*******************************************
+ ** Implementation of the capture service **
+ *******************************************/
 
-class Input::Session_component : public Genode::Rpc_object<Session>
-{
-	public:
-
-		enum { MAX_EVENTS = 200 };
-
-		static size_t ev_ds_size() {
-			return Genode::align_addr(MAX_EVENTS*sizeof(Event), 12); }
-
-	private:
-
-		/*
-		 * Exported event buffer dataspace
-		 */
-		Attached_ram_dataspace _ev_ram_ds = { env()->ram_session(), ev_ds_size() };
-
-		/*
-		 * Local event buffer that is copied
-		 * to the exported event buffer when
-		 * flush() gets called.
-		 */
-		Event      _ev_buf[MAX_EVENTS];
-		unsigned   _num_ev = 0;
-
-		Signal_context_capability _sigh;
-
-	public:
-
-		/**
-		 * Wake up client
-		 */
-		void submit_signal()
-		{
-			if (_sigh.valid())
-				Signal_transmitter(_sigh).submit();
-		}
-
-		/**
-		 * Enqueue event into local event buffer of the input session
-		 */
-		void submit(const Event *ev)
-		{
-			/* drop event when event buffer is full */
-			if (_num_ev >= MAX_EVENTS) return;
-
-			/* insert event into local event buffer */
-			_ev_buf[_num_ev++] = *ev;
-
-			submit_signal();
-		}
-
-
-		/*****************************
-		 ** Input session interface **
-		 *****************************/
-
-		Dataspace_capability dataspace() override { return _ev_ram_ds.cap(); }
-
-		bool pending() const override { return _num_ev > 0; }
-
-		int flush() override
-		{
-			unsigned ev_cnt;
-
-			/* copy events from local event buffer to exported buffer */
-			Event *ev_ds_buf = _ev_ram_ds.local_addr<Event>();
-			for (ev_cnt = 0; ev_cnt < _num_ev; ev_cnt++)
-				ev_ds_buf[ev_cnt] = _ev_buf[ev_cnt];
-
-			_num_ev = 0;
-			return ev_cnt;
-		}
-
-		void sigh(Genode::Signal_context_capability sigh) override { _sigh = sigh; }
-};
-
-
-/*****************************
- ** Framebuffer sub session **
- *****************************/
-
-class Framebuffer::Session_component : public Genode::Rpc_object<Session>
+class Nitpicker::Capture_root : public Root_component<Capture_session>
 {
 	private:
 
-		::Buffer                 *_buffer = 0;
-		View_stack               &_view_stack;
-		::Session                &_session;
-		Framebuffer::Session     &_framebuffer;
-		Buffer_provider          &_buffer_provider;
-		Signal_context_capability _mode_sigh;
-		Signal_context_capability _sync_sigh;
-		Framebuffer::Mode         _mode;
-		bool                      _alpha = false;
+		using Sessions = Registry<Registered<Capture_session>>;
+
+		Env                      &_env;
+		Sessions                  _sessions { };
+		View_stack         const &_view_stack;
+		Capture_session::Handler &_handler;
+
+	protected:
+
+		Capture_session *_create_session(const char *args) override
+		{
+			return new (md_alloc())
+				Registered<Capture_session>(_sessions, _env,
+				                            session_resources_from_args(args),
+				                            session_label_from_args(args),
+				                            session_diag_from_args(args),
+				                            _handler, _view_stack);
+		}
+
+		void _upgrade_session(Capture_session *s, const char *args) override
+		{
+			s->upgrade(ram_quota_from_args(args));
+			s->upgrade(cap_quota_from_args(args));
+		}
+
+		void _destroy_session(Capture_session *session) override
+		{
+			Genode::destroy(md_alloc(), session);
+
+			/* shrink screen according to the remaining output back ends */
+			_handler.capture_buffer_size_changed();
+		}
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Session_component(View_stack           &view_stack,
-		                  ::Session            &session,
-		                  Framebuffer::Session &framebuffer,
-		                  Buffer_provider      &buffer_provider)
+		Capture_root(Env                      &env,
+		             Allocator                &md_alloc,
+		             View_stack         const &view_stack,
+		             Capture_session::Handler &handler)
 		:
-			_view_stack(view_stack),
-			_session(session),
-			_framebuffer(framebuffer),
-			_buffer_provider(buffer_provider)
+			Root_component<Capture_session>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _view_stack(view_stack), _handler(handler)
 		{ }
 
 		/**
-		 * Change virtual framebuffer mode
-		 *
-		 * Called by Nitpicker::Session_component when re-dimensioning the
-		 * buffer.
-		 *
-		 * The new mode does not immediately become active. The client can
-		 * keep using an already obtained framebuffer dataspace. However,
-		 * we inform the client about the mode change via a signal. If the
-		 * client calls 'dataspace' the next time, the new mode becomes
-		 * effective.
+		 * Determine the size of the bounding box of all capture pixel buffers
 		 */
-		void notify_mode_change(Framebuffer::Mode mode, bool alpha)
+		Area bounding_box() const
 		{
-			_mode  = mode;
-			_alpha = alpha;
-
-			if (_mode_sigh.valid())
-				Signal_transmitter(_mode_sigh).submit();
+			Area result { 0, 0 };
+			_sessions.for_each([&] (Capture_session const &session) {
+				result = max_area(result, session.buffer_size()); });
+			return result;
 		}
 
-		void submit_sync()
+		/**
+		 * Notify all capture clients about the changed screen size
+		 */
+		void screen_size_changed()
 		{
-			if (_sync_sigh.valid())
-				Signal_transmitter(_sync_sigh).submit();
+			_sessions.for_each([&] (Capture_session &session) {
+				session.screen_size_changed(); });
 		}
 
-
-		/************************************
-		 ** Framebuffer::Session interface **
-		 ************************************/
-
-		Dataspace_capability dataspace() override
+		void mark_as_damaged(Rect rect)
 		{
-			_buffer = _buffer_provider.realloc_buffer(_mode, _alpha);
-
-			return _buffer ? _buffer->ds_cap() : Genode::Ram_dataspace_capability();
+			_sessions.for_each([&] (Capture_session &session) {
+				session.mark_as_damaged(rect); });
 		}
 
-		Mode mode() const override { return _mode; }
-
-		void mode_sigh(Signal_context_capability sigh) override
+		void report_displays(Xml_generator &xml) const
 		{
-			_mode_sigh = sigh;
-		}
+			Area const size = bounding_box();
 
-		void sync_sigh(Signal_context_capability sigh) override
-		{
-			_sync_sigh = sigh;
-		}
+			if (size.count() == 0)
+				return;
 
-		void refresh(int x, int y, int w, int h) override
-		{
-			Rect const rect(Point(x, y), Area(w, h));
-
-			_view_stack.mark_session_views_as_dirty(_session, rect);
+			xml.node("display", [&] () {
+				xml.attribute("width",  size.w());
+				xml.attribute("height", size.h());
+			});
 		}
 };
 
 
 /*****************************************
- ** Implementation of Nitpicker service **
+ ** Implementation of the event service **
  *****************************************/
 
-class Nitpicker::Session_component : public Genode::Rpc_object<Session>,
-                                     public ::Session,
-                                     public Buffer_provider
+class Nitpicker::Event_root : public Root_component<Event_session>
 {
 	private:
 
-		typedef ::View View;
+		Env &_env;
 
-		Genode::Allocator_guard _session_alloc;
-
-		Framebuffer::Session &_framebuffer;
-
-		/* Framebuffer_session_component */
-		Framebuffer::Session_component _framebuffer_session_component;
-
-		/* Input_session_component */
-		Input::Session_component _input_session_component;
-
-		/*
-		 * Entrypoint that is used for the views, input session,
-		 * and framebuffer session.
-		 */
-		Rpc_entrypoint &_ep;
-
-		View_stack &_view_stack;
-
-		Mode &_mode;
-
-		Signal_context_capability _mode_sigh;
-
-		View &_pointer_origin;
-
-		List<Session_view_list_elem> _view_list;
-
-		Genode::Tslab<View, 4000> _view_alloc { &_session_alloc };
-
-		/* capabilities for sub sessions */
-		Framebuffer::Session_capability _framebuffer_session_cap;
-		Input::Session_capability       _input_session_cap;
-
-		bool const _provides_default_bg;
-
-		/* size of currently allocated virtual framebuffer, in bytes */
-		size_t _buffer_size = 0;
-
-		Attached_ram_dataspace _command_ds { env()->ram_session(),
-		                                     sizeof(Command_buffer) };
-
-		Command_buffer &_command_buffer = *_command_ds.local_addr<Command_buffer>();
-
-		typedef Genode::Handle_registry<View_handle, View> View_handle_registry;
-
-		View_handle_registry _view_handle_registry;
-
-		Genode::Reporter &_focus_reporter;
-
-		void _release_buffer()
-		{
-			if (!::Session::texture())
-				return;
-
-			typedef Pixel_rgb565 PT;
-
-			/* retrieve pointer to texture from session */
-			Chunky_dataspace_texture<PT> const *cdt =
-				static_cast<Chunky_dataspace_texture<PT> const *>(::Session::texture());
-
-			::Session::texture(0, false);
-			::Session::input_mask(0);
-
-			destroy(&_session_alloc, const_cast<Chunky_dataspace_texture<PT> *>(cdt));
-
-			_session_alloc.upgrade(_buffer_size);
-			_buffer_size = 0;
-		}
-
-		/**
-		 * Helper for performing sanity checks in OP_TO_FRONT and OP_TO_BACK
-		 *
-		 * We have to check for the equality of both the specified view and
-		 * neighbor. If both arguments refer to the same view, the creation of
-		 * locked pointers for both views would result in a deadlock.
-		 */
-		bool _views_are_equal(View_handle v1, View_handle v2)
-		{
-			if (!v1.valid() || !v2.valid())
-				return false;
-
-			Weak_ptr<View> v1_ptr = _view_handle_registry.lookup(v1);
-			Weak_ptr<View> v2_ptr = _view_handle_registry.lookup(v2);
-
-			return  v1_ptr == v2_ptr;
-		}
-
-		bool _focus_change_permitted() const
-		{
-			::Session * const focused_session = _mode.focused_session();
-
-			/*
-			 * If no session is focused, we allow any client to assign it. This
-			 * is useful for programs such as an initial login window that
-			 * should receive input events without prior manual selection via
-			 * the mouse.
-			 *
-			 * In principle, a client could steal the focus during time between
-			 * a currently focused session gets closed and before the user
-			 * manually picks a new session. However, in practice, the focus
-			 * policy during application startup and exit is managed by a
-			 * window manager that sits between nitpicker and the application.
-			 */
-			if (!focused_session)
-				return true;
-
-			/*
-			 * Check if the currently focused session label belongs to a
-			 * session subordinated to the caller, i.e., it originated from
-			 * a child of the caller or from the same process. This is the
-			 * case if the first part of the focused session label is
-			 * identical to the caller's label.
-			 */
-			char const * const focused_label = focused_session->label().string();
-			char const * const caller_label  = label().string();
-
-			return strcmp(focused_label, caller_label, Genode::strlen(caller_label)) == 0;
-		}
-
-		void _execute_command(Command const &command)
-		{
-			switch (command.opcode) {
-
-			case Command::OP_GEOMETRY:
-				{
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.geometry.view));
-					if (!view.valid())
-						return;
-
-					Point pos = command.geometry.rect.p1();
-
-					/* transpose position of top-level views by vertical session offset */
-					if (view->top_level())
-						pos = ::Session::phys_pos(pos, _view_stack.size());
-
-					if (view.valid())
-						_view_stack.geometry(*view, Rect(pos, command.geometry.rect.area()));
-
-					return;
-				}
-
-			case Command::OP_OFFSET:
-				{
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.geometry.view));
-
-					if (view.valid())
-						_view_stack.buffer_offset(*view, command.offset.offset);
-
-					return;
-				}
-
-			case Command::OP_TO_FRONT:
-				{
-					if (_views_are_equal(command.to_front.view, command.to_front.neighbor))
-						return;
-
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.to_front.view));
-					if (!view.valid())
-						return;
-
-					/* bring to front if no neighbor is specified */
-					if (!command.to_front.neighbor.valid()) {
-						_view_stack.stack(*view, nullptr, true);
-						return;
-					}
-
-					/* stack view relative to neighbor */
-					Locked_ptr<View> neighbor(_view_handle_registry.lookup(command.to_front.neighbor));
-					if (neighbor.valid())
-						_view_stack.stack(*view, &(*neighbor), false);
-
-					return;
-				}
-
-			case Command::OP_TO_BACK:
-				{
-					if (_views_are_equal(command.to_front.view, command.to_front.neighbor))
-						return;
-
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.to_back.view));
-					if (!view.valid())
-						return;
-
-					/* bring to front if no neighbor is specified */
-					if (!command.to_front.neighbor.valid()) {
-						_view_stack.stack(*view, nullptr, false);
-						return;
-					}
-
-					/* stack view relative to neighbor */
-					Locked_ptr<View> neighbor(_view_handle_registry.lookup(command.to_back.neighbor));
-					if (neighbor.valid())
-						_view_stack.stack(*view, &(*neighbor), true);
-
-					return;
-				}
-
-			case Command::OP_BACKGROUND:
-				{
-					if (_provides_default_bg) {
-						Locked_ptr<View> view(_view_handle_registry.lookup(command.to_front.view));
-						if (!view.valid())
-							return;
-
-						view->background(true);
-						_view_stack.default_background(*view);
-						return;
-					}
-
-					/* revert old background view to normal mode */
-					if (::Session::background())
-						::Session::background()->background(false);
-
-					/* assign session background */
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.to_front.view));
-					if (!view.valid())
-						return;
-
-					::Session::background(&(*view));
-
-					/* switch background view to background mode */
-					if (::Session::background())
-						view->background(true);
-
-					return;
-				}
-
-			case Command::OP_TITLE:
-				{
-					Locked_ptr<View> view(_view_handle_registry.lookup(command.title.view));
-
-					if (view.valid())
-						_view_stack.title(*view, command.title.title.string());
-
-					return;
-				}
-
-			case Command::OP_NOP:
-				return;
-			}
-		}
-
-		void _destroy_view(View &view)
-		{
-			_view_stack.remove_view(view);
-			_ep.dissolve(&view);
-			_view_list.remove(&view);
-			destroy(_view_alloc, &view);
-		}
-
-	public:
-
-		/**
-		 * Constructor
-		 */
-		Session_component(Session_label  const &label,
-		                  View_stack           &view_stack,
-		                  Mode                 &mode,
-		                  View                 &pointer_origin,
-		                  Rpc_entrypoint       &ep,
-		                  Framebuffer::Session &framebuffer,
-		                  bool                  provides_default_bg,
-		                  Allocator            &session_alloc,
-		                  size_t                ram_quota,
-		                  Genode::Reporter     &focus_reporter)
-		:
-			::Session(label),
-			_session_alloc(&session_alloc, ram_quota),
-			_framebuffer(framebuffer),
-			_framebuffer_session_component(view_stack, *this, framebuffer, *this),
-			_ep(ep), _view_stack(view_stack), _mode(mode),
-			_pointer_origin(pointer_origin),
-			_framebuffer_session_cap(_ep.manage(&_framebuffer_session_component)),
-			_input_session_cap(_ep.manage(&_input_session_component)),
-			_provides_default_bg(provides_default_bg),
-			_view_handle_registry(_session_alloc),
-			_focus_reporter(focus_reporter)
-		{
-			_session_alloc.upgrade(ram_quota);
-		}
-
-		/**
-		 * Destructor
-		 */
-		~Session_component()
-		{
-			_ep.dissolve(&_framebuffer_session_component);
-			_ep.dissolve(&_input_session_component);
-
-			destroy_all_views();
-
-			_release_buffer();
-		}
-
-		void destroy_all_views()
-		{
-			while (Session_view_list_elem *v = _view_list.first())
-				_destroy_view(*static_cast<View *>(v));
-		}
-
-		/**
-		 * Deliver mode-change signal to client
-		 */
-		void notify_mode_change()
-		{
-			if (_mode_sigh.valid())
-				Signal_transmitter(_mode_sigh).submit();
-		}
-
-		void upgrade_ram_quota(size_t ram_quota) { _session_alloc.upgrade(ram_quota); }
-
-
-		/**********************************
-		 ** Nitpicker-internal interface **
-		 **********************************/
-
-		void submit_input_event(Input::Event e)
-		{
-			using namespace Input;
-
-			Point const origin_offset =
-				::Session::phys_pos(Point(0, 0), _view_stack.size());
-
-			/*
-			 * Transpose absolute coordinates by session-specific vertical
-			 * offset.
-			 */
-			if (e.ax() || e.ay())
-				e = Event(e.type(), e.code(),
-				          Genode::max(0, e.ax() - origin_offset.x()),
-				          Genode::max(0, e.ay() - origin_offset.y()),
-				          e.rx(), e.ry());
-
-			_input_session_component.submit(&e);
-		}
-
-		void submit_sync() override
-		{
-			_framebuffer_session_component.submit_sync();
-		}
-
-
-		/*********************************
-		 ** Nitpicker session interface **
-		 *********************************/
-
-		Framebuffer::Session_capability framebuffer_session() override {
-			return _framebuffer_session_cap; }
-
-		Input::Session_capability input_session() override {
-			return _input_session_cap; }
-
-		View_handle create_view(View_handle parent_handle) override
-		{
-			View *view = nullptr;
-
-			/*
-			 * Create child view
-			 */
-			if (parent_handle.valid()) {
-
-				try {
-					Locked_ptr<View> parent(_view_handle_registry.lookup(parent_handle));
-					if (!parent.valid())
-						return View_handle();
-
-					view = new (_view_alloc)
-						View(*this,
-						     View::NOT_TRANSPARENT, View::NOT_BACKGROUND,
-						     &(*parent));
-
-					parent->add_child(*view);
-				}
-				catch (View_handle_registry::Lookup_failed) {
-					return View_handle(); }
-				catch (View_handle_registry::Out_of_memory) {
-					throw Nitpicker::Session::Out_of_metadata(); }
-				catch (Genode::Allocator::Out_of_memory) {
-					throw Nitpicker::Session::Out_of_metadata(); }
-			}
-
-			/*
-			 * Create top-level view
-			 */
-			else {
-				try {
-					view = new (_view_alloc)
-						View(*this,
-						     View::NOT_TRANSPARENT, View::NOT_BACKGROUND,
-						     nullptr);
-					}
-				catch (Genode::Allocator::Out_of_memory) {
-					throw Nitpicker::Session::Out_of_metadata(); }
-			}
-
-			view->apply_origin_policy(_pointer_origin);
-
-			_view_list.insert(view);
-			_ep.manage(view);
-
-			try { return _view_handle_registry.alloc(*view); }
-			catch (View_handle_registry::Out_of_memory) {
-				throw Nitpicker::Session::Out_of_metadata(); }
-		}
-
-		void destroy_view(View_handle handle) override
-		{
-			/*
-			 * Search view object given the handle
-			 *
-			 * We cannot look up the view directly from the
-			 * '_view_handle_registry' because we would obtain a weak
-			 * pointer to the view object. If we called the object's
-			 * destructor from the corresponding locked pointer, the
-			 * call of 'lock_for_destruction' in the view's destructor
-			 * would attempt to take the lock again.
-			 */
-			for (Session_view_list_elem *v = _view_list.first(); v; v = v->next()) {
-
-				try {
-					View &view = *static_cast<View *>(v);
-					if (_view_handle_registry.has_handle(view, handle)) {
-						_destroy_view(view);
-						break;
-					}
-				} catch (View_handle_registry::Lookup_failed) { }
-			}
-
-			_view_handle_registry.free(handle);
-		}
-
-		View_handle view_handle(View_capability view_cap, View_handle handle) override
-		{
-			auto lambda = [&] (View *view)
-			{
-				return (view) ? _view_handle_registry.alloc(*view, handle)
-				              : View_handle();
-			};
-
-			try { return _ep.apply(view_cap, lambda); }
-			catch (View_handle_registry::Out_of_memory) {
-				throw Nitpicker::Session::Out_of_metadata(); }
-		}
-
-		View_capability view_capability(View_handle handle) override
-		{
-			try {
-				Locked_ptr<View> view(_view_handle_registry.lookup(handle));
-				return view.valid() ? view->cap() : View_capability();
-			}
-			catch (View_handle_registry::Lookup_failed) {
-				return View_capability();
-			}
-		}
-
-		void release_view_handle(View_handle handle) override
-		{
-			try {
-				_view_handle_registry.free(handle); }
-
-			catch (View_handle_registry::Lookup_failed) {
-				PWRN("view lookup failed while releasing view handle");
-				return;
-			}
-		}
-
-		Genode::Dataspace_capability command_dataspace() override
-		{
-			return _command_ds.cap();
-		}
-
-		void execute() override
-		{
-			for (unsigned i = 0; i < _command_buffer.num(); i++) {
-				try {
-					_execute_command(_command_buffer.get(i)); }
-				catch (View_handle_registry::Lookup_failed) {
-					PWRN("view lookup failed during command execution"); }
-			}
-		}
-
-		Framebuffer::Mode mode() override
-		{
-			Area const phys_area(_framebuffer.mode().width(),
-			                     _framebuffer.mode().height());
-
-			Area const session_area = ::Session::screen_area(phys_area);
-
-			return Framebuffer::Mode(session_area.w(), session_area.h(),
-			                         _framebuffer.mode().format());
-		}
-
-		void mode_sigh(Signal_context_capability sigh) override
-		{
-			_mode_sigh = sigh;
-		}
-
-		void buffer(Framebuffer::Mode mode, bool use_alpha) override
-		{
-			/* check if the session quota suffices for the specified mode */
-			if (_session_alloc.quota() < ram_quota(mode, use_alpha))
-				throw Nitpicker::Session::Out_of_metadata();
-
-			_framebuffer_session_component.notify_mode_change(mode, use_alpha);
-		}
-
-		void focus(Genode::Capability<Nitpicker::Session> session_cap) override
-		{
-			/* check permission by comparing session labels */
-			if (!_focus_change_permitted()) {
-				PWRN("unauthorized focus change requesed by %s", label().string());
-				return;
-			}
-
-			/* lookup targeted session object */
-			auto lambda = [this] (Session_component *session)
-			{
-				_mode.next_focused_session(session);
-			};
-			_ep.apply(session_cap, lambda);
-
-			/*
-			 * To avoid changing the focus in the middle of a drag operation,
-			 * we cannot perform the focus change immediately. Instead, it
-			 * comes into effect via the 'Mode::apply_pending_focus_change()'
-			 * function called the next time when the user input is handled and
-			 * no drag operation is in flight.
-			 */
-		}
-
-		void session_control(Label suffix, Session_control control) override
-		{
-			char selector[Label::size()];
-
-			Genode::snprintf(selector, sizeof(selector), "%s%s%s",
-			                 label().string(),
-			                 suffix.length() ? " -> " : "", suffix.string());
-
-			switch (control) {
-			case SESSION_CONTROL_HIDE:     _view_stack.visible(selector, false); break;
-			case SESSION_CONTROL_SHOW:     _view_stack.visible(selector, true);  break;
-			case SESSION_CONTROL_TO_FRONT: _view_stack.to_front(selector);       break;
-			}
-		}
-
-
-		/*******************************
-		 ** Buffer_provider interface **
-		 *******************************/
-
-		Buffer *realloc_buffer(Framebuffer::Mode mode, bool use_alpha)
-		{
-			typedef Pixel_rgb565 PT;
-
-			Area const size(mode.width(), mode.height());
-
-			_buffer_size =
-				Chunky_dataspace_texture<PT>::calc_num_bytes(size, use_alpha);
-
-			/*
-			 * Preserve the content of the original buffer if nitpicker has
-			 * enough lack memory to temporarily keep the original pixels.
-			 */
-			Texture<PT> const *src_texture = nullptr;
-			if (::Session::texture()) {
-
-				enum { PRESERVED_RAM = 128*1024 };
-				if (env()->ram_session()->avail() > _buffer_size + PRESERVED_RAM) {
-					src_texture = static_cast<Texture<PT> const *>(::Session::texture());
-				} else {
-					PWRN("not enough RAM to preserve buffer content during resize");
-					_release_buffer();
-				}
-			}
-
-			Chunky_dataspace_texture<PT> * const texture =
-				new (&_session_alloc) Chunky_dataspace_texture<PT>(size, use_alpha);
-
-			/* copy old buffer content into new buffer and release old buffer */
-			if (src_texture) {
-
-				Genode::Surface<PT> surface(texture->pixel(),
-				                            texture->Texture_base::size());
-
-				Texture_painter::paint(surface, *src_texture, Color(), Point(0, 0),
-				                       Texture_painter::SOLID, false);
-				_release_buffer();
-			}
-
-			if (!_session_alloc.withdraw(_buffer_size)) {
-				destroy(&_session_alloc, texture);
-				_buffer_size = 0;
-				return 0;
-			}
-
-			::Session::texture(texture, use_alpha);
-			::Session::input_mask(texture->input_mask_buffer());
-
-			return texture;
-		}
-};
-
-
-template <typename PT>
-class Nitpicker::Root : public Genode::Root_component<Session_component>
-{
-	private:
-
-		Session_list          &_session_list;
-		Domain_registry const &_domain_registry;
-		Global_keys           &_global_keys;
-		Framebuffer::Mode      _scr_mode;
-		View_stack            &_view_stack;
-		Mode                  &_mode;
-		::View                &_pointer_origin;
-		Framebuffer::Session  &_framebuffer;
-		Genode::Reporter      &_focus_reporter;
+		Event_session::Handler &_handler;
 
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Event_session *_create_session(const char *args) override
 		{
-			PINF("create session with args: %s\n", args);
-			size_t const ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
-
-			size_t const required_quota = Input::Session_component::ev_ds_size()
-			                            + Genode::align_addr(sizeof(Session::Command_buffer), 12);
-
-			if (ram_quota < required_quota) {
-				PWRN("Insufficient dontated ram_quota (%zd bytes), require %zd bytes",
-				     ram_quota, required_quota);
-				throw Root::Quota_exceeded();
-			}
-
-			size_t const unused_quota = ram_quota - required_quota;
-
-			Session_label const label(args);
-			bool const provides_default_bg = (strcmp(label.string(), "backdrop") == 0);
-
-			Session_component *session = new (md_alloc())
-				Session_component(Session_label(args), _view_stack, _mode,
-				                  _pointer_origin, *ep(), _framebuffer,
-				                  provides_default_bg, *md_alloc(), unused_quota,
-				                  _focus_reporter);
-
-			session->apply_session_policy(_domain_registry);
-			_session_list.insert(session);
-			_global_keys.apply_config(_session_list);
-
-			return session;
+			return new (md_alloc())
+				Event_session(_env,
+				              session_resources_from_args(args),
+				              session_label_from_args(args),
+				              session_diag_from_args(args),
+				              _handler);
 		}
 
-		void _upgrade_session(Session_component *s, const char *args)
+		void _upgrade_session(Event_session *s, const char *args) override
 		{
-			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
-			s->upgrade_ram_quota(ram_quota);
+			s->upgrade(ram_quota_from_args(args));
+			s->upgrade(cap_quota_from_args(args));
 		}
 
-		void _destroy_session(Session_component *session)
+		void _destroy_session(Event_session *session) override
 		{
-			_session_list.remove(session);
-			_global_keys.apply_config(_session_list);
-
-			session->destroy_all_views();
-			_mode.forget(*session);
-
-			destroy(md_alloc(), session);
+			Genode::destroy(md_alloc(), session);
 		}
 
 	public:
@@ -1075,35 +333,42 @@ class Nitpicker::Root : public Genode::Root_component<Session_component>
 		/**
 		 * Constructor
 		 */
-		Root(Session_list &session_list,
-		     Domain_registry const &domain_registry, Global_keys &global_keys,
-		     Rpc_entrypoint &session_ep, View_stack &view_stack, Mode &mode,
-		     ::View &pointer_origin, Allocator &md_alloc,
-		     Framebuffer::Session &framebuffer, Genode::Reporter &focus_reporter)
+		Event_root(Env &env, Allocator &md_alloc, Event_session::Handler &handler)
 		:
-			Root_component<Session_component>(&session_ep, &md_alloc),
-			_session_list(session_list), _domain_registry(domain_registry),
-			_global_keys(global_keys), _view_stack(view_stack), _mode(mode),
-			_pointer_origin(pointer_origin), _framebuffer(framebuffer),
-			_focus_reporter(focus_reporter)
+			Root_component<Event_session>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _handler(handler)
 		{ }
 };
 
 
-struct Nitpicker::Main
+struct Nitpicker::Main : Focus_updater, Hover_updater,
+                         View_stack::Damage,
+                         Capture_session::Handler,
+                         Event_session::Handler
 {
-	Server::Entrypoint &ep;
+	Env &_env;
 
-	/*
-	 * Sessions to the required external services
-	 */
-	Framebuffer::Connection framebuffer;
-	Input::Connection       input;
+	Timer::Connection _timer { _env };
 
-	Input::Event * const ev_buf =
-		env()->rm_session()->attach(input.dataspace());
+	Signal_handler<Main> _timer_handler = { _env.ep(), *this, &Main::_handle_period };
 
-	typedef Pixel_rgb565 PT;  /* physical pixel type */
+	unsigned long _timer_period_ms = 10;
+
+	Constructible<Framebuffer::Connection> _framebuffer { };
+
+	struct Input_connection
+	{
+		Input::Connection connection;
+
+		Attached_dataspace ev_ds;
+
+		Input_connection(Env &env)
+		: connection(env), ev_ds(env.rm(), connection.dataspace()) { }
+	};
+
+	Constructible<Input_connection> _input { };
+
+	typedef Pixel_rgb888 PT;  /* physical pixel type */
 
 	/*
 	 * Initialize framebuffer
@@ -1117,194 +382,378 @@ struct Nitpicker::Main
 
 		Framebuffer::Mode const mode = framebuffer.mode();
 
-		Attached_dataspace fb_ds = { framebuffer.dataspace() };
+		Attached_dataspace fb_ds;
 
-		Screen<PT> screen = { fb_ds.local_addr<PT>(), Area(mode.width(), mode.height()) };
+		Canvas<PT> screen = { fb_ds.local_addr<PT>(), Point(0, 0), mode.area };
+
+		Area size = screen.size();
+
+		typedef Genode::Dirty_rect<Rect, 3> Dirty_rect;
+
+		Dirty_rect dirty_rect { };
 
 		/**
 		 * Constructor
 		 */
-		Framebuffer_screen(Framebuffer::Session &fb) : framebuffer(fb) { }
+		Framebuffer_screen(Region_map &rm, Framebuffer::Session &fb)
+		:
+			framebuffer(fb), fb_ds(rm, framebuffer.dataspace())
+		{
+			dirty_rect.mark_as_dirty(Rect(Point(0, 0), size));
+		}
 	};
 
-	Genode::Volatile_object<Framebuffer_screen> fb_screen = { framebuffer };
+	bool _request_framebuffer = false;
+	bool _request_input       = false;
 
-	void handle_fb_mode(unsigned);
+	Constructible<Framebuffer_screen> _fb_screen { };
 
-	Signal_rpc_member<Main> fb_mode_dispatcher = { ep, *this, &Main::handle_fb_mode };
+	void _handle_fb_mode();
+	void _report_displays();
+
+	Signal_handler<Main> _fb_mode_handler = { _env.ep(), *this, &Main::_handle_fb_mode };
 
 	/*
 	 * User-input policy
 	 */
-	Global_keys global_keys;
+	Global_keys _global_keys { };
 
-	Session_list session_list;
+	Session_list _session_list { };
 
 	/*
 	 * Construct empty domain registry. The initial version will be replaced
 	 * on the first call of 'handle_config'.
 	 */
-	Genode::Volatile_object<Domain_registry> domain_registry {
-		*env()->heap(), Genode::Xml_node("<config/>") };
+	Heap _domain_registry_heap { _env.ram(), _env.rm() };
 
-	User_state user_state = { global_keys, fb_screen->screen.size() };
+	Reconstructible<Domain_registry> _domain_registry {
+		_domain_registry_heap, Xml_node("<config/>") };
+
+	Tff_font::Static_glyph_buffer<4096> _glyph_buffer { };
+
+	Tff_font const _font { _binary_default_tff_start, _glyph_buffer };
+
+	Focus      _focus { };
+	View_stack _view_stack { _focus, _font, *this };
+	User_state _user_state { _focus, _global_keys, _view_stack };
+
+	View_owner _global_view_owner { };
 
 	/*
 	 * Create view stack with default elements
 	 */
-	Pointer_origin pointer_origin;
+	Pointer_origin _pointer_origin { _global_view_owner };
 
-	Background background = { Area(99999, 99999) };
-
-	/*
-	 * Initialize Nitpicker root interface
-	 */
-	Genode::Sliced_heap sliced_heap = { env()->ram_session(), env()->rm_session() };
-
-	Genode::Reporter pointer_reporter = { "pointer" };
-	Genode::Reporter hover_reporter   = { "hover" };
-	Genode::Reporter focus_reporter   = { "focus" };
-
-	Root<PT> np_root = { session_list, *domain_registry, global_keys,
-	                     ep.rpc_ep(), user_state, user_state, pointer_origin,
-	                     sliced_heap, framebuffer, focus_reporter };
+	Background _builtin_background = { _global_view_owner, Area(99999, 99999) };
 
 	/*
-	 * Configuration-update dispatcher, executed in the context of the RPC
-	 * entrypoint.
-	 *
-	 * In addition to installing the signal dispatcher, we trigger first signal
-	 * manually to turn the initial configuration into effect.
+	 * Initialize GUI root interface
 	 */
-	void handle_config(unsigned);
+	Sliced_heap _sliced_heap { _env.ram(), _env.rm() };
 
-	Signal_rpc_member<Main> config_dispatcher = { ep, *this, &Main::handle_config};
+	Reporter _pointer_reporter  = { _env, "pointer" };
+	Reporter _hover_reporter    = { _env, "hover" };
+	Reporter _focus_reporter    = { _env, "focus" };
+	Reporter _keystate_reporter = { _env, "keystate" };
+	Reporter _clicked_reporter  = { _env, "clicked" };
+	Reporter _displays_reporter = { _env, "displays" };
+
+	Attached_rom_dataspace _config_rom { _env, "config" };
+
+	Constructible<Attached_rom_dataspace> _focus_rom { };
+
+	Gui_root _gui_root { _env, _config_rom, _session_list, *_domain_registry,
+	                     _global_keys, _view_stack, _user_state, _pointer_origin,
+	                     _builtin_background, _sliced_heap,
+	                     _focus_reporter, *this, *this };
+
+	Capture_root _capture_root { _env, _sliced_heap, _view_stack, *this };
+
+	Event_root _event_root { _env, _sliced_heap, *this };
+
+	void _generate_hover_report()
+	{
+		if (_hover_reporter.enabled()) {
+			Reporter::Xml_generator xml(_hover_reporter, [&] () {
+				_user_state.report_hovered_view_owner(xml, false); });
+		}
+	}
 
 	/**
-	 * Signal handler invoked on the reception of user input
+	 * View_stack::Damage interface
 	 */
-	void handle_input(unsigned);
+	void mark_as_damaged(Rect rect) override
+	{
+		if (_fb_screen.constructed()) {
+			_fb_screen->dirty_rect.mark_as_dirty(rect);
+		}
 
-	Signal_rpc_member<Main> input_dispatcher = { ep, *this, &Main::handle_input };
+		_capture_root.mark_as_damaged(rect);
+	}
+
+	void _update_input_connection()
+	{
+		bool const output_present = (_view_stack.size().count() > 0);
+		_input.conditional(_request_input && output_present, _env);
+	}
+
+	/**
+	 * Capture_session::Handler interface
+	 */
+	void capture_buffer_size_changed() override
+	{
+		/*
+		 * Determine the new screen size, which is the bounding box of all
+		 * present output back ends.
+		 */
+
+		Area new_size { 0, 0 };
+
+		if (_fb_screen.constructed())
+			new_size = max_area(new_size, _fb_screen->size);
+
+		new_size = max_area(new_size, _capture_root.bounding_box());
+
+		bool const size_changed = (new_size != _view_stack.size());
+
+		if (size_changed) {
+			_view_stack.size(new_size);
+			_user_state.sanitize_pointer_position();
+			_update_pointer_position();
+			_capture_root.screen_size_changed();
+
+			/* redraw */
+			_view_stack.update_all_views();
+
+			/* notify clients about the change screen mode */
+			for (Gui_session *s = _session_list.first(); s; s = s->next())
+				s->notify_mode_change();
+
+			_report_displays();
+		}
+
+		_update_input_connection();
+	}
+
+	/**
+	 * Focus_updater interface
+	 *
+	 * Called whenever a new session appears.
+	 */
+	void update_focus() override { _handle_focus(); }
+
+	/**
+	 * Hover_updater interface
+	 *
+	 * Called whenever the view composition changes.
+	 */
+	void update_hover() override
+	{
+		if (_user_state.update_hover().hover_changed)
+			_generate_hover_report();
+	}
 
 	/*
-	 * Dispatch input and redraw periodically
+	 * Configuration-update handler, executed in the context of the RPC
+	 * entrypoint.
+	 *
+	 * In addition to installing the signal handler, we trigger first signal
+	 * manually to turn the initial configuration into effect.
 	 */
-	Timer::Connection timer;
+	void _handle_config();
+
+	Signal_handler<Main> _config_handler = { _env.ep(), *this, &Main::_handle_config };
+
+	/**
+	 * Signal handler for externally triggered focus changes
+	 */
+	void _handle_focus();
+
+	Signal_handler<Main> _focus_handler = { _env.ep(), *this, &Main::_handle_focus };
+
+	/**
+	 * Event_session::Handler interface
+	 */
+	void handle_input_events(User_state::Input_batch) override;
+
+	/**
+	 * Signal handler periodically invoked for the reception of user input and redraw
+	 */
+	void _handle_period();
+
+	Signal_handler<Main> _input_period = { _env.ep(), *this, &Main::_handle_period };
 
 	/**
 	 * Counter that is incremented periodically
 	 */
-	unsigned period_cnt = 0;
+	unsigned _period_cnt = 0;
 
 	/**
 	 * Period counter when the user was active the last time
 	 */
-	unsigned last_active_period = 0;
+	unsigned _last_button_activity_period = 0,
+	         _last_motion_activity_period = 0;
 
 	/**
 	 * Number of periods after the last user activity when we regard the user
 	 * as becoming inactive
 	 */
-	unsigned activity_threshold = 50;
+	unsigned _activity_threshold = 50;
 
 	/**
-	 * True if the user was recently active
+	 * True if the user has recently interacted with buttons or keys
 	 *
 	 * This state is reported as part of focus reports to allow the clipboard
 	 * to dynamically adjust its information-flow policy to the user activity.
 	 */
-	bool user_active = false;
+	bool _button_activity = false;
 
 	/**
-	 * Perform redraw and flush pixels to the framebuffer
+	 * True if the user recently moved the pointer
 	 */
-	void draw_and_flush()
+	bool _motion_activity = false;
+
+	void _update_pointer_position()
 	{
-		user_state.draw(fb_screen->screen).flush([&] (Rect const &rect) {
-			framebuffer.refresh(rect.x1(), rect.y1(),
-			                    rect.w(),  rect.h()); });
+		_view_stack.geometry(_pointer_origin, Rect(_user_state.pointer_pos(), Area()));
 	}
 
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Main(Env &env) : _env(env)
 	{
-		user_state.default_background(background);
-		user_state.stack(pointer_origin);
-		user_state.stack(background);
+		_view_stack.default_background(_builtin_background);
+		_view_stack.stack(_pointer_origin);
+		_view_stack.stack(_builtin_background);
+		_update_pointer_position();
 
-		config()->sigh(config_dispatcher);
-		handle_config(0);
+		_config_rom.sigh(_config_handler);
+		_handle_config();
 
-		framebuffer.sync_sigh(input_dispatcher);
-		framebuffer.mode_sigh(fb_mode_dispatcher);
+		_timer.sigh(_timer_handler);
 
-		env()->parent()->announce(ep.manage(np_root));
+		_handle_fb_mode();
+
+		_env.parent().announce(_env.ep().manage(_gui_root));
+
+		if (_config_rom.xml().has_sub_node("capture"))
+			_env.parent().announce(_env.ep().manage(_capture_root));
+
+		if (_config_rom.xml().has_sub_node("event"))
+			_env.parent().announce(_env.ep().manage(_event_root));
+
+		/*
+		 * Detect initial motion activity such that the first hover report
+		 * contains the boot-time activity of the user in the very first
+		 * report.
+		 */
+		_handle_period();
+
+		_report_displays();
 	}
 };
 
 
-void Nitpicker::Main::handle_input(unsigned)
+void Nitpicker::Main::handle_input_events(User_state::Input_batch batch)
 {
-	period_cnt++;
+	bool const old_button_activity = _button_activity;
+	bool const old_motion_activity = _motion_activity;
 
-	Point       const old_pointer_pos     = user_state.pointer_pos();
-	::Session * const old_pointed_session = user_state.pointed_session();
-	::Session * const old_focused_session = user_state.Mode::focused_session();
-	bool        const old_user_active     = user_active;
+	User_state::Handle_input_result const result =
+		_user_state.handle_input_events(batch);
 
-	/* handle batch of pending events */
-	if (import_input_events(ev_buf, input.flush(), user_state)) {
-		last_active_period = period_cnt;
-		user_active        = true;
+	if (result.button_activity) {
+		_last_button_activity_period = _period_cnt;
+		_button_activity             = true;
 	}
 
-	user_state.Mode::apply_pending_focus_change();
+	if (result.motion_activity) {
+		_last_motion_activity_period = _period_cnt;
+		_motion_activity             = true;
+	}
 
-	Point       const new_pointer_pos     = user_state.pointer_pos();
-	::Session * const new_pointed_session = user_state.pointed_session();
-	::Session * const new_focused_session = user_state.Mode::focused_session();
+	/*
+	 * Report information about currently pressed keys whenever the key state
+	 * is affected by the incoming events.
+	 */
+	if (_keystate_reporter.enabled() && result.key_state_affected) {
+		Reporter::Xml_generator xml(_keystate_reporter, [&] () {
+			_user_state.report_keystate(xml); });
+	}
 
-	if (old_focused_session != new_focused_session)
-		user_state.update_all_views();
+	/*
+	 * Report whenever a non-focused view owner received a click. This report
+	 * can be consumed by a focus-managing component.
+	 */
+	if (_clicked_reporter.enabled() && result.last_clicked_changed) {
+		Reporter::Xml_generator xml(_clicked_reporter, [&] () {
+			_user_state.report_last_clicked_view_owner(xml); });
+	}
+
+	if (result.focus_changed)
+		_view_stack.update_all_views();
 
 	/* flag user as inactive after activity threshold is reached */
-	if (period_cnt == last_active_period + activity_threshold)
-		user_active = false;
+	if (_period_cnt == _last_button_activity_period + _activity_threshold)
+		_button_activity = false;
+
+	if (_period_cnt == _last_motion_activity_period + _activity_threshold)
+		_motion_activity = false;
 
 	/* report mouse-position updates */
-	if (pointer_reporter.enabled() && old_pointer_pos != new_pointer_pos) {
-
-		Genode::Reporter::Xml_generator xml(pointer_reporter, [&] ()
-		{
-			xml.attribute("xpos", new_pointer_pos.x());
-			xml.attribute("ypos", new_pointer_pos.y());
-		});
+	if (_pointer_reporter.enabled() && result.motion_activity) {
+		Reporter::Xml_generator xml(_pointer_reporter, [&] () {
+			_user_state.report_pointer_position(xml); });
 	}
 
 	/* report hover changes */
-	if (!user_state.Mode::key_pressed()
-	 && old_pointed_session != new_pointed_session) {
-		report_session(hover_reporter, new_pointed_session);
+	if (_hover_reporter.enabled()
+	 && (result.hover_changed || (old_motion_activity != _motion_activity))) {
+		Reporter::Xml_generator xml(_hover_reporter, [&] () {
+			_user_state.report_hovered_view_owner(xml, _motion_activity); });
 	}
 
 	/* report focus changes */
-	if (old_focused_session != new_focused_session
-	 || old_user_active     != user_active)
-		report_session(focus_reporter, new_focused_session, user_active);
+	if (result.focus_changed || (old_button_activity != _button_activity)) {
+		Reporter::Xml_generator xml(_focus_reporter, [&] () {
+			_user_state.report_focused_view_owner(xml, _button_activity); });
+	}
 
-	/* update mouse cursor */
-	if (old_pointer_pos != new_pointer_pos)
-		user_state.geometry(pointer_origin, Rect(new_pointer_pos, Area()));
+	/* update pointer position */
+	if (result.motion_activity)
+		_update_pointer_position();
+}
 
-	/* perform redraw and flush pixels to the framebuffer */
-	user_state.draw(fb_screen->screen).flush([&] (Rect const &rect) {
-		framebuffer.refresh(rect.x1(), rect.y1(),
-		                    rect.w(),  rect.h()); });
 
-	user_state.mark_all_views_as_clean();
+void Nitpicker::Main::_handle_period()
+{
+	_period_cnt++;
+
+	/* handle batch of pending events */
+	if (_input.constructed()) {
+
+		size_t const max_events = _input->ev_ds.size() / sizeof(Input::Event);
+
+		User_state::Input_batch const batch {
+			.events = _input->ev_ds.local_addr<Input::Event>(),
+			.count  = min(max_events, (size_t)_input->connection.flush()) };
+
+		handle_input_events(batch);
+	}
+
+	/* perform redraw */
+	if (_framebuffer.constructed() && _fb_screen.constructed()) {
+		/* call 'Dirty_rect::flush' on a copy to preserve the state */
+		Dirty_rect dirty_rect = _fb_screen->dirty_rect;
+		dirty_rect.flush([&] (Rect const &rect) {
+			_view_stack.draw(_fb_screen->screen, rect); });
+
+		/* flush pixels to the framebuffer, reset dirty_rect */
+		_fb_screen->dirty_rect.flush([&] (Rect const &rect) {
+			_framebuffer->refresh(rect.x1(), rect.y1(),
+			                      rect.w(),  rect.h()); });
+	}
 
 	/* deliver framebuffer synchronization events */
-	for (::Session *s = session_list.first(); s; s = s->next())
+	for (Gui_session *s = _session_list.first(); s; s = s->next())
 		s->submit_sync();
 }
 
@@ -1312,96 +761,170 @@ void Nitpicker::Main::handle_input(unsigned)
 /**
  * Helper function for 'handle_config'
  */
-static void configure_reporter(Genode::Reporter &reporter)
+static void configure_reporter(Genode::Xml_node config, Genode::Reporter &reporter)
 {
 	try {
-		Genode::Xml_node config_xml = Genode::config()->xml_node();
-		reporter.enabled(config_xml.sub_node("report")
-		                           .attribute_value(reporter.name().string(), false));
-	} catch (...) {
-		reporter.enabled(false);
+		reporter.enabled(config.sub_node("report")
+		                       .attribute_value(reporter.name().string(), false));
 	}
+	catch (...) { reporter.enabled(false); }
 }
 
 
-void Nitpicker::Main::handle_config(unsigned)
+void Nitpicker::Main::_handle_focus()
 {
-	config()->reload();
+	if (!_focus_rom.constructed())
+		return;
+
+	_focus_rom->update();
+
+	typedef Gui::Session::Label Label;
+	Label const label = _focus_rom->xml().attribute_value("label", Label());
+
+	/*
+	 * Determine session that matches the label found in the focus ROM
+	 */
+	View_owner *next_focus = nullptr;
+	for (Gui_session *s = _session_list.first(); s; s = s->next())
+		if (s->label() == label)
+			next_focus = s;
+
+	if (next_focus)
+		_user_state.focus(next_focus->forwarded_focus());
+	else
+		_user_state.reset_focus();
+}
+
+
+void Nitpicker::Main::_handle_config()
+{
+	_config_rom.update();
+
+	Xml_node const config = _config_rom.xml();
 
 	/* update global keys policy */
-	global_keys.apply_config(session_list);
+	_global_keys.apply_config(config, _session_list);
 
 	/* update background color */
-	try {
-		config()->xml_node().sub_node("background")
-		.attribute("color").value(&background.color);
-	} catch (...) { }
+	_builtin_background.color = Background::default_color();
+	if (config.has_sub_node("background"))
+		_builtin_background.color =
+			config.sub_node("background")
+			      .attribute_value("color", Background::default_color());
 
-	/* enable or disable redraw debug mode */
-	tmp_fb = config()->xml_node().attribute_value("flash", false)
-		? &framebuffer
-		: nullptr;
-
-	configure_reporter(pointer_reporter);
-	configure_reporter(hover_reporter);
-	configure_reporter(focus_reporter);
+	configure_reporter(config, _pointer_reporter);
+	configure_reporter(config, _hover_reporter);
+	configure_reporter(config, _focus_reporter);
+	configure_reporter(config, _keystate_reporter);
+	configure_reporter(config, _clicked_reporter);
+	configure_reporter(config, _displays_reporter);
 
 	/* update domain registry and session policies */
-	for (::Session *s = session_list.first(); s; s = s->next())
+	for (Gui_session *s = _session_list.first(); s; s = s->next())
 		s->reset_domain();
 
-	try {
-		domain_registry.construct(*env()->heap(), config()->xml_node()); }
+	try { _domain_registry.construct(_domain_registry_heap, config); }
 	catch (...) { }
 
-	for (::Session *s = session_list.first(); s; s = s->next())
-		s->apply_session_policy(*domain_registry);
+	for (Gui_session *s = _session_list.first(); s; s = s->next()) {
+		s->apply_session_policy(config, *_domain_registry);
+		s->notify_mode_change();
+	}
 
-	user_state.apply_origin_policy(pointer_origin);
+	_view_stack.apply_origin_policy(_pointer_origin);
 
 	/*
 	 * Domains may have changed their layering, resort the view stack with the
 	 * new constrains.
 	 */
-	user_state.sort_views_by_layer();
+	_view_stack.sort_views_by_layer();
+
+	/*
+	 * Respond to a configuration change of the input-focus mechanism
+	 */
+	bool const focus_rom = (config.attribute_value("focus", String<16>()) == "rom");
+	if (_focus_rom.constructed() && !focus_rom)
+		_focus_rom.destruct();
+
+	if (!_focus_rom.constructed() && focus_rom) {
+		_focus_rom.construct(_env, "focus");
+		_focus_rom->sigh(_focus_handler);
+		_handle_focus();
+	}
+
+	/* disable builtin focus handling when using an external focus policy */
+	_user_state.focus_via_click(!_focus_rom.constructed());
 
 	/* redraw */
-	user_state.update_all_views();
+	_view_stack.update_all_views();
+
+	/* update focus report since the domain colors might have changed */
+	Reporter::Xml_generator xml(_focus_reporter, [&] () {
+		_user_state.report_focused_view_owner(xml, _button_activity); });
+
+	/* update framebuffer output back end */
+	bool const request_framebuffer = config.attribute_value("request_framebuffer", false);
+	if (request_framebuffer != _request_framebuffer) {
+		_request_framebuffer = request_framebuffer;
+		_handle_fb_mode();
+	}
+
+	/*
+	 * Update input back end
+	 *
+	 * Defer input session creation until at least one capture client
+	 * (framebuffer driver) is present.
+	 */
+	_request_input = config.attribute_value("request_input", false);
+	_update_input_connection();
 }
 
 
-void Nitpicker::Main::handle_fb_mode(unsigned)
+void Nitpicker::Main::_report_displays()
 {
-	/* reconstruct framebuffer screen and menu bar */
-	fb_screen.construct(framebuffer);
+	if (!_displays_reporter.enabled())
+		return;
 
-	/* let the view stack use the new size */
-	user_state.size(Area(fb_screen->mode.width(), fb_screen->mode.height()));
+	Reporter::Xml_generator xml(_displays_reporter, [&] () {
+		if (_fb_screen.constructed()) {
+			xml.node("display", [&] () {
+				xml.attribute("width",  _fb_screen->size.w());
+				xml.attribute("height", _fb_screen->size.h());
+			});
+		}
 
-	/* redraw */
-	user_state.update_all_views();
-
-	/* notify clients about the change screen mode */
-	for (::Session *s = session_list.first(); s; s = s->next()) {
-		Session_component *sc = dynamic_cast<Session_component *>(s);
-		if (sc)
-			sc->notify_mode_change();
-	}
+		_capture_root.report_displays(xml);
+	});
 }
 
 
-/************
- ** Server **
- ************/
-
-namespace Server {
-
-	char const *name() { return "nitpicker_ep"; }
-
-	size_t stack_size() { return 4*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Nitpicker::Main nitpicker(ep);
+void Nitpicker::Main::_handle_fb_mode()
+{
+	if (_request_framebuffer && !_framebuffer.constructed()) {
+		_framebuffer.construct(_env, Framebuffer::Mode{});
+		_framebuffer->mode_sigh(_fb_mode_handler);
+		_framebuffer->sync_sigh(_timer_handler);
+		_timer.trigger_periodic(0);
 	}
+
+	/* reconstruct '_fb_screen' with updated mode */
+	if (_request_framebuffer && _framebuffer.constructed())
+		_fb_screen.construct(_env.rm(), *_framebuffer);
+
+	if (!_request_framebuffer && _fb_screen.constructed())
+		_fb_screen.destruct();
+
+	if (!_request_framebuffer && _framebuffer.constructed())
+		_framebuffer.destruct();
+
+	if (!_request_framebuffer)
+		_timer.trigger_periodic(_timer_period_ms*1000);
+
+	capture_buffer_size_changed();
+}
+
+
+void Component::construct(Genode::Env &env)
+{
+	static Nitpicker::Main nitpicker(env);
 }

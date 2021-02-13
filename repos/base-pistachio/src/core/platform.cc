@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/allocator_avl.h>
 #include <base/sleep.h>
 #include <base/capability.h>
@@ -21,9 +21,12 @@
 /* base-internal includes */
 #include <base/internal/crt0.h>
 #include <base/internal/stack_area.h>
+#include <base/internal/capability_space_tpl.h>
+#include <base/internal/globals.h>
 
 /* core includes */
-#include <core_parent.h>
+#include <boot_modules.h>
+#include <core_log.h>
 #include <map_local.h>
 #include <platform.h>
 #include <platform_thread.h>
@@ -44,9 +47,8 @@ namespace Pistachio {
 using namespace Genode;
 
 
-static const bool verbose              = false;
-static const bool verbose_core_pf      = false;
-static const bool verbose_region_alloc = false;
+static const bool verbose         = true;
+static const bool verbose_core_pf = true;
 
 
 /***********************************
@@ -64,7 +66,7 @@ static unsigned long _core_pager_stack[PAGER_STACK_ELEMENTS];
 
 
 static inline bool write_fault(Pistachio::L4_Word_t flags) {
-	return (flags & 2) == 1; }
+	return (flags & 2); }
 
 
 static bool wait_for_page_fault(Pistachio::L4_ThreadId_t &from,
@@ -80,7 +82,8 @@ static bool wait_for_page_fault(Pistachio::L4_ThreadId_t &from,
 
 	enum { EXPECT = 2 };
 	if (L4_IpcFailed(res) || (L4_UntypedWords(res)) != EXPECT) {
-		PERR("got %ld words, expected %d", L4_UntypedWords(res), EXPECT);
+		error(__func__, ": got ", L4_UntypedWords(res), " words, "
+		      "expected ", (int)EXPECT);
 		return false;
 	}
 	L4_Store(res, &msg);
@@ -111,7 +114,8 @@ static bool reply_and_wait_for_page_fault(Pistachio::L4_ThreadId_t  to,
 
 	enum { EXPECT = 2 };
 	if (L4_IpcFailed(res) || (L4_UntypedWords(res)) != EXPECT) {
-		PERR("got %ld words, expected %d", L4_UntypedWords(res), EXPECT);
+		error(__func__, ": got ", L4_UntypedWords(res), " words, "
+		      "expected ", (int)EXPECT);
 		return wait_for_page_fault(from, pf_addr, pf_ip, flags);
 	}
 	L4_Store(res, &msg);
@@ -129,8 +133,6 @@ static bool reply_and_wait_for_page_fault(Pistachio::L4_ThreadId_t  to,
 
 static void _core_pager_loop()
 {
-	if (verbose) PDBG("Core pager running.");
-
 	using namespace Pistachio;
 
 	L4_ThreadId_t t;
@@ -147,7 +149,7 @@ static void _core_pager_loop()
 		else
 			wait_for_page_fault(t, pf_addr, pf_ip, flags);
 
-#warning "TODO Ignore fault messages from non-core tasks"
+		/* XXX Ignore fault messages from non-core tasks */
 
 		/*
 		 * Check for local echo mapping request. To request a local
@@ -162,28 +164,26 @@ static void _core_pager_loop()
 			continue;
 		}
 
-		PDBG("Got page fault (pf_addr = %08lx, pf_ip = %08lx, flags = %08lx).",
-		     pf_addr, pf_ip, flags);
-		print_l4_thread_id(L4_GlobalId(t));
+		log(L4_GlobalId(t));
 
 		/* check for NULL pointer */
 		if (pf_addr < page_size) {
-			PERR("possible null pointer %s at address %lx at EIP %lx in",
-			     write_fault(flags) ? "WRITE" : "READ/EXEC", pf_addr, pf_ip);
-			print_l4_thread_id(t);
+			error("possible null pointer ",
+			      write_fault(flags) ? "WRITE" : "READ/EXEC", " at "
+			      "address ", Hex(pf_addr), " at EIP ", Hex(pf_ip), " in ", t);
+
 			/* do not unblock faulter */
 			break;
 		} else if (!_core_address_ranges().valid_addr(pf_addr)) {
 			/* page-fault address is not in RAM */
 
-			PERR("%s access outside of RAM at %lx IP %lx",
-			     write_fault(flags) ? "WRITE" : "READ", pf_addr, pf_ip);
-			print_l4_thread_id(t);
+			error(write_fault(flags) ? "WRITE" : "READ", " access outside of RAM "
+			      "at ", Hex(pf_addr), " IP ", Hex(pf_ip), " by ", t);
+
 			/* do not unblock faulter */
 			break;
 		} else if (verbose_core_pf) {
-			PDBG("pfa=%lx ip=%lx in", pf_addr, pf_ip);
-			print_l4_thread_id(t);
+			log(__func__, ": pfa=", Hex(pf_addr), " ip=", Hex(pf_ip), " by ", t);
 		}
 
 		/* my pf handler is sigma0 - just touch the appropriate page */
@@ -204,28 +204,32 @@ static void _core_pager_loop()
 
 Platform::Sigma0::Sigma0()
 :
-	Pager_object(Cpu_session_capability(), Thread_capability(), 0, Affinity::Location())
+	Pager_object(Cpu_session_capability(), Thread_capability(),
+	             0, Affinity::Location(),
+	             Session_label(), Cpu_session::Name("sigma0"))
 {
-	cap(Native_capability(Pistachio::get_sigma0(), 0));
+	cap(Capability_space::import(Pistachio::get_sigma0(), Rpc_obj_key()));
 }
 
 
-Platform::Sigma0 *Platform::sigma0()
+Platform::Sigma0 &Platform::sigma0()
 {
 	static Sigma0 _sigma0;
-	return &_sigma0;
+	return _sigma0;
 }
 
 
-Platform::Core_pager::Core_pager(Platform_pd *core_pd)
+Platform::Core_pager::Core_pager(Platform_pd &core_pd)
 :
-	Platform_thread(0, "core.pager"),
-	Pager_object(Cpu_session_capability(), Thread_capability(), 0, Affinity::Location())
+	Platform_thread("core.pager"),
+	Pager_object(Cpu_session_capability(), Thread_capability(),
+	             0, Affinity::Location(),
+	             Session_label(), Cpu_session::Name(name()))
 {
 	Platform_thread::pager(sigma0());
 
-	core_pd->bind_thread(this);
-	cap(Native_capability(native_thread_id(), 0));
+	core_pd.bind_thread(*this);
+	cap(Capability_space::import(native_thread_id(), Rpc_obj_key()));
 
 	/* stack begins at the top end of the '_core_pager_stack' array */
 	void *sp = (void *)&_core_pager_stack[PAGER_STACK_ELEMENTS - 1];
@@ -236,10 +240,10 @@ Platform::Core_pager::Core_pager(Platform_pd *core_pd)
 }
 
 
-Platform::Core_pager *Platform::core_pager()
+Platform::Core_pager &Platform::core_pager()
 {
 	static Core_pager _core_pager(core_pd());
-	return &_core_pager;
+	return _core_pager;
 }
 
 
@@ -262,16 +266,14 @@ struct Region
 	{
 		return (((base + size) > start) && (base < end));
 	}
+
+	void print(Genode::Output &out) const
+	{
+		size_t const size = end - start;
+		Genode::print(out, Hex_range<addr_t>(start, size), " ",
+		                   "size: ", Hex(size, Hex::PREFIX, Hex::PAD));
+	}
 };
-
-
-/**
- * Log region
- */
-static inline void print_region(Region r)
-{
-	printf("[%08lx,%08lx) %08lx", r.start, r.end, r.end - r.start);
-}
 
 
 /**
@@ -280,12 +282,8 @@ static inline void print_region(Region r)
 static inline void add_region(Region r, Range_allocator &alloc)
 {
 	if (r.start >= r.end) {
-		PERR("(start = 0x%08lx, end = 0x%08lx)\n", r.start, r.end);
+		error(__func__, ": bad range ", r);
 		panic("add_region called with bogus parameters.");
-	}
-
-	if (verbose_region_alloc) {
-		printf("%p    add: ", &alloc); print_region(r); printf("\n");
 	}
 
 	/* adjust region */
@@ -303,10 +301,6 @@ static inline void remove_region(Region r, Range_allocator &alloc)
 {
 	if (r.start >= r.end)
 		panic("remove_region called with bogus parameters.");
-
-	if (verbose_region_alloc) {
-		printf("%p remove: ", &alloc); print_region(r); printf("\n");
-	}
 
 	/* adjust region */
 	addr_t start = trunc_page(r.start);
@@ -357,12 +351,10 @@ static void dump_kip_memdesc(Pistachio::L4_KernelInterfacePage_t *kip)
 	for (L4_Word_t i = 0; i < num_desc; i++) {
 		L4_MemoryDesc_t *d = L4_MemoryDesc(kip, i);
 
-		printf("mem %ld: [0x%08lx, 0x%08lx) type=0x%lx (%s) %s\n",
-		       i,
-		       L4_Low(d),
-		       L4_High(d)+1,
-		       L4_Type(d), types[L4_Type(d) & 0xF],
-		       L4_IsVirtual(d) ? "Virtual" : "Non-Virtual");
+		log("mem ", i, ": ",
+		    Hex_range<addr_t>(L4_Low(d), L4_High(d) - L4_Low(d) + 1), " "
+		    "type=", Hex(L4_Type(d)), " (", types[L4_Type(d) & 0xf], ") ",
+		    L4_IsVirtual(d) ? "Virtual" : "Non-Virtual");
 	}
 }
 
@@ -416,45 +408,53 @@ void Platform::_setup_mem_alloc()
 		/* mask out that size bit */
 		page_size_mask &= ~size;
 
-		printf("Trying to allocate %uK pages from sigma0.\n", size >> 10);
+		log("Trying to allocate ", size >> 10, "K pages from sigma0.");
 
 		/*
 		 * Suck out sigma0. The spec says that we get only "conventional
 		 * memory". Let's hope this is true.
 		 */
-		bool succ;
+		bool succ = true;
 		unsigned int bytes_got = 0;
-		do {
+		while (succ) {
 			addr_t addr;
 			Region region;
 
 			succ = sigma0_req_region(&addr, size_log2);
-			if (succ) {
-				/* XXX do not allocate page0 */
-				if (addr == 0) {
-//					L4_Fpage_t f = L4_FpageLog2(0, pslog2);
-//					f += L4_FullyAccessible;
-//					L4_Flush(f);
 
-				} else {
-					region.start = addr; region.end = addr + size;
-					if (region.intersects(stack_area_virtual_base(),
-					                      stack_area_virtual_size()) ||
-						intersects_kip_archdep(kip, addr, size)) {
-						unmap_local(region.start, size >> get_page_size_log2());
-					} else {
-						add_region(region, _ram_alloc);
-						add_region(region, _core_address_ranges());
-					}
-					remove_region(region, _io_mem_alloc);
-					remove_region(region, _region_alloc);
-				}
+			if (!succ)
+				continue;
 
-				bytes_got += size;
+			/* XXX do not allocate page0 */
+			if (addr == 0) {
+//				L4_Fpage_t f = L4_FpageLog2(0, pslog2);
+//				f += L4_FullyAccessible;
+//				L4_Flush(f);
+				continue;
 			}
-		} while (succ);
 
-		printf("Got %uK in %uK pieces.\n", bytes_got >> 10, size >> 10);
+			/* exclude phys ram which is unaccessible - 1:1 mappings! */
+			if (addr >= _vm_start + _vm_size)
+				continue;
+			if ((addr + size > _vm_start + _vm_size) || ( addr + size <= addr))
+				size = _vm_start + _vm_size - addr;
+
+			region.start = addr; region.end = addr + size;
+			if (region.intersects(stack_area_virtual_base(),
+			                      stack_area_virtual_size()) ||
+				intersects_kip_archdep(kip, addr, size)) {
+				unmap_local(region.start, size >> get_page_size_log2());
+			} else {
+				add_region(region, _ram_alloc);
+				add_region(region, _core_address_ranges());
+			}
+			remove_region(region, _io_mem_alloc);
+			remove_region(region, _region_alloc);
+
+			bytes_got += size;
+		}
+
+		log("Got ", bytes_got >> 10, "K in ", size >> 10, "K pieces.");
 	}
 }
 
@@ -472,20 +472,6 @@ void Platform::_setup_preemption()
 }
 
 
-static Pistachio::L4_KernelInterfacePage_t *init_kip()
-{
-	using namespace Pistachio;
-
-	/* completely map program image */
-	addr_t beg = trunc_page((addr_t)&_prog_img_beg);
-	addr_t end = round_page((addr_t)&_prog_img_end);
-	for ( ; beg < end; beg += Pistachio::get_page_size())
-		L4_Sigma0_GetPage(get_sigma0(), L4_Fpage(beg, Pistachio::get_page_size()));
-
-	return get_kip();
-}
-
-
 void Platform::_setup_basics()
 {
 	using namespace Pistachio;
@@ -497,23 +483,17 @@ void Platform::_setup_basics()
 		panic("we got something but not the KIP");
 
 	if (verbose) {
-		printf("\n");
-		printf("KIP @ %p\n", kip);
-		printf("    magic: %08lx\n", kip->magic);
-		printf("  version: %08lx\n", kip->ApiVersion.raw);
-		printf(" BootInfo: %08lx\n", kip->BootInfo);
+		log("");
+		log("KIP @ ", kip);
+		log("    magic: ", Hex(kip->magic,          Hex::PREFIX, Hex::PAD));
+		log("  version: ", Hex(kip->ApiVersion.raw, Hex::PREFIX, Hex::PAD));
+		log(" BootInfo: ", Hex(kip->BootInfo,       Hex::PREFIX, Hex::PAD));
 	}
 
 	dump_kip_memdesc(kip);
 
 	/* add KIP as ROM module */
-	_kip_rom = Rom_module((addr_t)kip, sizeof(L4_KernelInterfacePage_t), "pistachio_kip");
 	_rom_fs.insert(&_kip_rom);
-
-	/* update multi-boot info pointer from KIP */
-	void *mb_info_ptr = (void *)kip->BootInfo;
-
-	// Get virtual bootinfo address.
 
 	L4_Fpage_t bipage = L4_Sigma0_GetPage(get_sigma0(),
 	                                      L4_Fpage(kip->BootInfo,
@@ -521,15 +501,7 @@ void Platform::_setup_basics()
 	if (L4_IsNilFpage(bipage))
 		panic("Could not map BootInfo.");
 
-	if (!L4_BootInfo_Valid(mb_info_ptr))
-		panic("No valid boot info.");
-
-	if (L4_BootInfo_Size(mb_info_ptr) > get_page_size())
-		panic("TODO Our multiboot info is bigger than a page...");
-
 	/* done magic */
-
-	if (verbose) printf("MBI @ %p\n", mb_info_ptr);
 
 	/* get UTCB memory */
 	Platform_pd::touch_utcb_space();
@@ -552,7 +524,7 @@ void Platform::_setup_basics()
 		if (!L4_IsVirtual(md)) continue;
 
 		if (_vm_start != 0x0 || _vm_size != 0x0) {
-			PWRN("KIP has multiple virtual-memory descriptors. Taking only the first.");
+			warning("KIP has multiple virtual-memory descriptors. Taking only the first.");
 			break;
 		}
 
@@ -563,8 +535,9 @@ void Platform::_setup_basics()
 		_vm_start = max((L4_Word_t)0x1000, L4_MemoryDescLow(md));
 		_vm_size  = L4_MemoryDescHigh(md) - _vm_start + 1;
 
-		printf("KIP reports virtual memory region at [%lx,%lx)\n",
-		       L4_MemoryDescLow(md), L4_MemoryDescHigh(md));
+		log("KIP reports virtual memory region at ",
+		    Hex_range<addr_t>(L4_MemoryDescLow(md),
+		                      L4_MemoryDescHigh(md) - L4_MemoryDescLow(md)));
 	}
 
 	/* configure core's virtual memory, exclude KIP, stack area */
@@ -573,17 +546,13 @@ void Platform::_setup_basics()
 	_region_alloc.remove_range(stack_area_virtual_base(),
 	                           stack_area_virtual_size());
 
-	/* remove KIP and MBI area from region and IO_MEM allocator */
+	/* remove KIP area from region and IO_MEM allocator */
 	remove_region(Region((addr_t)kip, (addr_t)kip + kip_size), _region_alloc);
-	remove_region(Region((addr_t)kip, (addr_t)kip + kip_size), _io_mem_alloc);
-	remove_region(Region((addr_t)mb_info_ptr, (addr_t)mb_info_ptr + _mb_info.size()), _region_alloc);
-	remove_region(Region((addr_t)mb_info_ptr, (addr_t)mb_info_ptr + _mb_info.size()), _io_mem_alloc);
 
 	/* remove utcb area */
 	addr_t utcb_ptr = (addr_t)Platform_pd::_core_utcb_ptr;
 
 	remove_region(Region(utcb_ptr, utcb_ptr + L4_UtcbAreaSize (kip)), _region_alloc);
-	remove_region(Region(utcb_ptr, utcb_ptr + L4_UtcbAreaSize (kip)), _io_mem_alloc);
 
 	/* remove core program image memory from region allocator */
 	addr_t img_start = (addr_t) &_prog_img_beg;
@@ -596,52 +565,21 @@ void Platform::_setup_basics()
 }
 
 
-void Platform::_setup_rom()
-{
-	Rom_module rom;
-
-	Pistachio::L4_Word_t page_size = Pistachio::get_page_size();
-
-	for (unsigned i = 0; i < _mb_info.num_modules();  i++) {
-		if (!(rom = _mb_info.get_module(i)).valid()) continue;
-
-		Rom_module *new_rom = new(core_mem_alloc()) Rom_module(rom);
-
-		_rom_fs.insert(new_rom);
-
-		if (verbose)
-			printf(" mod[%d] [%p,%p) %s\n", i,
-			       (void *)new_rom->addr(), ((char *)new_rom->addr()) + new_rom->size(),
-			       new_rom->name());
-
-		/* zero remainder of last ROM page */
-		size_t count = page_size - rom.size() % page_size;
-		if (count != page_size)
-			memset(reinterpret_cast<void *>(rom.addr() + rom.size()), 0, count);
-
-		/* remove ROM area from region and IO_MEM allocator */
-		remove_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _region_alloc);
-		remove_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _io_mem_alloc);
-
-		/* add area to core-accessible ranges */
-		add_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _core_address_ranges());
-	}
-}
-
-
-Platform_pd *Platform::core_pd()
+Platform_pd &Platform::core_pd()
 {
 	/* on first call, setup task object for core task */
 	static Platform_pd _core_pd(true);
-	return &_core_pd;
+	return _core_pd;
 }
 
 
-Platform::Platform() :
-	_ram_alloc(nullptr), _io_mem_alloc(core_mem_alloc()),
-	_io_port_alloc(core_mem_alloc()), _irq_alloc(core_mem_alloc()),
-	_region_alloc(core_mem_alloc()),
-	_mb_info(init_kip()->BootInfo)
+Platform::Platform()
+:
+	_ram_alloc(nullptr), _io_mem_alloc(&core_mem_alloc()),
+	_io_port_alloc(&core_mem_alloc()), _irq_alloc(&core_mem_alloc()),
+	_region_alloc(&core_mem_alloc()),
+	_kip_rom((addr_t)Pistachio::get_kip(),
+	         sizeof(Pistachio::L4_KernelInterfacePage_t), "pistachio_kip")
 {
 	/*
 	 * We must be single-threaded at this stage and so this is safe.
@@ -655,22 +593,9 @@ Platform::Platform() :
 	_setup_mem_alloc();
 	_setup_io_port_alloc();
 	_setup_irq_alloc();
-	_setup_rom();
+	_init_rom_modules();
 
-	/*
-	 * When dumping 'ram_alloc', there are several small blocks in addition
-	 * to the available free memory visible. These small blocks are used to
-	 * hold the meta data for the ROM modules as initialized by '_setup_rom'.
-	 */
-	if (verbose) {
-		printf(":ram_alloc: ");    _ram_alloc()->dump_addr_tree();
-		printf(":region_alloc: "); _region_alloc()->dump_addr_tree();
-		printf(":io_mem: ");       _io_mem_alloc()->dump_addr_tree();
-		printf(":io_port: ");      _io_port_alloc()->dump_addr_tree();
-		printf(":irq: ");          _irq_alloc()->dump_addr_tree();
-		printf(":rom_fs: ");       _rom_fs.print_fs();
-		printf(":core ranges: ");  _core_address_ranges()()->dump_addr_tree();
-	}
+	log(_rom_fs);
 
 	/*
 	 * We setup the thread object for thread0 in core task using a
@@ -679,12 +604,35 @@ Platform::Platform() :
 	 * thread_id of first task. But since we do not destroy this
 	 * task, it should be no problem.
 	 */
-	static Platform_thread core_thread(0, "core.main");
+	static Platform_thread core_thread("core.main");
 
 	core_thread.set_l4_thread_id(Pistachio::L4_MyGlobalId());
 	core_thread.pager(sigma0());
 
-	core_pd()->bind_thread(&core_thread);
+	core_pd().bind_thread(core_thread);
+
+	/* core log as ROM module */
+	{
+		void * phys_ptr       = nullptr;
+		unsigned const pages  = 1;
+		size_t const log_size = pages << get_page_size_log2();
+
+		ram_alloc().alloc_aligned(log_size, &phys_ptr, get_page_size_log2());
+		addr_t const phys_addr = reinterpret_cast<addr_t>(phys_ptr);
+
+		void * const core_local_ptr = phys_ptr;
+		addr_t const core_local_addr = phys_addr;
+
+		/* let one page free after the log buffer */
+		region_alloc().remove_range(core_local_addr, log_size + get_page_size());
+
+		memset(core_local_ptr, 0, log_size);
+
+		_rom_fs.insert(new (core_mem_alloc()) Rom_module(phys_addr, log_size,
+		                                                 "core_log"));
+
+		init_core_log(Core_log_range { core_local_addr, log_size } );
+	}
 }
 
 
@@ -700,5 +648,3 @@ void Platform::wait_for_exit()
 	sleep_forever();
 }
 
-
-void Core_parent::exit(int exit_value) { }

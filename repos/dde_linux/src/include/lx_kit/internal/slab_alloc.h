@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__INTERAL__SLAB_ALLOC_H_
@@ -28,6 +28,10 @@ namespace Lx { class Slab_alloc; }
 
 class Lx::Slab_alloc : public Genode::Slab
 {
+	public:
+
+		typedef Genode::size_t size_t;
+
 	private:
 
 		size_t const _object_size;

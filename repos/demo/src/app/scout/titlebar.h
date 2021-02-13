@@ -5,33 +5,35 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _TITLEBAR_H_
 #define _TITLEBAR_H_
 
 #include "widgets.h"
-
-#define TITLE_TFF _binary_vera18_tff_start
-extern char TITLE_TFF[];
+#include "styles.h"
 
 namespace Scout { template <typename PT> class Titlebar; }
 
-
-static Scout::Font title_font(TITLE_TFF);
 
 template <typename PT>
 class Scout::Titlebar : public Parent_element
 {
 	private:
 
-		Icon<PT, 32, 32> _fg;
-		const char *_txt;
-		int _txt_w, _txt_h, _txt_len;
+		/*
+		 * Noncopyable
+		 */
+		Titlebar(Titlebar const &);
+		Titlebar &operator = (Titlebar const &);
+
+		Icon<PT, 32, 32> _fg { };
+		const char *_txt = nullptr;
+		int _txt_w = 0, _txt_h = 0, _txt_len = 0;
 
 	public:
 
@@ -41,8 +43,8 @@ class Scout::Titlebar : public Parent_element
 		void text(const char *txt)
 		{
 			_txt     = txt ? txt : "Scout";
-			_txt_w   = title_font.str_w(_txt, strlen(_txt));
-			_txt_h   = title_font.str_h(_txt, strlen(_txt));
+			_txt_w   = title_font.string_width(_txt, strlen(_txt)).decimal();
+			_txt_h   = title_font.bounding_box().h();
 			_txt_len = strlen(_txt);
 		}
 
@@ -67,13 +69,13 @@ class Scout::Titlebar : public Parent_element
 		 * Element interface
 		 */
 
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			_min_size = Area(w, 32);
 			_fg.geometry(Rect(Point(0, 0), _min_size));
 		}
 
-		void draw(Canvas_base &canvas, Point abs_position)
+		void draw(Canvas_base &canvas, Point abs_position) override
 		{
 			const int b = 180, a = 200;
 			canvas.draw_box(abs_position.x() + _position.x(),

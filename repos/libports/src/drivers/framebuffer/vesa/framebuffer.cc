@@ -6,23 +6,25 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/env.h>
-#include <base/sleep.h>
-#include <base/stdint.h>
-#include <base/printf.h>
-#include <base/snprintf.h>
+/* Genode includes */
+#include <base/log.h>
+#include <base/allocator.h>
 #include <io_mem_session/connection.h>
+#include <platform_session/connection.h>
 
+/* local includes */
 #include "framebuffer.h"
 #include "ifx86emu.h"
+#include "hw_emul.h"
 #include "vesa.h"
 #include "vbe.h"
+#include "genode_env.h"
 
 using namespace Genode;
 using namespace Vesa;
@@ -33,6 +35,7 @@ using namespace Vesa;
 static Dataspace_capability io_mem_cap;
 
 static const bool verbose = false;
+
 
 /***************
  ** Utilities **
@@ -46,15 +49,15 @@ static inline uint32_t to_phys(uint32_t addr)
 
 
 static uint16_t get_vesa_mode(mb_vbe_ctrl_t *ctrl_info, mb_vbe_mode_t *mode_info,
-                              unsigned long &width, unsigned long &height,
-                              unsigned long depth, bool verbose)
+                              unsigned &width, unsigned &height, unsigned depth,
+                              bool verbose)
 {
 	bool choose_highest_resolution_mode = ((width == 0) || (height == 0));
 
 	uint16_t ret = 0;
 
 	if (verbose)
-		printf("Supported mode list\n");
+		log("Supported mode list");
 
 	/*
 	 * The virtual address of the ctrl_info mapping may change on x86_cmd
@@ -70,9 +73,10 @@ static uint16_t get_vesa_mode(mb_vbe_ctrl_t *ctrl_info, mb_vbe_mode_t *mode_info
 			continue;
 
 		if (verbose)
-			printf("    0x%03x %ux%u@%u\n", *MODE_PTR(off), mode_info->x_resolution,
-			                                 mode_info->y_resolution,
-			                                 mode_info->bits_per_pixel);
+			log("    ", Hex((short)*MODE_PTR(off), Hex::PREFIX, Hex::PAD), " ",
+			    (unsigned)mode_info->x_resolution, "x",
+			    (unsigned)mode_info->y_resolution, "@",
+			    (unsigned)mode_info->bits_per_pixel);
 
 		if (choose_highest_resolution_mode) {
 			if ((mode_info->bits_per_pixel == depth) &&
@@ -118,7 +122,7 @@ static uint16_t get_vesa_mode(mb_vbe_ctrl_t *ctrl_info, mb_vbe_mode_t *mode_info
 		return ret;
 
 	if (verbose)
-		PWRN("Searching in default vesa modes");
+		warning("Searching in default vesa modes");
 
 	if (choose_highest_resolution_mode) {
 		/*
@@ -141,29 +145,29 @@ static uint16_t get_vesa_mode(mb_vbe_ctrl_t *ctrl_info, mb_vbe_mode_t *mode_info
  ** Driver API **
  ****************/
 
-Dataspace_capability Framebuffer_drv::hw_framebuffer()
+Dataspace_capability Framebuffer::hw_framebuffer()
 {
 	return io_mem_cap;
 }
 
 
-int Framebuffer_drv::map_io_mem(addr_t base, size_t size, bool write_combined,
-                                void **out_addr, addr_t addr,
-                                Dataspace_capability *out_io_ds)
+int Framebuffer::map_io_mem(addr_t base, size_t size, bool write_combined,
+                            void **out_addr, addr_t addr,
+                            Dataspace_capability *out_io_ds)
 {
-	Io_mem_connection io_mem(base, size, write_combined);
-	io_mem.on_destruction(Io_mem_connection::KEEP_OPEN);
+	Io_mem_connection &io_mem = *new (alloc())
+		Io_mem_connection(genode_env(), base, size, write_combined);
+
 	Io_mem_dataspace_capability io_ds = io_mem.dataspace();
 	if (!io_ds.valid())
 		return -2;
 
 	try {
-		*out_addr = env()->rm_session()->attach(io_ds, size, 0, addr != 0, addr);
-	} catch (Rm_session::Attach_failed) {
-		return -3;
+		*out_addr = genode_env().rm().attach(io_ds, size, 0, addr != 0, addr);
 	}
+	catch (Region_map::Region_conflict) { return -3; }
 
-	PDBG("fb mapped to %p", *out_addr);
+	log("fb mapped to ", *out_addr);
 
 	if (out_io_ds)
 		*out_io_ds = io_ds;
@@ -172,8 +176,7 @@ int Framebuffer_drv::map_io_mem(addr_t base, size_t size, bool write_combined,
 }
 
 
-int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
-                              unsigned long mode)
+int Framebuffer::set_mode(unsigned &width, unsigned &height, unsigned mode)
 {
 	mb_vbe_ctrl_t *ctrl_info;
 	mb_vbe_mode_t *mode_info;
@@ -191,13 +194,13 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
 
 	/* retrieve controller information */
 	if (X86emu::x86emu_cmd(VBE_CONTROL_FUNC, 0, 0, VESA_CTRL_OFFS) != VBE_SUPPORTED) {
-		PWRN("VBE Bios not present");
+		warning("VBE Bios not present");
 		return -1;
 	}
 
 	/* retrieve vesa mode hex value */
 	if (!(vesa_mode = get_vesa_mode(ctrl_info, mode_info, width, height, mode, verbose))) {
-		PWRN("graphics mode %lux%lu@%lu not found", width, height, mode);
+		warning("graphics mode ", width, "x", height, "@", mode, " not found");
 		/* print available modes */
 		get_vesa_mode(ctrl_info, mode_info, width, height, mode, true);
 		return -2;
@@ -209,12 +212,12 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
 	/* determine VBE version and OEM string */
 	oem_string = X86emu::virt_addr<char>(to_phys(ctrl_info->oem_string));
 
-	printf("Found: VESA BIOS version %d.%d\nOEM: %s\n",
-	       ctrl_info->version >> 8, ctrl_info->version & 0xFF,
-	       ctrl_info->oem_string ? oem_string : "[unknown]");
+	log("Found: VESA BIOS version ",
+	    ctrl_info->version >> 8, ".", ctrl_info->version & 0xFF, "\n"
+	    "OEM: ", Cstring(ctrl_info->oem_string ? oem_string : "[unknown]"));
 
 	if (ctrl_info->version < 0x200) {
-		PWRN("VESA Bios version 2.0 or later required");
+		warning("VESA Bios version 2.0 or later required");
 		return -3;
 	}
 
@@ -223,7 +226,7 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
 	 * FRAME BUFFER (0x80) bits */
 	if (X86emu::x86emu_cmd(VBE_INFO_FUNC, 0, vesa_mode, VESA_MODE_OFFS) != VBE_SUPPORTED
 	   || (mode_info->mode_attributes & 0x91) != 0x91) {
-		PWRN("graphics mode %lux%lu@%lu not supported", width, height, mode);
+		warning("graphics mode ", width, "x", height, "@", mode, " not supported");
 		/* print available modes */
 		get_vesa_mode(ctrl_info, mode_info, width, height, mode, true);
 		return -4;
@@ -231,7 +234,7 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
 
 	/* set mode */
 	if ((X86emu::x86emu_cmd(VBE_MODE_FUNC, vesa_mode) & 0xFF00) != VBE_SUCCESS) {
-		PDBG("VBE SET error");
+		error("VBE SET error");
 		return -5;
 	}
 
@@ -240,9 +243,8 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
 	if (!io_mem_cap.valid()) {
 		X86emu::x86emu_cmd(VBE_INFO_FUNC, 0, vesa_mode, VESA_MODE_OFFS);
 
-		printf("Found: physical frame buffer at 0x%08x size: 0x%08x\n",
-		       mode_info->phys_base,
-		       ctrl_info->total_memory << 16);
+		log("Found: physical frame buffer at ", Hex(mode_info->phys_base), " "
+		    "size: ", ctrl_info->total_memory << 16);
 		map_io_mem(mode_info->phys_base, ctrl_info->total_memory << 16, true,
 		           &fb, 0, &io_mem_cap);
 	}
@@ -258,10 +260,19 @@ int Framebuffer_drv::set_mode(unsigned long &width, unsigned long &height,
  ** Driver startup **
  ********************/
 
-int Framebuffer_drv::init()
+void Framebuffer::init(Genode::Env &env, Genode::Allocator &heap)
 {
-	if (X86emu::init())
-		return -1;
+	local_init_genode_env(env, heap);
 
-	return 0;
+	{
+		/*
+		 * Wait until Acpi/Pci driver initialization is done to avoid
+		 * potentially concurrent access by this driver and the Acpi/Pci driver
+		 * to the graphics device, i.e., to the PCI config space.
+		 */
+		Platform::Connection sync(env);
+	}
+
+	hw_emul_init(env);
+	X86emu::init(env, heap);
 }

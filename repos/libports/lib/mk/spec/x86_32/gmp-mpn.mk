@@ -12,7 +12,7 @@ FILTER_OUT += udiv_w_sdiv.c
 SRC_ASM += copyd.asm copyi.asm hamdist.asm
 
 SRC_ASM += popcount.asm
-FILTER_OUT += popham.c
+FILTER_OUT += popham.c logops_n.c sec_div.c sec_pi1_div.c copyi.c copyd.c
 
 SRC_ASM += add_n.asm
 FILTER_OUT += add_n.c
@@ -65,3 +65,5 @@ vpath %.c   $(REP_DIR)/src/lib/gmp/mpn/spec/32bit
 vpath %.c   $(GMP_MPN_DIR)/generic
 vpath %.asm $(GMP_MPN_DIR)/x86/pentium
 vpath %.asm $(GMP_MPN_DIR)/x86
+
+CC_CXX_WARN_STRICT =

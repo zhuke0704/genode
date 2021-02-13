@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__VFS__DIRECTORY_SERVICE_H_
@@ -18,13 +18,14 @@
 
 namespace Vfs {
 	class Vfs_handle;
+	class Vfs_watch_handle;
 	struct Directory_service;
 
 	using Genode::Allocator;
 }
 
 
-struct Vfs::Directory_service
+struct Vfs::Directory_service : Interface
 {
 	virtual Dataspace_capability dataspace(char const *path) = 0;
 	virtual void release(char const *path, Dataspace_capability) = 0;
@@ -40,7 +41,7 @@ struct Vfs::Directory_service
 	/**
 	 * Flags of 'mode' argument of open syscall
 	 */
-	enum {
+	enum Open_mode {
 		OPEN_MODE_RDONLY  = 0,
 		OPEN_MODE_WRONLY  = 1,
 		OPEN_MODE_RDWR    = 2,
@@ -55,48 +56,108 @@ struct Vfs::Directory_service
 		OPEN_ERR_EXISTS,
 		OPEN_ERR_NAME_TOO_LONG,
 		OPEN_ERR_NO_SPACE,
+		OPEN_ERR_OUT_OF_RAM,
+		OPEN_ERR_OUT_OF_CAPS,
 		OPEN_OK
 	};
 
 	virtual Open_result open(char const  *path,
 	                         unsigned     mode,
 	                         Vfs_handle **handle,
-	                         Allocator   &alloc = *Genode::env()->heap()) = 0;
+	                         Allocator   &alloc) = 0;
+
+	enum Opendir_result
+	{
+		OPENDIR_ERR_LOOKUP_FAILED,
+		OPENDIR_ERR_NAME_TOO_LONG,
+		OPENDIR_ERR_NODE_ALREADY_EXISTS,
+		OPENDIR_ERR_NO_SPACE,
+		OPENDIR_ERR_OUT_OF_RAM,
+		OPENDIR_ERR_OUT_OF_CAPS,
+		OPENDIR_ERR_PERMISSION_DENIED,
+		OPENDIR_OK
+	};
+
+	virtual Opendir_result opendir(char const * /* path */, bool /* create */,
+	                               Vfs_handle **, Allocator &)
+	{
+		return OPENDIR_ERR_LOOKUP_FAILED;
+	}
+
+	enum Openlink_result
+	{
+		OPENLINK_ERR_LOOKUP_FAILED,
+		OPENLINK_ERR_NAME_TOO_LONG,
+		OPENLINK_ERR_NODE_ALREADY_EXISTS,
+		OPENLINK_ERR_NO_SPACE,
+		OPENLINK_ERR_OUT_OF_RAM,
+		OPENLINK_ERR_OUT_OF_CAPS,
+		OPENLINK_ERR_PERMISSION_DENIED,
+		OPENLINK_OK
+	};
+
+	virtual Openlink_result openlink(char const * /* path */, bool /* create */,
+	                                 Vfs_handle **, Allocator &)
+	{
+		return OPENLINK_ERR_PERMISSION_DENIED;
+	}
 
 	/**
 	 * Close handle resources and deallocate handle
+	 *
+	 * Note: it might be necessary to call 'sync()' before 'close()'
+	 *       to ensure that previously written data has been completely
+	 *       processed.
 	 */
 	virtual void close(Vfs_handle *handle) = 0;
 
+	enum Watch_result
+	{
+		WATCH_ERR_UNACCESSIBLE,
+		WATCH_ERR_STATIC,
+		WATCH_ERR_OUT_OF_RAM,
+		WATCH_ERR_OUT_OF_CAPS,
+		WATCH_OK
+	};
+
+	/**
+	 * Watch a file-system node for changes.
+	 */
+	virtual Watch_result watch(char const *path,
+	                           Vfs_watch_handle**,
+	                           Allocator&)
+	{
+		/* default implementation for static file-systems */
+		return (leaf_path(path)) ? WATCH_ERR_STATIC : WATCH_ERR_UNACCESSIBLE;
+	}
+
+	virtual void close(Vfs_watch_handle *)
+	{
+		Genode::error("watch handle closed at invalid file-system");
+		throw ~0;
+	};
 
 	/**********
 	 ** Stat **
 	 **********/
 
-	/**
-	 * These values are the same as in the FreeBSD libc
-	 */
-	enum {
-		STAT_MODE_SYMLINK   = 0120000,
-		STAT_MODE_FILE      = 0100000,
-		STAT_MODE_DIRECTORY = 0040000,
-		STAT_MODE_CHARDEV   = 0020000,
-		STAT_MODE_BLOCKDEV  = 0060000,
-	};
-
 	struct Stat
 	{
 		file_size     size;
-		unsigned      mode;
-		unsigned      uid;
-		unsigned      gid;
+		Node_type     type;
+		Node_rwx      rwx;
 		unsigned long inode;
 		unsigned long device;
+		Timestamp     modification_time;
 	};
 
 	enum Stat_result { STAT_ERR_NO_ENTRY = NUM_GENERAL_ERRORS,
 	                   STAT_ERR_NO_PERM, STAT_OK };
 
+	/*
+	 * Note: it might be necessary to call 'sync()' before 'stat()'
+	 *       to get the correct file size.
+	 */
 	virtual Stat_result stat(char const *path, Stat &) = 0;
 
 
@@ -104,28 +165,43 @@ struct Vfs::Directory_service
 	 ** Dirent **
 	 ************/
 
-	enum Dirent_result { DIRENT_ERR_INVALID_PATH, DIRENT_ERR_NO_PERM, DIRENT_OK };
-
-	enum { DIRENT_MAX_NAME_LEN = 128 };
-
-	enum Dirent_type {
-		DIRENT_TYPE_FILE,
-		DIRENT_TYPE_DIRECTORY,
-		DIRENT_TYPE_FIFO,
-		DIRENT_TYPE_CHARDEV,
-		DIRENT_TYPE_BLOCKDEV,
-		DIRENT_TYPE_SYMLINK,
-		DIRENT_TYPE_END
+	enum class Dirent_type
+	{
+		END,
+		DIRECTORY,
+		SYMLINK,
+		CONTINUOUS_FILE,
+		TRANSACTIONAL_FILE,
 	};
 
 	struct Dirent
 	{
+		struct Name
+		{
+			enum { MAX_LEN = 128 };
+			char buf[MAX_LEN] { };
+
+			Name() { };
+			Name(char const *name) { copy_cstring(buf, name, sizeof(buf)); }
+		};
+
 		unsigned long fileno;
 		Dirent_type   type;
-		char          name[DIRENT_MAX_NAME_LEN];
-	};
+		Node_rwx      rwx;
+		Name          name;
 
-	virtual Dirent_result dirent(char const *path, file_offset index, Dirent &) = 0;
+		/**
+		 * Sanitize dirent members
+		 *
+		 * This method must be called after receiving a 'Dirent' as
+		 * a plain data copy.
+		 */
+		void sanitize()
+		{
+			/* enforce null termination */
+			name.buf[Name::MAX_LEN - 1] = 0;
+		}
+	};
 
 
 	/************
@@ -138,16 +214,6 @@ struct Vfs::Directory_service
 	virtual Unlink_result unlink(char const *path) = 0;
 
 
-	/**************
-	 ** Readlink **
-	 **************/
-
-	enum Readlink_result { READLINK_ERR_NO_ENTRY, READLINK_ERR_NO_PERM, READLINK_OK };
-
-	virtual Readlink_result readlink(char const *path, char *buf,
-	                                 file_size buf_size, file_size &out_len) = 0;
-
-
 	/************
 	 ** Rename **
 	 ************/
@@ -158,28 +224,6 @@ struct Vfs::Directory_service
 	virtual Rename_result rename(char const *from, char const *to) = 0;
 
 
-	/***********
-	 ** Mkdir **
-	 ***********/
-
-	enum Mkdir_result { MKDIR_ERR_EXISTS,        MKDIR_ERR_NO_ENTRY,
-	                    MKDIR_ERR_NO_SPACE,      MKDIR_ERR_NO_PERM,
-	                    MKDIR_ERR_NAME_TOO_LONG, MKDIR_OK};
-
-	virtual Mkdir_result mkdir(char const *path, unsigned mode) = 0;
-
-
-	/*************
-	 ** Symlink **
-	 *************/
-
-	enum Symlink_result { SYMLINK_ERR_EXISTS,        SYMLINK_ERR_NO_ENTRY,
-	                      SYMLINK_ERR_NO_SPACE,      SYMLINK_ERR_NO_PERM,
-	                      SYMLINK_ERR_NAME_TOO_LONG, SYMLINK_OK };
-
-	virtual Symlink_result symlink(char const *from, char const *to) = 0;
-
-
 	/**
 	 * Return number of directory entries located at given path
 	 */
@@ -187,6 +231,9 @@ struct Vfs::Directory_service
 
 	virtual bool directory(char const *path) = 0;
 
+	/**
+	 * Return leaf path or nullptr if the path does not exist
+	 */
 	virtual char const *leaf_path(char const *path) = 0;
 };
 

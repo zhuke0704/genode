@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _ROM_H_
@@ -24,37 +24,11 @@
 
 namespace Gdb_monitor
 {
+	using namespace Genode;
+
 	class Rom_session_component;
-	class Rom_root;
-	class Rom_service;
-	using namespace Genode;
-}
-
-/**
- * Clone a ROM dataspace in RAM
- */
-static Genode::Capability<Genode::Ram_dataspace>
-clone_rom(Genode::Capability<Genode::Rom_dataspace> rom_cap)
-{
-	using namespace Genode;
-
-	Genode::size_t            rom_size  = Dataspace_client(rom_cap).size();
-	Capability<Ram_dataspace> clone_cap = env()->ram_session()->alloc(rom_size);
-
-	if (!clone_cap.valid()) {
-		PERR("%s: memory allocation for cloned dataspace failed", __func__);
-		return Capability<Ram_dataspace>();
-	}
-
-	void *rom   = env()->rm_session()->attach(rom_cap);
-	void *clone = env()->rm_session()->attach(clone_cap);
-
-	Genode::memcpy(clone, rom, rom_size);
-
-	env()->rm_session()->detach(rom);
-	env()->rm_session()->detach(clone);
-
-	return clone_cap;
+	class Local_rom_factory;
+	typedef Local_service<Rom_session_component> Rom_service;
 }
 
 
@@ -65,69 +39,102 @@ class Gdb_monitor::Rom_session_component : public Rpc_object<Rom_session>
 {
 	private:
 
-		Capability<Ram_dataspace> _clone_cap;
+		Env                       &_env;
+		Rpc_entrypoint            &_ep;
+
+		Capability<Ram_dataspace>  _clone_cap;
+
+		/**
+ 	 	 * Clone a ROM dataspace in RAM
+ 	 	 */
+		Capability<Ram_dataspace> _clone_rom(Capability<Rom_dataspace> rom_cap)
+		{
+			using namespace Genode;
+
+			size_t                    rom_size  = Dataspace_client(rom_cap).size();
+			Capability<Ram_dataspace> clone_cap = _env.ram().alloc(rom_size);
+
+			if (!clone_cap.valid()) {
+				error(__func__, ": memory allocation for cloned dataspace failed");
+				return Capability<Ram_dataspace>();
+			}
+
+			void *rom   = _env.rm().attach(rom_cap);
+			void *clone = _env.rm().attach(clone_cap);
+
+			memcpy(clone, rom, rom_size);
+
+			_env.rm().detach(rom);
+			_env.rm().detach(clone);
+
+			return clone_cap;
+		}
+
 
 	public:
 
-		Rom_session_component(char const *filename)
-		: _clone_cap(clone_rom(Rom_connection(filename).dataspace()))
-		{ }
+		Rom_session_component(Env            &env,
+		                      Rpc_entrypoint &ep,
+		                      char const     *filename)
+		: _env(env),
+		  _ep(ep),
+		  _clone_cap(_clone_rom(Rom_connection(env, filename).dataspace()))
+		{ _ep.manage(this); }
 
-		~Rom_session_component() { env()->ram_session()->free(_clone_cap); }
+		~Rom_session_component()
+		{
+			_env.ram().free(_clone_cap);
+			_ep.dissolve(this);
+		}
 
-		Capability<Rom_dataspace> dataspace()
+		/***************************
+		 ** ROM session interface **
+		 ***************************/
+
+		Rom_dataspace_capability dataspace() override
 		{
 			return static_cap_cast<Rom_dataspace>(
 				   static_cap_cast<Dataspace>(_clone_cap));
 		}
 
-		void release() { }
-
-		void sigh(Genode::Signal_context_capability) { }
+		void sigh(Signal_context_capability) override { }
 };
 
 
-class Gdb_monitor::Rom_root : public Root_component<Rom_session_component>
-{
-	protected:
-
-		Rom_session_component *_create_session(char const *args)
-		{
-			enum { FILENAME_MAX_LEN = 128 };
-			char filename[FILENAME_MAX_LEN];
-			Arg_string::find_arg(args, "filename").string(filename, sizeof(filename), "");
-
-			return new (md_alloc()) Rom_session_component(filename);
-		}
-
-	public:
-
-		Rom_root(Rpc_entrypoint *session_ep,
-				 Allocator      *md_alloc)
-		: Root_component<Rom_session_component>(session_ep, md_alloc)
-		{ }
-};
-
-
-class Gdb_monitor::Rom_service : public Service
+class Gdb_monitor::Local_rom_factory : public Rom_service::Factory
 {
 	private:
 
-		Rom_root _root;
+		Env            &_env;
+		Rpc_entrypoint &_ep;
+		Allocator      &_alloc;
 
 	public:
 
-		Rom_service(Rpc_entrypoint *entrypoint,
-					Allocator      *md_alloc)
-		: Service("ROM"), _root(entrypoint, md_alloc)
-		{ }
+		Local_rom_factory(Env &env, Rpc_entrypoint &ep, Allocator &alloc)
+		: _env(env), _ep(ep), _alloc(alloc) { }
 
-		Capability<Session> session(char const *args, Affinity const &affinity) {
-			return _root.session(args, affinity); }
+		/***********************
+		 ** Factory interface **
+		 ***********************/
 
-		void upgrade(Capability<Session>, char const *) { }
+		Rom_session_component &create(Args const &args, Affinity) override
+		{
+			Session_label const label = label_from_args(args.string());
 
-		void close(Capability<Session> cap) { _root.close(cap); }
+			return *new (_alloc)
+				Rom_session_component(_env,
+				                      _ep,
+				                      label.last_element().string());
+		}
+
+		void upgrade(Rom_session_component &, Args const &) override { }
+
+		void destroy(Rom_session_component &session) override
+		{
+			Genode::destroy(_alloc, &session);
+		}
 };
+
 
 #endif /* _ROM_H_ */

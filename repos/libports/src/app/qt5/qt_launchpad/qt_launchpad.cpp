@@ -4,15 +4,25 @@
  * \date    2008-04-05
  */
 
+/*
+ * Copyright (C) 2008-2020 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #include <QScrollArea>
+
+#include <base/log.h>
 
 #include "qt_launchpad.h"
 
 #include "launch_entry.h"
 #include "child_entry.h"
 
-Qt_launchpad::Qt_launchpad(unsigned long initial_quota, QWidget *parent)
-: QMainWindow(parent), Launchpad(initial_quota)
+Qt_launchpad::Qt_launchpad(Genode::Env &env, unsigned long initial_quota,
+                           QWidget *parent)
+: QMainWindow(parent), Launchpad(env, initial_quota), _env(env)
 {
 	setupUi(this);
 
@@ -56,7 +66,7 @@ void Qt_launchpad::_avail_quota_update()
 {
 	static Genode::size_t _avail = 0;
 
-	Genode::size_t new_avail = Genode::env()->ram_session()->avail();
+	Genode::size_t new_avail = _env.pd().avail_ram().value;
 
 	if (new_avail != _avail)
 		quota(new_avail);
@@ -72,43 +82,44 @@ void Qt_launchpad::quota(unsigned long quota)
 }
 
 
-void Qt_launchpad::add_launcher(const char *filename,
-                                unsigned long default_quota,
+void Qt_launchpad::add_launcher(Launchpad_child::Name const &binary_name,
+                                Cap_quota caps, unsigned long default_quota,
                                 Genode::Dataspace_capability config_ds)
 {
-	Launch_entry *launch_entry = new Launch_entry(filename,
+	Launch_entry *launch_entry = new Launch_entry(binary_name,
+	                                              caps,
 	                                              default_quota / 1024,
                                               	  initial_quota() / 1024,
-                                              	  config_ds,
-                                              	  this);
+                                              	  this,
+                                              	  config_ds);
 	launcherDockWidgetContents->layout()->addWidget(launch_entry);
 	launch_entry->show();
 	launcherDockWidgetContents->adjustSize();
 }
 
 
-void Qt_launchpad::add_child(const char *unique_name,
+void Qt_launchpad::add_child(Launchpad_child::Name const &name,
                              unsigned long quota,
-                             Launchpad_child *launchpad_child,
-                             Genode::Allocator *alloc)
+                             Launchpad_child &launchpad_child,
+                             Genode::Allocator &)
 {
-	Child_entry *child_entry = new Child_entry(unique_name, quota / 1024,
+	Child_entry *child_entry = new Child_entry(name, quota / 1024,
                                              initial_quota() / 1024,
-                                             this, launchpad_child);
-	child_entry->setObjectName(QString(unique_name) + "_child_entry");
+                                             *this, launchpad_child);
+	child_entry->setObjectName(QString(name.string()) + "_child_entry");
 	childrenDockWidgetContents->layout()->addWidget(child_entry);
 	child_entry->show();
 	childrenDockWidgetContents->adjustSize();
 }
 
 
-void Qt_launchpad::remove_child(const char *name, Genode::Allocator *alloc)
+void Qt_launchpad::remove_child(Launchpad_child::Name const &name, Genode::Allocator &)
 {
 	Child_entry *child_entry =
-	  childrenDockWidgetContents->findChild<Child_entry*>(QString(name) + "_child_entry");
+	  childrenDockWidgetContents->findChild<Child_entry*>(QString(name.string()) + "_child_entry");
 
 	if (!child_entry) {
-		PWRN("child entry lookup failed");
+		Genode::warning("child entry lookup failed");
 		return;
 	}
 

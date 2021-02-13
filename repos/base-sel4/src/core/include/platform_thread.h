@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_THREAD_H_
@@ -16,15 +16,15 @@
 
 /* Genode includes */
 #include <base/thread_state.h>
-#include <base/native_types.h>
 #include <util/string.h>
+#include <base/trace/types.h>
 
 /* core includes */
 #include <pager.h>
 #include <ipc_pager.h>
-#include <address_space.h>
 #include <thread_sel4.h>
 #include <install_mapping.h>
+#include <assertion.h>
 
 namespace Genode {
 
@@ -36,6 +36,12 @@ namespace Genode {
 class Genode::Platform_thread : public List<Platform_thread>::Element
 {
 	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Platform_thread(Platform_thread const &);
+		Platform_thread &operator = (Platform_thread const &);
 
 		Pager_object *_pager = nullptr;
 
@@ -49,7 +55,7 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		 */
 		addr_t const _utcb;
 
-		Thread_info _info;
+		Thread_info _info { };
 
 		Cap_sel const _pager_obj_sel;
 
@@ -60,6 +66,9 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		 */
 		Cap_sel _fault_handler_sel { 0 };
 		Cap_sel _ep_sel            { 0 };
+		Cap_sel _lock_sel          { 0 };
+		Cap_sel _vcpu_sel          { 0 };
+		Cap_sel _vcpu_notify_sel   { 0 };
 
 		friend class Platform_pd;
 
@@ -67,13 +76,16 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 
 		enum { INITIAL_IPC_BUFFER_VIRT = 0x1000 };
 
+		Affinity::Location _location;
+		uint16_t           _priority;
+
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Platform_thread(size_t, const char *name = 0, unsigned priority = 0,
-		                Affinity::Location = Affinity::Location(), addr_t utcb = 0);
+		Platform_thread(size_t, const char *name, unsigned priority,
+		                Affinity::Location, addr_t utcb);
 
 		/**
 		 * Destructor
@@ -108,11 +120,6 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		void resume();
 
 		/**
-		 * Cancel currently blocking operation
-		 */
-		void cancel_blocking();
-
-		/**
 		 * Override thread state with 's'
 		 *
 		 * \throw Cpu_session::State_access_failed
@@ -127,26 +134,24 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		Thread_state state();
 
 		/**
-		 * Return the address space to which the thread is bound
-		 */
-		Weak_ptr<Address_space> address_space();
-
-		/**
 		 * Return execution time consumed by the thread
 		 */
-		unsigned long long execution_time() const { return 0; }
+		Trace::Execution_time execution_time() const;
 
 
 		/************************
 		 ** Accessor functions **
 		 ************************/
 
-		/**
-		 * Set pager capability
-		 */
-		Pager_object *pager(Pager_object *pager) const { return _pager; }
-		void pager(Pager_object *pager) { _pager = pager; }
-		Pager_object *pager() { return _pager; }
+		void pager(Pager_object &pager) { _pager = &pager; }
+
+		Pager_object &pager()
+		{
+			if (_pager)
+				return *_pager;
+
+			ASSERT_NEVER_CALLED;
+		}
 
 		/**
 		 * Return identification of thread when faulting
@@ -156,12 +161,12 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		/**
 		 * Set the executing CPU for this thread
 		 */
-		void affinity(Affinity::Location) { }
+		void affinity(Affinity::Location location);
 
 		/**
 		 * Get the executing CPU for this thread
 		 */
-		Affinity::Location affinity() const { return Affinity::Location(); }
+		Affinity::Location affinity() const { return _location; }
 
 		/**
 		 * Set CPU quota of the thread
@@ -171,7 +176,7 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 		/**
 		 * Get thread name
 		 */
-		const char *name() const { return "noname"; }
+		const char *name() const { return _name.string(); }
 
 
 		/*****************************
@@ -180,7 +185,9 @@ class Genode::Platform_thread : public List<Platform_thread>::Element
 
 		Cap_sel tcb_sel() const { return _info.tcb_sel; }
 
-		void install_mapping(Mapping const &mapping);
+		bool install_mapping(Mapping const &mapping);
+
+		void setup_vcpu(Cap_sel ept, Cap_sel notification);
 };
 
 #endif /* _CORE__INCLUDE__PLATFORM_THREAD_H_ */

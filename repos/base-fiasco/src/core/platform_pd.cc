@@ -12,34 +12,25 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/native_types.h>
+#include <base/native_capability.h>
 
 /* core includes */
 #include <util.h>
 #include <platform_pd.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/syscalls.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Fiasco;
 using namespace Genode;
 
-
-static const bool verbose = false;
-
-
-/**************************
- ** Static class members **
- **************************/
 
 static bool _init = false;
 
@@ -67,10 +58,10 @@ void Platform_pd::init()
 
 void Platform_pd::_create_pd(bool syscall)
 {
-	l4_threadid_t l4t   = l4_myself();
-	l4t.id.task         = _pd_id;
-	l4t.id.lthread      = 0;
-	l4t.id.version_low  = _version;
+	l4_threadid_t l4t  = l4_myself();
+	l4t.id.task        = _pd_id;
+	l4t.id.lthread     = 0;
+	l4t.id.version_low = _version;
 
 	l4_taskid_t nt;
 	if (syscall)
@@ -165,7 +156,7 @@ Platform_thread* Platform_pd::_next_thread()
 }
 
 
-int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
+int Platform_pd::_alloc_thread(int thread_id, Platform_thread &thread)
 {
 	int i = thread_id;
 
@@ -180,7 +171,7 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 		if (_threads[i]) return -2;
 	}
 
-	_threads[i] = thread;
+	_threads[i] = &thread;
 
 	return i;
 }
@@ -189,7 +180,7 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 void Platform_pd::_free_thread(int thread_id)
 {
 	if (!_threads[thread_id])
-		PWRN("double-free of thread %x.%x detected", _pd_id, thread_id);
+		warning("double-free of thread ", Hex(_pd_id), ".", Hex(thread_id), " detected");
 
 	_threads[thread_id] = 0;
 }
@@ -199,15 +190,15 @@ void Platform_pd::_free_thread(int thread_id)
  ** Public object members **
  ***************************/
 
-bool Platform_pd::bind_thread(Platform_thread *thread)
+bool Platform_pd::bind_thread(Platform_thread &thread)
 {
 	/* thread_id is THREAD_INVALID by default - only core is the special case */
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 	l4_threadid_t l4_thread_id;
 
 	int t = _alloc_thread(thread_id, thread);
 	if (t < 0) {
-		PERR("thread alloc failed");
+		error("thread alloc failed");
 		return false;
 	}
 	thread_id = t;
@@ -216,28 +207,58 @@ bool Platform_pd::bind_thread(Platform_thread *thread)
 	l4_thread_id.id.lthread = thread_id;
 
 	/* finally inform thread about binding */
-	thread->bind(thread_id, l4_thread_id, this);
+	thread.bind(thread_id, l4_thread_id, *this);
 
-	if (verbose) _debug_log_threads();
 	return true;
 }
 
 
-void Platform_pd::unbind_thread(Platform_thread *thread)
+void Platform_pd::unbind_thread(Platform_thread &thread)
 {
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 
 	/* unbind thread before proceeding */
-	thread->unbind();
+	thread.unbind();
 
 	_free_thread(thread_id);
-
-	if (verbose) _debug_log_threads();
 }
 
 
-Platform_pd::Platform_pd(Allocator * md_alloc, char const *,
-                         signed pd_id, bool create)
+void Platform_pd::flush(addr_t, size_t size, Core_local_addr core_local_base)
+{
+	/*
+	 * Fiasco's 'unmap' syscall unmaps the specified flexpage from all address
+	 * spaces to which we mapped the pages. We cannot target this operation to
+	 * a specific L4 task. Hence, we unmap the dataspace from all tasks.
+	 */
+
+	using namespace Fiasco;
+
+	addr_t addr = core_local_base.value;
+	for (; addr < core_local_base.value + size; addr += L4_PAGESIZE)
+		l4_fpage_unmap(l4_fpage(addr, L4_LOG2_PAGESIZE, 0, 0),
+		               L4_FP_FLUSH_PAGE);
+}
+
+Platform_pd::Platform_pd(Allocator &, char const *)
+{
+	/* check correct init */
+	if (!_init)
+		panic("init pd facility via Platform_pd::init() before using it!");
+
+	/* init threads */
+	_init_threads();
+
+	int ret = _alloc_pd(PD_INVALID);
+	if (ret < 0) {
+		panic("pd alloc failed");
+	}
+
+	_create_pd(true);
+}
+
+
+Platform_pd::Platform_pd(char const *, signed pd_id)
 {
 	/* check correct init */
 	if (!_init)
@@ -248,47 +269,19 @@ Platform_pd::Platform_pd(Allocator * md_alloc, char const *,
 
 	int ret = _alloc_pd(pd_id);
 	if (ret < 0) {
-		_debug_log_pds();
 		panic("pd alloc failed");
 	}
 
-	_create_pd(create);
+	_create_pd(false);
 }
 
 
 Platform_pd::~Platform_pd()
 {
-	/* invalidate weak pointers to this object */
-	Address_space::lock_for_destruction();
-
 	/* unbind all threads */
-	while (Platform_thread *t = _next_thread()) unbind_thread(t);
+	while (Platform_thread *t = _next_thread()) unbind_thread(*t);
 
 	_destroy_pd();
 	_free_pd();
 }
 
-
-/***********************
- ** Debugging support **
- ***********************/
-
-void Platform_pd::_debug_log_threads()
-{
-	int i;
-	printf("[%02x] ", _pd_id);
-	for (i = 0; i < THREAD_MAX; ++i) {
-		printf("%c", !_threads[i] ? '.' : 'X');
-		if (i == 63) printf("\n     ");
-	}
-	printf("\n");
-}
-
-
-void Platform_pd::_debug_log_pds()
-{
-	int i;
-	for (i = 0; i < PD_MAX; ++i)
-		printf("[%02x] %d %d %d\n", i, _pds()[i].reserved, _pds()[i].free,
-		       _pds()[i].version);
-}

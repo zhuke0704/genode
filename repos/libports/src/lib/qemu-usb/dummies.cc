@@ -6,15 +6,15 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
 #include <base/sleep.h>
+#include <base/log.h>
 
 /* local includes */
 #include <extern_c_begin.h>
@@ -30,14 +30,14 @@ enum {
 
 #define TRACE_AND_STOP \
 	do { \
-		PWRN("%s not implemented called from: %p", __func__, __builtin_return_address(0)); \
+		Genode::warning(__func__, " not implemented called from: ", __builtin_return_address(0)); \
 		Genode::sleep_forever(); \
 	} while (0)
 
 #define TRACE \
 	do { \
 		if (SHOW_TRACE) \
-			PWRN("%s not implemented", __func__); \
+			Genode::warning(__func__, " not implemented"); \
 	} while (0)
 
 

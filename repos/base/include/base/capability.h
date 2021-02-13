@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__CAPABILITY_H_
@@ -18,7 +18,7 @@
 
 #include <util/string.h>
 #include <base/rpc.h>
-#include <base/native_types.h>
+#include <base/native_capability.h>
 
 namespace Genode {
 
@@ -115,8 +115,7 @@ class Genode::Capability : public Untyped_capability
 		 * Perform RPC call, arguments passed a as nested 'Ref_tuple' object
 		 */
 		template <typename IF>
-		void _call(typename IF::Client_args &args,
-		           typename IF::Ret_type    &ret) const;
+		typename IF::Ret_type _call(typename IF::Client_args &args) const;
 
 		/**
 		 * Shortcut for querying argument types used in 'call' methods
@@ -136,27 +135,6 @@ class Genode::Capability : public Untyped_capability
 			(void)to;
 			return cap;
 		}
-
-		/**
-		 * Wrapper for the return type instantiated by 'call' overloads
-		 *
-		 * Each 'call' overload creates an instance of the return value
-		 * type as local variable. A reference to this variable is passed
-		 * to the '_call' method, which will assign its value. Even
-		 * though the variable does not need to be initialized prior the
-		 * call of '_call', the GCC will still complain "warning: ‘ret’ may
-		 * be used uninitialized in this function". Wrapping the return
-		 * value in a struct silences the compiler.
-		 */
-		template <typename IF>
-		struct Return
-		{
-			typedef typename Trait::Call_return<typename IF::Ret_type>::Type
-				Return_type;
-
-			volatile Return_type _value;
-			Return_type &value() { return *(Return_type *)(&_value); }
-		};
 
 	public:
 
@@ -181,89 +159,75 @@ class Genode::Capability : public Untyped_capability
 		Capability() { }
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call() const
 		{
 			Meta::Empty e;
-			Return<IF> ret;
-			_call<IF>(e, ret.value());
-			return ret.value();
+			return _call<IF>(e);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2,
 		     typename Arg<IF, 2>::Type v3) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, v3, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2,
 		     typename Arg<IF, 2>::Type v3, typename Arg<IF, 3>::Type v4) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, v3, v4, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2,
 		     typename Arg<IF, 2>::Type v3, typename Arg<IF, 3>::Type v4,
 		     typename Arg<IF, 4>::Type v5) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, v3, v4, v5, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2,
 		     typename Arg<IF, 2>::Type v3, typename Arg<IF, 3>::Type v4,
 		     typename Arg<IF, 4>::Type v5, typename Arg<IF, 5>::Type v6) const
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, v3, v4, v5, v6, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 
 		template <typename IF>
-		typename Trait::Call_return<typename IF::Ret_type>::Type
+		typename IF::Ret_type
 		call(typename Arg<IF, 0>::Type v1, typename Arg<IF, 1>::Type v2,
 		     typename Arg<IF, 2>::Type v3, typename Arg<IF, 3>::Type v4,
 		     typename Arg<IF, 4>::Type v5, typename Arg<IF, 5>::Type v6,
@@ -271,9 +235,7 @@ class Genode::Capability : public Untyped_capability
 		{
 			Meta::Empty e;
 			typename IF::Client_args args(v1, v2, v3, v4, v5, v6, v7, e);
-			Return<IF> ret;
-			_call<IF>(args, ret.value());
-			return ret.value();
+			return _call<IF>(args);
 		}
 };
 

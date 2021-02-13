@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__PIXEL_ALPHA8_H_
@@ -33,6 +33,12 @@ namespace Genode {
 		Pixel_alpha8 res;
 		res.pixel = p1.pixel + (((255 - p1.pixel)*alpha) >> 8);
 		return res;
+	}
+
+	template <>
+	inline Pixel_alpha8 Pixel_alpha8::mix(Pixel_alpha8 p1, Pixel_alpha8 p2, int alpha)
+	{
+		return mix<Pixel_alpha8>(p1, p2, alpha);
 	}
 }
 

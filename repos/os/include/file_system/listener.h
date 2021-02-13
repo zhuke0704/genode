@@ -4,50 +4,83 @@
  * \date   2012-04-11
  */
 
+/*
+ * Copyright (C) 2012-2017 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #ifndef _FILE_SYSTEM__LISTENER_H_
 #define _FILE_SYSTEM__LISTENER_H_
 
 /* Genode includes */
-#include <file_system_session/file_system_session.h>
+#include <file_system_session/rpc_object.h>
 #include <util/list.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/signal.h>
 
 namespace File_system {
 
+	typedef ::File_system::Session_rpc_object::Tx::Sink Sink;
+
 	class Listener : public Genode::List<Listener>::Element
 	{
+		public:
+
+			struct Version { unsigned value; };
+
 		private:
 
-			Genode::Lock                      _lock;
-			Genode::Signal_context_capability _sigh;
-			bool                 _marked_as_updated;
+			Genode::Mutex     _mutex { };
+			Sink             &_sink;
+			Node_handle const _handle;
+
+			/*
+			 * Version at the time when the file was opened
+			 */
+			Version _handed_out_version;
+
+			/*
+			 * Version at the time when we issued the most recent notification
+			 */
+			Version _notified_version = _handed_out_version;
 
 		public:
 
-			Listener() : _marked_as_updated(false) { }
+			Listener(Sink &sink, Node_handle handle, Version handed_out_version)
+			: _sink(sink), _handle(handle), _handed_out_version(handed_out_version)
+			{ }
 
-			Listener(Genode::Signal_context_capability sigh)
-			: _sigh(sigh), _marked_as_updated(false) { }
-
-			void notify()
+			/*
+			 * Called on close of written files
+			 */
+			void notify(Version curr_version)
 			{
-				Genode::Lock::Guard guard(_lock);
+				Genode::Mutex::Guard guard(_mutex);
 
-				if (_marked_as_updated && _sigh.valid())
-					Genode::Signal_transmitter(_sigh).submit();
+				if (curr_version.value == _handed_out_version.value)
+					return;
 
-				_marked_as_updated = false;
+				if (curr_version.value == _notified_version.value)
+					return;
+
+				if (_sink.ready_to_ack()) {
+					_sink.acknowledge_packet(Packet_descriptor(
+						_handle, Packet_descriptor::CONTENT_CHANGED));
+					_notified_version = curr_version;
+				}
 			}
 
-			void mark_as_updated()
+			/*
+			 * Called during read
+			 */
+			void handed_out_version(Version version)
 			{
-				Genode::Lock::Guard guard(_lock);
+				Genode::Mutex::Guard guard(_mutex);
 
-				_marked_as_updated = true;
+				_handed_out_version = version;
 			}
-
-			bool valid() const { return _sigh.valid(); }
 	};
 
 }

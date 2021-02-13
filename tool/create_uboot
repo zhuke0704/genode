@@ -18,14 +18,14 @@ help:
 	$(ECHO) "  create_uboot <platform> [BUILD_DIR=<build-dir>]"
 	$(ECHO)
 	$(ECHO) "  <platform>   can be:"
-	$(ECHO) "                  'hw_wand_quad'"
-	$(ECHO) "                  'hw_usb_armory'"
+	$(ECHO) "                  'wand_quad'"
+	$(ECHO) "                  'usb_armory'"
 	$(ECHO)
 	$(ECHO) "  The image will be located at:"
 	$(ECHO) "  $(UBOOT_BUILD_DIR)<platform>/$(shell basename $(MMC_IMG))"
 	$(ECHO)
 
-PLATFORMS_ARM := hw_wand_quad hw_usb_armory
+PLATFORMS_ARM := wand_quad usb_armory
 PLATFORMS     := $(PLATFORMS_ARM)
 
 # get targeted platform based on the make target
@@ -59,7 +59,7 @@ endif
 
 UBOOT_MAKE := \
 	$(VERBOSE)make ARCH=$(ARCH) \
-	               CROSS_COMPILE=/usr/local/genode-gcc/bin/genode-$(ARCH)- \
+	               CROSS_COMPILE=/usr/local/genode/tool/current/bin/genode-$(ARCH)- \
 	               O=$(UBOOT_BUILD_DIR) \
 	               -j4
 
@@ -67,7 +67,7 @@ UBOOT_MAKE := \
 # Platform settings
 #
 
-ifeq ($(PLATFORM), hw_wand_quad)
+ifeq ($(PLATFORM), wand_quad)
 UBOOT_IMG     := $(UBOOT_BUILD_DIR)/u-boot.img
 UBOOT_IMG_SPL := $(UBOOT_BUILD_DIR)/SPL
 UBOOT_IMGS    := $(UBOOT_IMG) $(UBOOT_IMG_SPL)
@@ -77,7 +77,7 @@ FINISH_IMAGE  := \
 	dd if=$(UBOOT_IMG)     of=$(MMC_IMG) bs=1k seek=68 conv=notrunc,fsync;
 endif
 
-ifeq ($(PLATFORM), hw_usb_armory)
+ifeq ($(PLATFORM), usb_armory)
 UBOOT_IMG     := $(UBOOT_BUILD_DIR)/u-boot.imx
 UBOOT_IMGS    := $(UBOOT_IMG)
 UBOOT_CONF    := usbarmory_config
@@ -96,8 +96,12 @@ $(MMC_IMG): $(UBOOT_IMGS)
 	$(VERBOSE)$(FINISH_IMAGE)
 	$(ECHO)
 	$(ECHO) "Successfully created MMC image."
-	$(ECHO) "You can install the image on an empty MMC for example via:"
-	$(ECHO) "sudo dd if=$(MMC_IMG) of=/dev/<YOUR_MMC> bs=1K seek=1 conv=fsync"
+	$(ECHO) "You can install the image on an empty MMC via"
+	$(ECHO)
+	$(ECHO) "! sudo dd if=$(MMC_IMG) of=/dev/<YOUR_MMC> bs=1K seek=1 conv=fsync"
+	$(ECHO)
+	$(ECHO) "This way, it'll end at $(MMC_IMG_SIZE) + 1 byte. To be safe, let"
+	$(ECHO) "your individual data (e.g. file system) start at $(MMC_IMG_SIZE) + 1M byte"
 	$(ECHO)
 
 $(UBOOT_IMGS): $(UBOOT_BUILD_CONF) $(UBOOT_DIR)

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__GEOMETRY_H_
@@ -16,6 +16,7 @@
 
 #include <util/misc_math.h>
 #include <base/stdint.h>
+#include <base/output.h>
 
 namespace Genode {
 	template <typename CT = int>                         class Point;
@@ -39,8 +40,8 @@ class Genode::Point
 		Point(CT x, CT y): _x(x), _y(y) { }
 		Point(): _x(0), _y(0) { }
 
-		int x() const { return _x; }
-		int y() const { return _y; }
+		CT x() const { return _x; }
+		CT y() const { return _y; }
 
 		/**
 		 * Operator for adding points
@@ -61,6 +62,12 @@ class Genode::Point
 		 * Operator for testing equality of two points
 		 */
 		bool operator == (Point const &p) const { return p.x() == _x && p.y() == _y; }
+
+		void print(Output &out) const
+		{
+			Genode::print(out, _x >= 0 ? "+" : "-", abs(_x),
+			                   _y >= 0 ? "+" : "-", abs(_y));
+		}
 };
 
 
@@ -95,6 +102,8 @@ class Genode::Area
 		 * Operator for testing equality of two areas
 		 */
 		bool operator == (Area const &a) const { return a.w() == _w && a.h() == _h; }
+
+		void print(Output &out) const { Genode::print(out, _w, "x", _h); }
 };
 
 
@@ -195,6 +204,15 @@ class Genode::Rect
 		Point<CT> center(Area<DT> area) const {
 			return Point<CT>(((CT)w() - (CT)area.w())/2,
 			                 ((CT)h() - (CT)area.h())/2) + p1(); }
+
+		/**
+		 * Print rectangle coordinates
+		 *
+		 * The output has the form 'width' x 'height' +/- 'p1.x' +/- 'p1.y'.
+		 * For example, a rectange of size 15x16 as position (-13, 14) is
+		 * printed as "15x16-13+14"
+		 */
+		void print(Output &out) const { Genode::print(out, area(), p1()); }
 };
 
 #endif /* _INCLUDE__UTIL__GEOMETRY_H_ */

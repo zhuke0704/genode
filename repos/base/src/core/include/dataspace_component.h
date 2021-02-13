@@ -6,18 +6,17 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__DATASPACE_COMPONENT_H_
 #define _CORE__INCLUDE__DATASPACE_COMPONENT_H_
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/lock_guard.h>
+#include <base/mutex.h>
 #include <base/rpc_server.h>
 #include <util/list.h>
 
@@ -31,50 +30,48 @@ namespace Genode {
 	/**
 	 * Deriving classes can own a dataspace to implement conditional behavior
 	 */
-	class Dataspace_owner { };
+	class Dataspace_owner : Interface { };
 
 	class Dataspace_component : public Rpc_object<Dataspace>
 	{
 		private:
 
-			addr_t const _phys_addr;        /* address of dataspace in physical memory */
-			addr_t       _core_local_addr;  /* address of core-local mapping           */
-			size_t const _size;             /* size of dataspace in bytes              */
-			bool   const _io_mem;           /* dataspace is I/O mem, not to be touched */
-			Cache_attribute const _cache;   /* access memory cached, write-combined, or
-			                                   uncached respectively                   */
-			bool   const _writable;         /* false if dataspace is read-only         */
+			addr_t const _phys_addr       = 0;  /* address of dataspace in physical memory */
+			addr_t       _core_local_addr = 0;  /* address of core-local mapping           */
+			size_t const _size            = 0;  /* size of dataspace in bytes              */
+			bool   const _io_mem   = false;     /* dataspace is I/O mem, not to be touched */
+			bool   const _writable = false;     /* false if dataspace is read-only         */
 
-			List<Rm_region> _regions;       /* regions this is attached to */
-			Lock            _lock;
+			/*
+			 * Access memory cached, write-combined, or uncached respectively
+			 */
+			Cache_attribute const _cache { CACHED };
+
+			List<Rm_region> _regions { }; /* regions this is attached to */
+			Mutex           _mutex   { };
 
 			/*
 			 * Holds the dataspace owner if a distinction between owner and
 			 * others is necessary on the dataspace, otherwise it is 0.
 			 */
-			Dataspace_owner const * _owner;
+			Dataspace_owner const * _owner = nullptr;
+
+			/*
+			 * Noncopyable
+			 */
+			Dataspace_component(Dataspace_component const &);
+			Dataspace_component &operator = (Dataspace_component const &);
 
 		protected:
 
-			bool _managed;  /* true if this is a managed dataspace */
-
-		private:
-
-			/*
-			 * Prevent copy-construction of objects with virtual functions.
-			 */
-			Dataspace_component(const Dataspace_component&);
+			bool _managed = false;  /* true if this is a managed dataspace */
 
 		public:
 
 			/**
 			 * Default constructor returning an invalid dataspace
 			 */
-			Dataspace_component()
-			:
-				_phys_addr(0), _core_local_addr(0), _size(0),
-				_io_mem(false), _cache(CACHED), _writable(false),
-				_owner(0), _managed(false) { }
+			Dataspace_component() { }
 
 			/**
 			 * Constructor for non-I/O dataspaces
@@ -87,7 +84,7 @@ namespace Genode {
 			:
 				_phys_addr(core_local_addr), _core_local_addr(core_local_addr),
 				_size(round_page(size)), _io_mem(false),
-				_cache(cache), _writable(writable),
+				_writable(writable), _cache(cache),
 				_owner(owner), _managed(false) { }
 
 			/**
@@ -105,8 +102,8 @@ namespace Genode {
 			                    bool writable, Dataspace_owner *owner)
 			:
 				_phys_addr(phys_addr), _core_local_addr(core_local_addr),
-				_size(size), _io_mem(true), _cache(cache),
-				_writable(writable), _owner(owner), _managed(false) { }
+				_size(size), _io_mem(true), _writable(writable),
+				_cache(cache), _owner(owner), _managed(false) { }
 
 			/**
 			 * Destructor
@@ -137,8 +134,8 @@ namespace Genode {
 
 			void assign_core_local_addr(void *addr) { _core_local_addr = (addr_t)addr; }
 
-			void attached_to(Rm_region *region);
-			void detached_from(Rm_region *region);
+			void attached_to(Rm_region &region);
+			void detached_from(Rm_region &region);
 
 			/**
 			 * Detach dataspace from all rm sessions.
@@ -148,9 +145,9 @@ namespace Genode {
 			/**
 			 * Check if dataspace is owned by a specific owner
 			 */
-			bool owner(Dataspace_owner * const o) const { return _owner == o; }
+			bool owner(Dataspace_owner const &o) const { return _owner == &o; }
 
-			List<Rm_region> *regions() { return &_regions; }
+			List<Rm_region> &regions() { return _regions; }
 
 			/*************************
 			 ** Dataspace interface **

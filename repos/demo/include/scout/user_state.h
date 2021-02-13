@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__USER_STATE_H_
@@ -23,14 +23,20 @@ class Scout::User_state : public Parent_element
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		User_state(User_state const &);
+		User_state &operator = (User_state const &);
+
 		Element *_mfocus;    /* element that owns the current mouse focus */
 		Element *_active;    /* currently activated element               */
 		Window  *_window;
 		Element *_root;      /* root of element tree                      */
 		int      _key_cnt;   /* number of currently pressed keys          */
 
-		Point    _mouse_position;
-		Point    _view_position;
+		Point    _mouse_position { };
+		Point    _view_position  { };
 
 		/**
 		 * Assign new mouse focus element
@@ -78,7 +84,7 @@ class Scout::User_state : public Parent_element
 		/**
 		 * Apply input event to mouse focus state
 		 */
-		void handle_event(Event &ev)
+		void handle_event(Event const &ev)
 		{
 			_key_cnt += ev.type == Event::PRESS   ? 1 : 0;
 			_key_cnt -= ev.type == Event::RELEASE ? 1 : 0;
@@ -142,7 +148,7 @@ class Scout::User_state : public Parent_element
 		 ** Parent element **
 		 ********************/
 
-		void forget(Element const *e)
+		void forget(Element const *e) override
 		{
 			if (_mfocus == e) _mfocus = 0;
 			if (_active == e) _active = 0;

@@ -1,4 +1,4 @@
- /*
+/*
  * \brief  Emulation of the Linux kernel API
  * \author Sebastian Sumpf
  * \date   2013-08-19
@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2012-2016 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_EMUL_H_
@@ -310,8 +310,6 @@ int   scnprintf(char *, size_t, const char *, ...);
 	sprintf(buf, fmt, __VA_ARGS__); \
 	buf; \
 })
-
-#define clamp(val, lo, hi) min((typeof(val))max(val, lo), hi)
 
 char *get_options(const char *str, int nints, int *ints);
 int   hex_to_bin(char);
@@ -764,6 +762,11 @@ unsigned long nr_free_buffer_pages(void);
 
 #include <lx_emul/gfp.h>
 
+enum {
+	__GFP_COLD   = 0x00000100u,
+	__GFP_REPEAT = 0x00000400u,
+};
+
 struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
                               unsigned int order);
 
@@ -873,6 +876,12 @@ void debug_check_no_locks_freed(const void *from, unsigned long len);
  *******************/
 
 #include <lx_emul/mutex.h>
+
+LX_MUTEX_INIT_DECLARE(dst_gc_mutex);
+LX_MUTEX_INIT_DECLARE(proto_list_mutex);
+
+#define dst_gc_mutex     LX_MUTEX(dst_gc_mutex)
+#define proto_list_mutex LX_MUTEX(proto_list_mutex)
 
 
 /***********************************
@@ -1022,7 +1031,7 @@ void setup_timer(struct timer_list *timer,void (*function)(unsigned long),
 int  timer_pending(const struct timer_list * timer);
 int  del_timer(struct timer_list *timer);
 void timer_stats_timer_clear_start_info(struct timer_list *);
-long round_jiffies_relative(unsigned long);
+unsigned long round_jiffies_relative(unsigned long);
 
 unsigned long round_jiffies(unsigned long);
 unsigned long round_jiffies_up(unsigned long);
@@ -1719,6 +1728,8 @@ enum {
  ***********************/
 
 #include <lx_emul/work.h>
+
+#define wait_queue_t wait_queue_entry_t
 
 void INIT_DEFERRABLE_WORK(struct delayed_work *, void (*func)(struct work_struct *));
 
@@ -3045,10 +3056,10 @@ struct inet_diag_handler
 
 
 void inet_diag_dump_icsk(struct inet_hashinfo *, struct sk_buff *,
-                         struct netlink_callback *, struct inet_diag_req_v2 *,
+                         struct netlink_callback *, const struct inet_diag_req_v2 *,
                          struct nlattr *);
 int inet_diag_dump_one_icsk(struct inet_hashinfo *, struct sk_buff *,
-                            const struct nlmsghdr *, struct inet_diag_req_v2 *);
+                            const struct nlmsghdr *, const struct inet_diag_req_v2 *);
 
 int  inet_diag_register(const struct inet_diag_handler *);
 void inet_diag_unregister(const struct inet_diag_handler *);
@@ -3186,22 +3197,18 @@ static inline bool ipv4_is_loopback(__be32 addr)
  ** linux/random.h **
  ********************/
 
-static inline void get_random_bytes(void *buf, int nbytes)
-{
-	char *b = (char *)buf;
+void get_random_bytes(void *buf, int nbytes);
 
-	/* FIXME not random */
-	int i;
-	for (i = 0; i < nbytes; ++i)
-		b[i] = i + 1;
-}
+#define get_random_once(buf, nbytes)           \
+	({                                         \
+		static bool initialized = false;       \
+		if (!initialized) {                    \
+			get_random_bytes((buf), (nbytes)); \
+			initialized = true;                \
+		}                                      \
+	})
 
-static inline void get_random_once(void *buf, int nbytes)
-{
-	return get_random_bytes(buf, nbytes);
-}
-
-static inline u32 prandom_u32(void) { return 4; /* fair dice roll */ }
+u32 prandom_u32(void);
 
 static inline void prandom_bytes(void *buf, size_t nbytes)
 {
@@ -3417,9 +3424,9 @@ void trace_netif_rx_ni_entry(struct sk_buff*);
 void trace_netif_receive_skb_entry(struct sk_buff*);
 void trace_napi_gro_receive_entry(struct sk_buff*);
 void trace_napi_gro_frags_entry(struct sk_buff*);
-void trace_fib_validate_source(struct net_device *, struct flowi4*);
-void trace_fib_table_lookup(void*, void*);
-void trace_fib_table_lookup_nh(void*);
+void trace_fib_validate_source(const struct net_device *, const struct flowi4 *);
+void trace_fib_table_lookup(const void *, const void *);
+void trace_fib_table_lookup_nh(const void *);
 
 
 /******************

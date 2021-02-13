@@ -20,12 +20,15 @@ install_config {
 	<config>
 		<parent-provides>
 			<service name="ROM"/>
+			<service name="CPU"/>
+			<service name="PD"/>
 			<service name="LOG"/>
 		</parent-provides>
 		<default-route>
 			<any-service> <parent/> <any-child/> </any-service>
 		</default-route>
-		<start name="test-lx_hybrid_pthread_ipc">
+		<default caps="100"/>
+		<start name="test-lx_hybrid_pthread_ipc" ld="no">
 			<resource name="RAM" quantum="1M"/>
 		</start>
 	</config>
@@ -36,7 +39,7 @@ install_config {
 #
 
 # generic modules
-set boot_modules { core init test-lx_hybrid_pthread_ipc }
+set boot_modules { core ld.lib.so init test-lx_hybrid_pthread_ipc }
 
 build_boot_image $boot_modules
 

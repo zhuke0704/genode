@@ -5,20 +5,27 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <base/env.h>
 #include <base/sleep.h>
-#include <base/printf.h>
+
+/* libc-internal includes */
+#include <internal/types.h>
+#include <internal/atexit.h>
+
 
 extern void genode_exit(int status) __attribute__((noreturn));
 
+
 extern "C" void _exit(int status)
 {
+	Libc::execute_atexit_handlers_in_application_context();
+
 	genode_exit(status);
 }
 
@@ -32,6 +39,8 @@ extern "C" {
 
 	void exit(int status)
 	{
+		using namespace Libc;
+
 		if (__cleanup)
 			(*__cleanup)();
 

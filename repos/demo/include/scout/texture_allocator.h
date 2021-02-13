@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__TEXTURE_ALLOCATOR_H_
@@ -28,7 +28,7 @@ namespace Scout {
 }
 
 
-struct Scout::Texture_allocator
+struct Scout::Texture_allocator : Genode::Interface
 {
 	virtual Texture_base *alloc_texture(Area size, bool alpha) = 0;
 

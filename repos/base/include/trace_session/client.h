@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__TRACE_SESSION__CLIENT_H_
@@ -29,21 +29,33 @@ struct Genode::Trace::Session_client : Genode::Rpc_client<Genode::Trace::Session
 		 * Shared-memory buffer used for carrying the payload of the
 		 * 'subjects()' RPC function.
 		 */
-		struct Argument_buffer
+		class Argument_buffer
 		{
-			char   *base;
-			size_t  size;
+			private:
 
-			Argument_buffer(Dataspace_capability ds)
-			:
-				base(env()->rm_session()->attach(ds)),
-				size(ds.call<Dataspace::Rpc_size>())
-			{ }
+				/*
+				 * Noncopyable
+				 */
+				Argument_buffer(Argument_buffer const &);
+				Argument_buffer &operator = (Argument_buffer const &);
 
-			~Argument_buffer()
-			{
-				env()->rm_session()->detach(base);
-			}
+			public:
+
+				Region_map &rm;
+				char       *base;
+				size_t      size;
+
+				Argument_buffer(Region_map &rm, Dataspace_capability ds)
+				:
+					rm(rm),
+					base(rm.attach(ds)),
+					size(ds.call<Dataspace::Rpc_size>())
+				{ }
+
+				~Argument_buffer()
+				{
+					rm.detach(base);
+				}
 		};
 
 		Argument_buffer _argument_buffer;
@@ -53,24 +65,43 @@ struct Genode::Trace::Session_client : Genode::Rpc_client<Genode::Trace::Session
 		/**
 		 * Constructor
 		 */
-		explicit Session_client(Capability<Trace::Session> session)
+		explicit Session_client(Region_map &rm, Capability<Trace::Session> session)
 		:
 			Rpc_client<Trace::Session>(session),
-			_argument_buffer(call<Rpc_dataspace>())
+			_argument_buffer(rm, call<Rpc_dataspace>())
 		{ }
 
 		/**
 		 * Retrieve subject directory
 		 *
-		 * \throw Out_of_metadata
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
 		 */
-		size_t subjects(Subject_id *dst, size_t dst_len)
+		virtual size_t subjects(Subject_id *dst, size_t dst_len)
 		{
 			size_t const num_subjects = min(call<Rpc_subjects>(), dst_len);
 
-			memcpy(dst, _argument_buffer.base, dst_len*sizeof(Subject_id));
+			memcpy(dst, _argument_buffer.base, num_subjects*sizeof(Subject_id));
 
 			return num_subjects;
+		}
+
+		struct For_each_subject_info_result { size_t count; size_t limit; };
+
+		template <typename FN>
+		For_each_subject_info_result for_each_subject_info(FN const &fn)
+		{
+			size_t const num_subjects = call<Rpc_subject_infos>();
+			size_t const max_subjects = _argument_buffer.size / (sizeof(Subject_info) + sizeof(Subject_id));
+
+			Subject_info * const infos = reinterpret_cast<Subject_info *>(_argument_buffer.base);
+			Subject_id   * const ids   = reinterpret_cast<Subject_id *>(infos + max_subjects);
+
+			for (unsigned i = 0; i < num_subjects; i++) {
+				fn(ids[i], infos[i]);
+			}
+
+			return { .count = num_subjects, .limit = max_subjects };
 		}
 
 		Policy_id alloc_policy(size_t size) override {

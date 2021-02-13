@@ -1,20 +1,20 @@
 /*
  * \brief  PCI specific backend for ACPICA library
  * \author Alexander Boettcher
- *
+ * \date   2016-11-14
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
-#include <base/env.h>
-#include <parent/parent.h>
-#include <platform_session/client.h>
+#include <base/log.h>
+#include <io_port_session/connection.h>
+
+#include "env.h"
 
 extern "C" {
 #include "acpi.h"
@@ -22,44 +22,139 @@ extern "C" {
 }
 
 
-static Platform::Client & platform()
+/**
+ * Utility for the formatted output of a (bus, device, function) triple
+ */
+struct Bdf
 {
-	static bool connected = false;
+	unsigned char const bus, dev, fn;
 
-	typedef Genode::Capability<Platform::Session> Platform_session_capability;
-	Platform_session_capability platform_cap;
+	Bdf(unsigned char bus, unsigned char dev, unsigned char fn)
+	: bus(bus), dev(dev), fn(fn) { }
 
-	if (!connected) {
-		Genode::Parent::Service_name announce_for_acpica("Acpi");
-		Genode::Native_capability cap = Genode::env()->parent()->session(announce_for_acpica, "ram_quota=20K");
-
-		platform_cap = Genode::reinterpret_cap_cast<Platform::Session>(cap);
-		connected = true;
+	void print(Genode::Output &out) const
+	{
+		using Genode::Hex;
+		Genode::print(out, Hex(bus, Hex::OMIT_PREFIX, Hex::PAD), ":",
+		                   Hex(dev, Hex::OMIT_PREFIX, Hex::PAD), ".",
+		                   Hex(fn,  Hex::OMIT_PREFIX), " ");
 	}
+};
 
-	static Platform::Client conn(platform_cap);
+static void dump_read(char const * const func, ACPI_PCI_ID *pcidev,
+                      UINT32 reg, UINT64 value, UINT32 width)
+{
+	using namespace Genode;
+
+	log(func, ": ", Bdf(pcidev->Bus, pcidev->Device, pcidev->Function), " "
+	    "reg=", Hex(reg, Hex::PREFIX, Hex::PAD), " "
+	    "width=", width, width < 10 ? " " : "", " -> "
+	    "value=", Genode::Hex(value));
+}
+
+static void dump_write(char const * const func, ACPI_PCI_ID *pcidev,
+                       UINT32 reg, UINT64 value, UINT32 width)
+{
+	using namespace Genode;
+
+	warning(func, ": ", Bdf(pcidev->Bus, pcidev->Device, pcidev->Function), " "
+	        "reg=", Hex(reg, Hex::PREFIX, Hex::PAD), " "
+	        "width=", width, width < 10 ? " " : "", " -> "
+	        "value=", Genode::Hex(value));
+}
+
+static void dump_error(char const * const func, ACPI_PCI_ID *pcidev,
+                       UINT32 reg, UINT32 width)
+{
+	error(func, " unknown device - segment=", pcidev->Segment, " ",
+	      "bdf=",   Bdf(pcidev->Bus, pcidev->Device, pcidev->Function), " ",
+	      "reg=",   Genode::Hex(reg), " "
+	      "width=", Genode::Hex(width));
+}
+
+
+/*******************************
+ * Accessing PCI via I/O ports *
+ *******************************/
+
+enum { REG_ADDR = 0xcf8, REG_DATA = 0xcfc, REG_SIZE = 4 };
+
+static Genode::Io_port_connection &pci_io_port() {
+	static Genode::Io_port_connection conn(Acpica::env(), REG_ADDR, REG_SIZE);
 	return conn;
 }
 
-ACPI_STATUS AcpiOsInitialize (void)
+static unsigned pci_io_cfg_addr(unsigned const bus, unsigned const device,
+                                unsigned const function, unsigned const addr)
 {
-	/* acpi_drv uses IOMEM concurrently to us - wait until it is done */
-	PINF("wait for platform drv");
-	try {
-		platform();
-	} catch (...) {
-		PERR("did not get Platform connection");
-		Genode::Lock lock(Genode::Lock::LOCKED);
-		lock.lock();
-	}
-	PINF("wait for platform drv - done");
-	return AE_OK;
+	return (1U << 31) |
+	       (bus << 16) |
+	       ((device   & 0x1fU) << 11) |
+	       ((function & 0x07U) << 8) |
+	       (addr & ~3U);
 }
+
+static unsigned pci_io_read(unsigned const bus, unsigned const device,
+                            unsigned const function, unsigned const addr,
+                            unsigned const width)
+{
+	/* write target address */
+	pci_io_port().outl(REG_ADDR, pci_io_cfg_addr(bus, device, function, addr));
+
+	switch (width) {
+	case 8:
+		return pci_io_port().inb(REG_DATA + (addr & 3));
+	case 16:
+		return pci_io_port().inw(REG_DATA + (addr & 2));
+	case 32:
+		return pci_io_port().inl(REG_DATA);
+	default:
+		return ~0U;
+	}
+}
+
+static void pci_io_write(unsigned const bus, unsigned const device,
+                         unsigned const function, unsigned const addr,
+                         unsigned const width, unsigned value)
+{
+	/* write target address */
+	pci_io_port().outl(REG_ADDR, pci_io_cfg_addr(bus, device, function, addr));
+
+	switch (width) {
+	case 8:
+		pci_io_port().outb(REG_DATA + (addr & 3), value);
+		return;
+	case 16:
+		pci_io_port().outw(REG_DATA + (addr & 2), value);
+		return;
+	case 32:
+		pci_io_port().outl(REG_DATA, value);
+		return;
+	}
+}
+
+/*************************
+ * Acpica PCI OS backend *
+ *************************/
+
+ACPI_STATUS AcpiOsInitialize (void) { return AE_OK; }
 
 ACPI_STATUS AcpiOsReadPciConfiguration (ACPI_PCI_ID *pcidev, UINT32 reg,
                                         UINT64 *value, UINT32 width)
 {
-	Platform::Device_capability cap = platform().first_device();
+	if (!Acpica::platform_drv()) {
+		try {
+			*value = pci_io_read(pcidev->Bus, pcidev->Device, pcidev->Function,
+			                     reg, width);
+			dump_read(__func__, pcidev, reg, *value, width);
+		} catch (...) {
+			dump_error(__func__, pcidev, reg, width);
+			return AE_ERROR;
+		}
+		return AE_OK;
+	}
+
+	Platform::Device_capability cap = Acpica::platform().first_device();
 
 	while (cap.valid()) {
 		Platform::Device_client client(cap);
@@ -82,28 +177,25 @@ ACPI_STATUS AcpiOsReadPciConfiguration (ACPI_PCI_ID *pcidev, UINT32 reg,
 				access_size = Platform::Device_client::Access_size::ACCESS_32BIT;
 				break;
 			default:
-				PERR("%s : unsupported access size %u", __func__, width);
-				platform().release_device(client);
+				Genode::error(__func__, " : unsupported access size ", width);
+				Acpica::platform().release_device(client.rpc_cap());
 				return AE_ERROR;
 			};
 
 			*value = client.config_read(reg, access_size);
 
-			PINF("%s: %x:%x.%x reg=0x%x width=%u -> value=0x%llx",
-			     __func__, bus, dev, fn, reg, width, *value);
+			dump_read(__func__, pcidev, reg, *value, width);
 
-			platform().release_device(client);
+			Acpica::platform().release_device(client.rpc_cap());
 			return AE_OK;
 		}
 
-		cap = platform().next_device(cap);
+		cap = Acpica::platform().next_device(cap);
 
-		platform().release_device(client);
+		Acpica::platform().release_device(client.rpc_cap());
 	}
 
-	PERR("%s unknown device - segment=%u bdf=%x:%x.%x reg=0x%x width=0x%x",
-	     __func__, pcidev->Segment, pcidev->Bus, pcidev->Device,
-	     pcidev->Function, reg, width);
+	dump_error(__func__, pcidev, reg, width);
 
 	return AE_ERROR;
 }
@@ -111,7 +203,19 @@ ACPI_STATUS AcpiOsReadPciConfiguration (ACPI_PCI_ID *pcidev, UINT32 reg,
 ACPI_STATUS AcpiOsWritePciConfiguration (ACPI_PCI_ID *pcidev, UINT32 reg,
                                          UINT64 value, UINT32 width)
 {
-	Platform::Device_capability cap = platform().first_device();
+	if (!Acpica::platform_drv()) {
+		try {
+			dump_write(__func__, pcidev, reg, value, width);
+			pci_io_write(pcidev->Bus, pcidev->Device, pcidev->Function, reg,
+			             width, value);
+			return AE_OK;
+		} catch (...) {
+			dump_error(__func__, pcidev, reg, width);
+			return AE_ERROR;
+		}
+	}
+
+	Platform::Device_capability cap = Acpica::platform().first_device();
 
 	while (cap.valid()) {
 		Platform::Device_client client(cap);
@@ -134,28 +238,25 @@ ACPI_STATUS AcpiOsWritePciConfiguration (ACPI_PCI_ID *pcidev, UINT32 reg,
 				access_size = Platform::Device_client::Access_size::ACCESS_32BIT;
 				break;
 			default:
-				PERR("%s : unsupported access size %u", __func__, width);
-				platform().release_device(client);
+				Genode::error(__func__, " : unsupported access size ", width);
+				Acpica::platform().release_device(client.rpc_cap());
 				return AE_ERROR;
 			};
 
 			client.config_write(reg, value, access_size);
 
-			PWRN("%s: %x:%x.%x reg=0x%x width=%u value=0x%llx",
-			     __func__, bus, dev, fn, reg, width, value);
+			dump_write(__func__, pcidev, reg, value, width);
 
-			platform().release_device(client);
+			Acpica::platform().release_device(client.rpc_cap());
 			return AE_OK;
 		}
 
-		cap = platform().next_device(cap);
+		cap = Acpica::platform().next_device(cap);
 
-		platform().release_device(client);
+		Acpica::platform().release_device(client.rpc_cap());
 	}
 
-	PERR("%s unknown device - segment=%u bdf=%x:%x.%x reg=0x%x width=0x%x",
-	     __func__, pcidev->Segment, pcidev->Bus, pcidev->Device,
-	     pcidev->Function, reg, width);
+	dump_error(__func__, pcidev, reg, width);
 
 	return AE_ERROR;
 }

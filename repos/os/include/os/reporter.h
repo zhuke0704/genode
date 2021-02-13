@@ -5,31 +5,37 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__REPORTER_H_
 #define _INCLUDE__OS__REPORTER_H_
 
-#include <util/volatile_object.h>
-#include <os/attached_dataspace.h>
+#include <util/retry.h>
+#include <util/xml_node.h>
+#include <util/reconstructible.h>
+#include <base/attached_dataspace.h>
 #include <report_session/connection.h>
 #include <util/xml_generator.h>
 
+namespace Genode {
+	class Reporter;
+	class Expanding_reporter;
+}
 
-namespace Genode { class Reporter; }
 
-
-class Genode::Reporter : Noncopyable
+class Genode::Reporter
 {
 	public:
 
 		typedef String<100> Name;
 
 	private:
+
+		Env &_env;
 
 		Name const _xml_name;
 		Name const _label;
@@ -41,13 +47,14 @@ class Genode::Reporter : Noncopyable
 		struct Connection
 		{
 			Report::Connection report;
-			Attached_dataspace ds = { report.dataspace() };
+			Attached_dataspace ds;
 
-			Connection(char const *name, size_t buffer_size)
-			: report(name, buffer_size) { }
+			Connection(Env &env, char const *name, size_t buffer_size)
+			: report(env, name, buffer_size), ds(env.rm(), report.dataspace())
+			{ }
 		};
 
-		Lazy_volatile_object<Connection> _conn;
+		Constructible<Connection> _conn { };
 
 		/**
 		 * Return size of report buffer
@@ -61,10 +68,10 @@ class Genode::Reporter : Noncopyable
 
 	public:
 
-		Reporter(char const *xml_name, char const *label = nullptr,
+		Reporter(Env &env, char const *xml_name, char const *label = nullptr,
 		         size_t buffer_size = 4096)
 		:
-			_xml_name(xml_name), _label(label ? label : xml_name),
+			_env(env), _xml_name(xml_name), _label(label ? label : xml_name),
 			_buffer_size(buffer_size)
 		{ }
 
@@ -76,7 +83,7 @@ class Genode::Reporter : Noncopyable
 			if (enabled == _enabled) return;
 
 			if (enabled)
-				_conn.construct(_label.string(), _buffer_size);
+				_conn.construct(_env, _label.string(), _buffer_size);
 			else
 				_conn.destruct();
 
@@ -87,14 +94,6 @@ class Genode::Reporter : Noncopyable
 		 * Return true if reporter is enabled
 		 */
 		bool enabled() const { return _enabled; }
-
-		/**
-		 * Return true if reporter is enabled
-		 *
-		 * \noapi
-		 * \deprecated  use 'enabled' instead
-		 */
-		bool is_enabled() const { return enabled(); }
 
 		Name name() const { return _label; }
 
@@ -133,9 +132,86 @@ class Genode::Reporter : Noncopyable
 				                      reporter._xml_name.string(),
 				                      func)
 			{
-				reporter._conn->report.submit(used());
+				if (reporter.enabled())
+					reporter._conn->report.submit(used());
 			}
 		};
+};
+
+
+/**
+ * Reporter that increases the report buffer capacity on demand
+ *
+ * This convenience wrapper of the 'Reporter' alleviates the need to handle
+ * 'Xml_generator::Buffer_exceeded' exceptions manually. In most cases, the
+ * only reasonable way to handle such an exception is upgrading the report
+ * buffer as done by this class. Furthermore, in contrast to the regular
+ * 'Reporter', which needs to be 'enabled', the 'Expanding_reporter' is
+ * implicitly enabled at construction time.
+ */
+class Genode::Expanding_reporter
+{
+	public:
+
+		typedef Session_label Label;
+		typedef String<64>    Node_type;
+
+		struct Initial_buffer_size { size_t value; };
+
+	private:
+
+		Env &_env;
+
+		Node_type const _type;
+		Label     const _label;
+
+		Constructible<Reporter> _reporter { };
+
+		size_t _buffer_size;
+
+		void _construct()
+		{
+			_reporter.construct(_env, _type.string(), _label.string(), _buffer_size);
+			_reporter->enabled(true);
+		}
+
+		void _increase_report_buffer()
+		{
+			_buffer_size += 4096;
+			_construct();
+		}
+
+	public:
+
+		Expanding_reporter(Env &env, Node_type const &type, Label const &label,
+		                   Initial_buffer_size const size = { 4096 })
+		: _env(env), _type(type), _label(label), _buffer_size(size.value)
+		{ _construct(); }
+
+		template <typename FN>
+		void generate(FN const &fn)
+		{
+			retry<Xml_generator::Buffer_exceeded>(
+
+				[&] () {
+					Reporter::Xml_generator
+						xml(*_reporter, [&] () { fn(xml); }); },
+
+				[&] () { _increase_report_buffer(); }
+			);
+		}
+
+		void generate(Xml_node node)
+		{
+			retry<Xml_generator::Buffer_exceeded>(
+
+				[&] () {
+					node.with_raw_node([&] (char const *start, size_t length) {
+						_reporter->report(start, length); }); },
+
+				[&] () { _increase_report_buffer(); }
+			);
+		}
 };
 
 #endif /* _INCLUDE__OS__REPORTER_H_ */

@@ -5,15 +5,15 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
+#include <libc/component.h>
 #include <timer_session/connection.h>
 
 /* Lua includes */
@@ -22,11 +22,15 @@
 #include <lauxlib.h>
 
 
-static Timer::Session & timer_session()
-{
-	static Timer::Connection timer;
+namespace Moon {
 
-	return timer;
+	struct Main;
+	struct Env
+	{
+		Timer::Session     &timer;
+		Genode::Pd_session &pd;
+	};
+	Env *env;
 }
 
 
@@ -42,7 +46,7 @@ static int l_msleep(lua_State *lua)
 	}
 	luaL_checknumber(lua, 1);
 
-	timer_session().msleep(lua_tonumber(lua, 1));
+	Moon::env->timer.msleep(lua_tonumber(lua, 1));
 
 	return 0;
 }
@@ -59,7 +63,7 @@ static int l_quota(lua_State *lua)
 		return 0;
 	}
 
-	lua_pushnumber(lua, Genode::env()->ram_session()->quota());
+	lua_pushnumber(lua, Moon::env->pd.ram_quota().value);
 
 	return 1;
 }
@@ -74,13 +78,13 @@ static int l_log(lua_State *lua)
 
 	for (int i = 1; i <= n; ++i) {
 		if (lua_isstring(lua, i))
-			PLOG("%s", lua_tostring(lua, i));
+			Genode::log(lua_tostring(lua, i));
 		else if (lua_isnil(lua, i))
-			PLOG("%s", "nil");
+			Genode::log("nil");
 		else if (lua_isboolean(lua, i))
-			PLOG("%s", lua_toboolean(lua, i) ? "true" : "false");
+			Genode::log(lua_toboolean(lua, i) ? "true" : "false");
 		else
-			PLOG("%s: %p", luaL_typename(lua, i), lua_topointer(lua, i));
+			Genode::log(luaL_typename(lua, i), ": ", lua_topointer(lua, i));
 	}
 
 	return 0;
@@ -116,18 +120,34 @@ static char const *exec_string =
 	;
 
 
-int main()
+struct Moon::Main
 {
-	lua_State *lua = lua_open();
+	Libc::Env &_env;
 
-	/* initialize libs */
-	luaopen_base(lua);
+	Timer::Connection _timer { _env };
 
-	/* register Genode Lua library */
-	luaL_register(lua, "Genode", l_genode);
+	Moon::Env _moon_env { _timer, _env.pd() };
 
-	if (luaL_dostring(lua, exec_string) != 0)
-		PLOG("%s\n", lua_tostring(lua, -1));
+	Main(Libc::Env &env) : _env(env)
+	{
+		Libc::with_libc([&] () {
+			Moon::env = &_moon_env;
 
-	lua_close(lua);
-}
+			lua_State *lua = lua_open();
+
+			/* initialize libs */
+			luaopen_base(lua);
+
+			/* register Genode Lua library */
+			luaL_register(lua, "Genode", l_genode);
+
+			if (luaL_dostring(lua, exec_string) != 0)
+				Genode::log(lua_tostring(lua, -1));
+
+			lua_close(lua);
+		});
+	}
+};
+
+
+void Libc::Component::construct(Libc::Env &env) { static Moon::Main instance(env); }

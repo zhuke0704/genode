@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__STDINT_H_
@@ -22,17 +22,17 @@ namespace Genode {
 	/**
 	 * Integer type for non-negative size values
 	 */
-	typedef __SIZE_TYPE__   size_t;
+	typedef unsigned long size_t;
 
 	/**
 	 * Integer type for memory addresses
 	 */
-	typedef unsigned long   addr_t;
+	typedef unsigned long addr_t;
 
 	/**
 	 * Integer type for memory offset values
 	 */
-	typedef long             off_t;
+	typedef long          off_t;
 
 	/**
 	 * Integer type corresponding to a machine register

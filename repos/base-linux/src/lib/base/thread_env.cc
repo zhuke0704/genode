@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -33,20 +33,6 @@ char **lx_environ;
 int main_thread_futex_counter __attribute__((aligned(sizeof(addr_t))));
 
 /**
- * Genode console hook
- */
-extern "C" int stdout_write(char const *);
-
-/*
- * Core lacks the hook, so provide a base-linux specific weak implementation
- */
-extern "C" __attribute__((weak)) int stdout_write(char const *s)
-{
-	raw(s);
-	return strlen(s);
-}
-
-/**
  * Signal handler for exceptions like segmentation faults
  */
 void exception_signal_handler(int signum)
@@ -62,33 +48,24 @@ void exception_signal_handler(int signum)
 	default: /* unexpected signal */ return;
 	}
 
-	/*
-	 * We can't use Genode::printf() as the exception may have occurred in the
-	 * Genode console library itself, which uses a mutex. Therefore, we use
-	 * Genode::snprintf() and call the console hook directly to minimize
-	 * overlaps with other code paths.
-	 */
-	static char msg[128];
-	snprintf(msg, sizeof(msg),
-	         ESC_ERR "%s (signum=%d), see Linux kernel log for details" ESC_END "\n",
-	         reason, signum);
-	stdout_write(msg);
+	raw(reason, " (signum=", signum, "), see Linux kernel log for details");
 
 	/*
 	 * We reset the signal handler to SIG_DFL and trigger exception again,
 	 * i.e., terminate the process.
 	 */
-	lx_sigaction(signum, nullptr);
+	lx_sigaction(signum, nullptr, false);
 	return;
 }
 
 
 void lx_exception_signal_handlers()
 {
-	lx_sigaction(LX_SIGILL,  exception_signal_handler);
-	lx_sigaction(LX_SIGBUS,  exception_signal_handler);
-	lx_sigaction(LX_SIGFPE,  exception_signal_handler);
-	lx_sigaction(LX_SIGSEGV, exception_signal_handler);
+	/* use alternate stack in fatal-signal handlers */
+	lx_sigaction(LX_SIGILL,  exception_signal_handler, true);
+	lx_sigaction(LX_SIGBUS,  exception_signal_handler, true);
+	lx_sigaction(LX_SIGFPE,  exception_signal_handler, true);
+	lx_sigaction(LX_SIGSEGV, exception_signal_handler, true);
 }
 
 

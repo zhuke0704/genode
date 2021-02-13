@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -19,7 +19,7 @@ using namespace Genode;
 
 void Log::_acquire(Type type)
 {
-	_lock.lock();
+	_mutex.acquire();
 
 	/*
 	 * Mark warnings and errors via distinct colors.
@@ -39,7 +39,7 @@ void Log::_release()
 	 */
 	_output.out_string("\033[0m\n");
 
-	_lock.unlock();
+	_mutex.release();
 }
 
 
@@ -58,4 +58,21 @@ void Raw::_release()
 	 * Reset color and add newline
 	 */
 	_output().out_string("\033[0m\n");
+}
+
+
+void Trace_output::_acquire()
+{
+	_mutex.acquire();
+}
+
+
+void Trace_output::_release()
+{
+	/*
+	 * Add newline
+	 */
+	_output.out_string("\n");
+
+	_mutex.release();
 }

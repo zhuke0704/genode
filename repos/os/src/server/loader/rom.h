@@ -4,52 +4,70 @@
  * \date   2012-04-17
  */
 
+/*
+ * Copyright (C) 2012-2017 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #ifndef _ROM_H_
 #define _ROM_H_
 
-//#include <util/string.h>
 #include <rom_session/rom_session.h>
 #include <base/rpc_server.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/attached_ram_dataspace.h>
+#include <base/attached_rom_dataspace.h>
 
 namespace Genode {
 
 	class Rom_module : public List<Rom_module>::Element
 	{
+		public:
+
+			typedef String<128> Name;
+
 		private:
 
-			enum { MAX_NAME_LEN = 64 };
-			char _name[MAX_NAME_LEN];
+			Name const _name;
 
-			Ram_session           &_ram;
+			Ram_allocator         &_ram;
 			Attached_ram_dataspace _fg;
 			Attached_ram_dataspace _bg;
 
-			bool _bg_has_pending_data;
+			Constructible<Attached_rom_dataspace> _parent_rom { };
 
-			Signal_context_capability _sigh;
+			bool _bg_has_pending_data = false;
 
-			Lock _lock;
+			Signal_context_capability _sigh { };
+
+			Blockade _blockade { };
 
 		public:
 
-			Rom_module(char const *name, Ram_session &ram_session)
+			enum Origin { PARENT_PROVIDED, SESSION_LOCAL };
+
+			Rom_module(Env &env, Xml_node /* config */, Name const &name,
+			           Ram_allocator &ram_allocator, Origin origin)
 			:
-				_ram(ram_session),
-				_fg(&_ram, 0), _bg(&_ram, 0),
-				_bg_has_pending_data(false),
-				_lock(Lock::LOCKED)
+				_name(name), _ram(ram_allocator),
+				_fg(_ram, env.rm(), 0), _bg(_ram, env.rm(), 0)
 			{
-				strncpy(_name, name, sizeof(_name));
+				if (origin == SESSION_LOCAL)
+					return;
+
+				try {
+					_parent_rom.construct(env, name.string()); }
+				catch (...) {
+					warning("ROM ", name, " unavailable from parent, "
+					        "try to use session-local ROM");
+				}
 			}
 
-			bool has_name(char const *name) const
-			{
-				return strcmp(_name, name) == 0;
-			}
+			bool has_name(Name const &name) const { return _name == name; }
 
-			void lock()   { _lock.lock(); }
-			void unlock() { _lock.unlock(); }
+			void lock()   { _blockade.block(); }
+			void unlock() { _blockade.wakeup(); }
 
 			/**
 			 * Return dataspace as handed out to loader session
@@ -72,8 +90,11 @@ namespace Genode {
 			 */
 			Rom_dataspace_capability fg_dataspace()
 			{
+				if (_parent_rom.constructed())
+					return static_cap_cast<Rom_dataspace>(_parent_rom->cap());
+
 				if (!_fg.size() && !_bg_has_pending_data) {
-					PERR("Error: no data loaded");
+					Genode::error("no data loaded");
 					return Rom_dataspace_capability();
 				}
 
@@ -95,7 +116,13 @@ namespace Genode {
 			 *
 			 * This function is indirectly called by the ROM session client.
 			 */
-			void sigh(Signal_context_capability sigh) { _sigh = sigh; }
+			void sigh(Signal_context_capability sigh)
+			{
+				if (_parent_rom.constructed())
+					_parent_rom->sigh(sigh);
+
+				_sigh = sigh;
+			}
 
 			/**
 			 * Commit data contained in background dataspace
@@ -126,10 +153,12 @@ namespace Genode {
 	{
 		private:
 
-			Lock             _lock;
-			Ram_session     &_ram_session;
+			Env             &_env;
+			Xml_node   const _config;
+			Mutex            _mutex { };
+			Ram_allocator   &_ram_allocator;
 			Allocator       &_md_alloc;
-			List<Rom_module> _list;
+			List<Rom_module> _list { };
 
 		public:
 
@@ -141,18 +170,21 @@ namespace Genode {
 			/**
 			 * Constructor
 			 *
-			 * \param ram_session  RAM session used as backing store for
-			 *                     module data
-			 * \param md_alloc     backing store for ROM module meta data
+			 * \param ram_allocator  RAM allocator used as backing store for
+			 *                       module data
+			 * \param md_alloc       backing store for ROM module meta data
 			 */
-			Rom_module_registry(Ram_session &ram_session, Allocator &md_alloc)
+			Rom_module_registry(Env &env, Xml_node config,
+			                    Ram_allocator &ram_allocator,
+			                    Allocator &md_alloc)
 			:
-				_ram_session(ram_session), _md_alloc(md_alloc)
+				_env(env), _config(config), _ram_allocator(ram_allocator),
+				_md_alloc(md_alloc)
 			{ }
 
 			~Rom_module_registry()
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
 				while (_list.first()) {
 					Rom_module *rom = _list.first();
@@ -167,9 +199,9 @@ namespace Genode {
 			 *
 			 * \throw  Lookup_failed
 			 */
-			Rom_module &lookup_and_lock(char const *name)
+			Rom_module &lookup_and_lock(Rom_module::Name const &name)
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
 				Rom_module *curr = _list.first();
 				for (; curr; curr = curr->next()) {
@@ -181,7 +213,7 @@ namespace Genode {
 				throw Lookup_failed();
 			}
 
-			Dataspace_capability alloc_rom_module(char const *name, size_t size)
+			Dataspace_capability alloc_rom_module(Rom_module::Name const &name, size_t size)
 			{
 				try {
 					Rom_module &module = lookup_and_lock(name);
@@ -190,16 +222,36 @@ namespace Genode {
 				}
 				catch (Lookup_failed) {
 
-					Lock::Guard guard(_lock);
+					Mutex::Guard guard(_mutex);
 
 					Rom_module *module = new (&_md_alloc)
-						Rom_module(name, _ram_session);
+						Rom_module(_env, _config, name, _ram_allocator,
+						           Rom_module::SESSION_LOCAL);
 
 					Rom_module_lock_guard module_guard(*module);
 
 					_list.insert(module);
 
 					return module->bg_dataspace(size);
+				}
+			}
+
+			void fetch_parent_rom_module(Rom_module::Name const &name)
+			{
+				try {
+					lookup_and_lock(name);
+				}
+				catch (Lookup_failed) {
+
+					Mutex::Guard guard(_mutex);
+
+					Rom_module *module = new (&_md_alloc)
+						Rom_module(_env, _config, name, _ram_allocator,
+						           Rom_module::PARENT_PROVIDED);
+
+					Rom_module_lock_guard module_guard(*module);
+
+					_list.insert(module);
 				}
 			}
 
@@ -215,25 +267,30 @@ namespace Genode {
 	};
 
 
-	class Rom_session_component : public Rpc_object<Rom_session>,
-	                              public List<Rom_session_component>::Element
+	class Rom_session_component : public  Rpc_object<Rom_session>,
+	                              private List<Rom_session_component>::Element
 	{
 		private:
 
+			friend class List<Rom_session_component>;
+
+			Entrypoint &_ep;
 			Rom_module &_rom_module;
 
 		public:
 
-			Rom_session_component(Rom_module &rom_module)
-			: _rom_module(rom_module) { }
+			Rom_session_component(Entrypoint &ep, Rom_module &rom_module)
+			: _ep(ep), _rom_module(rom_module) { _ep.manage(*this); }
 
-			Rom_dataspace_capability dataspace()
+			~Rom_session_component() { _ep.dissolve(*this); }
+
+			Rom_dataspace_capability dataspace() override
 			{
 				Rom_module_lock_guard guard(_rom_module);
 				return _rom_module.fg_dataspace();
 			}
 
-			void sigh(Signal_context_capability sigh)
+			void sigh(Signal_context_capability sigh) override
 			{
 				Rom_module_lock_guard guard(_rom_module);
 				_rom_module.sigh(sigh);

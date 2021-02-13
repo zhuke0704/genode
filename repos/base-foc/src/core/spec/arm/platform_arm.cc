@@ -5,14 +5,22 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <platform.h>
 
-void Genode::Platform::_setup_io_port_alloc() { }
+using namespace Genode;
 
-void Genode::Platform::setup_irq_mode(unsigned, unsigned, unsigned) { }
+
+void Platform::_setup_io_port_alloc() { }
+
+
+void Platform::setup_irq_mode(unsigned, unsigned, unsigned) { }
+
+
+void Platform::_setup_platform_info(Xml_generator &,
+                                    Foc::l4_kernel_info_t &) { }

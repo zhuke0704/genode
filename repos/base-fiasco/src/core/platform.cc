@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/allocator_avl.h>
 #include <base/sleep.h>
 #include <util/misc_math.h>
@@ -21,31 +21,21 @@
 #include <base/internal/crt0.h>
 #include <base/internal/fiasco_thread_helper.h>
 #include <base/internal/stack_area.h>
+#include <base/internal/capability_space_tpl.h>
+#include <base/internal/globals.h>
 
 /* core includes */
-#include <core_parent.h>
+#include <core_log.h>
 #include <platform.h>
 #include <platform_thread.h>
 #include <platform_pd.h>
 #include <util.h>
-#include <multiboot.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
-#include <l4/sys/syscalls.h>
-#include <l4/sys/ipc.h>
-#include <l4/sys/kernel.h>
-#include <l4/sys/kip.h>
-#include <l4/sigma0/sigma0.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Genode;
-
-
-static const bool verbose              = true;
-static const bool verbose_core_pf      = false;
-static const bool verbose_region_alloc = false;
+using namespace Fiasco;
 
 
 /***********************************
@@ -58,6 +48,7 @@ static Synced_range_allocator<Allocator_avl> &_core_address_ranges()
 	return _core_address_ranges;
 }
 
+
 enum { PAGER_STACK_ELEMENTS = 1024 };
 static unsigned long _core_pager_stack[PAGER_STACK_ELEMENTS];
 static unsigned _core_pager_arg;
@@ -69,8 +60,6 @@ static unsigned _core_pager_arg;
 static void _core_pager_loop()
 {
 	unsigned pd_id = _core_pager_arg;
-
-	using namespace Fiasco;
 
 	l4_threadid_t t;
 	l4_umword_t dw0, dw1;
@@ -106,21 +95,22 @@ static void _core_pager_loop()
 		if (pfa < L4_PAGESIZE) {
 
 			/* NULL pointer access */
-			PERR("Possible null pointer %s in %x.%02x at %lx IP %lx",
-			     rw ? "WRITE" : "READ", (int)t.id.task, (int)t.id.lthread, pfa, dw1);
+			error("possible null pointer ", rw ? "WRITE" : "READ", " "
+			      "in ", (int)t.id.task, ".", (int)t.id.lthread, " "
+			      "at ", Hex(pfa), " IP ", Hex(dw1));
 			/* do not unblock faulter */
 			send_reply = false;
 			continue;
 		} else if (!_core_address_ranges().valid_addr(pfa)) {
 
 			/* page-fault address is not in RAM */
-			PERR("%s access outside of RAM in %x.%02x at %lx IP %lx",
-			     rw ? "WRITE" : "READ", (int)t.id.task, (int)t.id.lthread, pfa, dw1);
+			error(rw ? "WRITE" : "READ", " access outside of RAM "
+			      "in ", (int)t.id.task, ".", (int)t.id.lthread, " "
+			      "at ", Hex(pfa), " IP ", Hex(dw1));
 			/* do not unblock faulter */
 			send_reply = false;
 			continue;
-		} else if (verbose_core_pf)
-			PDBG("pfa=%lx ip=%lx thread %x.%02x", pfa, dw1, (int)t.id.task, (int)t.id.lthread);
+		}
 
 		/* my pf handler is sigma0 - just touch the appropriate page */
 		if (rw)
@@ -135,37 +125,39 @@ static void _core_pager_loop()
 
 Platform::Sigma0::Sigma0()
 :
-	Pager_object(Cpu_session_capability(), Thread_capability(), 0, Affinity::Location())
+	Pager_object(Cpu_session_capability(), Thread_capability(),
+	             0, Affinity::Location(), Session_label(),
+	             Cpu_session::Name("sigma0"))
 {
-	cap(reinterpret_cap_cast<Cpu_thread>(Native_capability(Fiasco::sigma0_threadid, 0)));
+	cap(Capability_space::import(sigma0_threadid, Rpc_obj_key()));
 }
 
 
-Platform::Sigma0 *Platform::sigma0()
+Platform::Sigma0 &Platform::sigma0()
 {
 	static Sigma0 _sigma0;
-	return &_sigma0;
+	return _sigma0;
 }
 
 
-Platform::Core_pager::Core_pager(Platform_pd *core_pd)
+Platform::Core_pager::Core_pager(Platform_pd &core_pd)
 :
-	Platform_thread(0, "core.pager"),
-	Pager_object(Cpu_session_capability(), Thread_capability(), 0, Affinity::Location())
+	Platform_thread("core.pager"),
+	Pager_object(Cpu_session_capability(), Thread_capability(),
+	             0, Affinity::Location(), Session_label(),
+	             Cpu_session::Name(name()))
 {
 	Platform_thread::pager(sigma0());
 
-	core_pd->bind_thread(this);
-	cap(Native_capability(native_thread_id(), 0));
+	core_pd.bind_thread(*this);
+	cap(Capability_space::import(native_thread_id(), Rpc_obj_key()));
 
 	/* pager needs to know core's pd ID */
-	_core_pager_arg = core_pd->pd_id();
+	_core_pager_arg = core_pd.pd_id();
 
 	/* stack begins at the top end of the '_core_pager_stack' array */
 	void *sp = (void *)&_core_pager_stack[PAGER_STACK_ELEMENTS - 1];
 	start((void *)_core_pager_loop, sp);
-
-	using namespace Fiasco;
 
 	/* pager0 receives pagefaults from me - for NULL pointer detection */
 	l4_umword_t d;
@@ -175,10 +167,10 @@ Platform::Core_pager::Core_pager(Platform_pd *core_pd)
 }
 
 
-Platform::Core_pager *Platform::core_pager()
+Platform::Core_pager &Platform::core_pager()
 {
 	static Core_pager _core_pager(core_pd());
-	return &_core_pager;
+	return _core_pager;
 }
 
 
@@ -205,23 +197,10 @@ struct Region
 
 
 /**
- * Log region
- */
-static inline void print_region(Region r)
-{
-	printf("[%08lx,%08lx) %08lx", r.start, r.end, r.end - r.start);
-}
-
-
-/**
  * Add region to allocator
  */
 static inline void add_region(Region r, Range_allocator &alloc)
 {
-	if (verbose_region_alloc) {
-		printf("%p    add: ", &alloc); print_region(r); printf("\n");
-	}
-
 	/* adjust region */
 	addr_t start = trunc_page(r.start);
 	addr_t end   = round_page(r.end);
@@ -235,10 +214,6 @@ static inline void add_region(Region r, Range_allocator &alloc)
  */
 static inline void remove_region(Region r, Range_allocator &alloc)
 {
-	if (verbose_region_alloc) {
-		printf("%p remove: ", &alloc); print_region(r); printf("\n");
-	}
-
 	/* adjust region */
 	addr_t start = trunc_page(r.start);
 	addr_t end   = round_page(r.end);
@@ -252,8 +227,6 @@ static inline void remove_region(Region r, Range_allocator &alloc)
  */
 static inline int sigma0_req_region(addr_t *addr, unsigned log2size)
 {
-	using namespace Fiasco;
-
 	/* XXX sigma0 always maps pages RW */
 	l4_umword_t req_fpage = l4_fpage(0, log2size, 0, 0).fpage;
 	void* rcv_window = L4_IPC_MAPMSG(0, L4_WHOLE_ADDRESS_SPACE);
@@ -262,7 +235,7 @@ static inline int sigma0_req_region(addr_t *addr, unsigned log2size)
 	l4_msgdope_t result;
 	l4_msgtag_t tag;
 
-	int err = l4_ipc_call_tag(Fiasco::sigma0_threadid,
+	int err = l4_ipc_call_tag(sigma0_threadid,
 	                          L4_IPC_SHORT_MSG, SIGMA0_REQ_FPAGE_ANY, req_fpage,
 	                          l4_msgtag(L4_MSGTAG_SIGMA0, 0, 0, 0),
 	                          rcv_window, &base, (l4_umword_t *)&rcv_fpage,
@@ -304,8 +277,8 @@ void Platform::_setup_mem_alloc()
 			if (!err) {
 				/* XXX do not allocate page0 */
 				if (addr == 0) {
-					Fiasco::l4_fpage_unmap(Fiasco::l4_fpage(0, log2_size, 0, 0),
-					                       L4_FP_FLUSH_PAGE | L4_FP_ALL_SPACES);
+					l4_fpage_unmap(l4_fpage(0, log2_size, 0, 0),
+					               L4_FP_FLUSH_PAGE | L4_FP_ALL_SPACES);
 					continue;
 				}
 
@@ -323,13 +296,17 @@ void Platform::_setup_mem_alloc()
 }
 
 
-void Platform::_setup_irq_alloc() {
-	_irq_alloc.add_range(0, 0x10); }
-
-
-static Fiasco::l4_kernel_info_t *get_kip()
+void Platform::_setup_irq_alloc()
 {
-	using namespace Fiasco;
+	_irq_alloc.add_range(0, 0x10);
+}
+
+
+static l4_kernel_info_t *get_kip()
+{
+	static l4_kernel_info_t *kip = nullptr;
+
+	if (kip) return kip;
 
 	int err;
 
@@ -341,7 +318,7 @@ static Fiasco::l4_kernel_info_t *get_kip()
 	l4_msgdope_t r;
 	l4_msgtag_t tag;
 
-	err = l4_ipc_call_tag(Fiasco::sigma0_threadid,
+	err = l4_ipc_call_tag(sigma0_threadid,
 	                      L4_IPC_SHORT_MSG, SIGMA0_REQ_KIP, 0,
 	                      l4_msgtag(L4_MSGTAG_SIGMA0, 0, 0, 0),
 	                      fpage, &dw0, &dw1,
@@ -349,11 +326,11 @@ static Fiasco::l4_kernel_info_t *get_kip()
 
 	bool amok = false;
 	if (err) {
-		printf("IPC error %d\n", err);
+		raw("IPC error ", err, " while accessing the KIP");
 		amok = true;
 	}
 	if (!l4_ipc_fpage_received(r)) {
-		printf("No fpage received\n");
+		warning("No fpage received");
 		amok = true;
 	}
 
@@ -361,37 +338,21 @@ static Fiasco::l4_kernel_info_t *get_kip()
 		panic("kip mapping failed");
 
 	/* store mapping base from received mapping */
-	l4_kernel_info_t *kip = (l4_kernel_info_t *)dw0;
+	kip = (l4_kernel_info_t *)dw0;
 
 	if (kip->magic != L4_KERNEL_INFO_MAGIC)
 		panic("Sigma0 mapped something but not the KIP");
 
-	if (verbose) {
-		printf("\n");
-		printf("KIP @ %p\n", kip);
-		printf("    magic: %08x\n", kip->magic);
-		printf("  version: %08x\n", kip->version);
-		printf("         sigma0 "); printf(" esp: %08lx  eip: %08lx\n", kip->sigma0_esp, kip->sigma0_eip);
-		printf("         sigma1 "); printf(" esp: %08lx  eip: %08lx\n", kip->sigma1_esp, kip->sigma1_eip);
-		printf("           root "); printf(" esp: %08lx  eip: %08lx\n", kip->root_esp, kip->root_eip);
-	}
-
 	return kip;
 }
 
+
 void Platform::_setup_basics()
 {
-	using namespace Fiasco;
-
 	l4_kernel_info_t * kip = get_kip();
 
 	/* add KIP as ROM module */
-	_kip_rom = Rom_module((addr_t)kip, L4_PAGESIZE, "l4v2_kip");
 	_rom_fs.insert(&_kip_rom);
-
-	/* update multi-boot info pointer from KIP */
-	addr_t mb_info_addr = kip->user_ptr;
-	if (verbose) printf("MBI @ 0x%lx\n", mb_info_addr);
 
 	/* parse memory descriptors - look for virtual memory configuration */
 	/* XXX we support only one VM region (here and also inside RM) */
@@ -407,6 +368,7 @@ void Platform::_setup_basics()
 
 			break;
 		}
+
 	if (_vm_size == 0)
 		panic("Virtual memory configuration not found");
 
@@ -423,11 +385,9 @@ void Platform::_setup_basics()
 	/* FIXME if the kernel helps to find out max address - use info here */
 	_io_mem_alloc.add_range(0, ~0);
 
-	/* remove KIP and MBI area from region and IO_MEM allocator */
+	/* remove KIP area from region and IO_MEM allocator */
 	remove_region(Region((addr_t)kip, (addr_t)kip + L4_PAGESIZE), _region_alloc);
 	remove_region(Region((addr_t)kip, (addr_t)kip + L4_PAGESIZE), _io_mem_alloc);
-	remove_region(Region(mb_info_addr, mb_info_addr + _mb_info.size()), _region_alloc);
-	remove_region(Region(mb_info_addr, mb_info_addr + _mb_info.size()), _io_mem_alloc);
 
 	/* remove core program image memory from region and IO_MEM allocator */
 	addr_t img_start = (addr_t) &_prog_img_beg;
@@ -440,41 +400,12 @@ void Platform::_setup_basics()
 }
 
 
-void Platform::_setup_rom()
-{
-	Rom_module rom;
-
-	for (unsigned i = FIRST_ROM; i < _mb_info.num_modules();  i++) {
-		if (!(rom = _mb_info.get_module(i)).valid()) continue;
-
-		Rom_module *new_rom = new(core_mem_alloc()) Rom_module(rom);
-		_rom_fs.insert(new_rom);
-
-		if (verbose)
-			printf(" mod[%d] [%p,%p) %s\n", i,
-			       (void *)new_rom->addr(), ((char *)new_rom->addr()) + new_rom->size(),
-			       new_rom->name());
-
-		/* zero remainder of last ROM page */
-		size_t count = L4_PAGESIZE - rom.size() % L4_PAGESIZE;
-		if (count != L4_PAGESIZE)
-			memset(reinterpret_cast<void *>(rom.addr() + rom.size()), 0, count);
-
-		/* remove ROM area from region and IO_MEM allocator */
-		remove_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _region_alloc);
-		remove_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _io_mem_alloc);
-
-		/* add area to core-accessible ranges */
-		add_region(Region(new_rom->addr(), new_rom->addr() + new_rom->size()), _core_address_ranges());
-	}
-}
-
-
-Platform::Platform() :
-	_ram_alloc(nullptr), _io_mem_alloc(core_mem_alloc()),
-	_io_port_alloc(core_mem_alloc()), _irq_alloc(core_mem_alloc()),
-	_region_alloc(core_mem_alloc()),
-	_mb_info(get_kip()->user_ptr, true)
+Platform::Platform()
+:
+	_ram_alloc(nullptr), _io_mem_alloc(&core_mem_alloc()),
+	_io_port_alloc(&core_mem_alloc()), _irq_alloc(&core_mem_alloc()),
+	_region_alloc(&core_mem_alloc()),
+	_kip_rom((addr_t)get_kip(), L4_PAGESIZE, "l4v2_kip")
 {
 	/*
 	 * We must be single-threaded at this stage and so this is safe.
@@ -487,38 +418,54 @@ Platform::Platform() :
 	_setup_mem_alloc();
 	_setup_io_port_alloc();
 	_setup_irq_alloc();
-	_setup_rom();
+	_init_rom_modules();
 
-	if (verbose) {
-		printf(":ram_alloc: ");    _ram_alloc()->dump_addr_tree();
-		printf(":region_alloc: "); _region_alloc()->dump_addr_tree();
-		printf(":io_mem: ");       _io_mem_alloc()->dump_addr_tree();
-		printf(":io_port: ");      _io_port_alloc()->dump_addr_tree();
-		printf(":irq: ");          _irq_alloc()->dump_addr_tree();
-		printf(":rom_fs: ");       _rom_fs.print_fs();
-		printf(":core ranges: ");  _core_address_ranges()()->dump_addr_tree();
-	}
+	log(_rom_fs);
 
-	Fiasco::l4_threadid_t myself = Fiasco::l4_myself();
+	l4_threadid_t myself = l4_myself();
 
 	Platform_pd::init();
 
 	/* setup pd object for core pd */
 	_core_label[0] = 0;
-	_core_pd = new(core_mem_alloc()) Platform_pd(nullptr, _core_label,
-	                                             myself.id.task, false);
+	_core_pd = new (core_mem_alloc()) Platform_pd(_core_label, myself.id.task);
 
 	/*
 	 * We setup the thread object for thread0 in core pd using a special
 	 * interface that allows us to specify the lthread number.
 	 */
-	Platform_thread *core_thread = new(core_mem_alloc())
-		Platform_thread(0, "core.main", myself.id.lthread);
-	core_thread->pager(sigma0());
+	Platform_thread &core_thread = *new (core_mem_alloc())
+		Platform_thread("core.main");
+
+	core_thread.pager(sigma0());
 	_core_pd->bind_thread(core_thread);
 
 	/* we never call _core_thread.start(), so set name directly */
-	Fiasco::fiasco_register_thread_name(core_thread->native_thread_id(), core_thread->name());
+	fiasco_register_thread_name(core_thread.native_thread_id(),
+	                            core_thread.name().string());
+
+	/* core log as ROM module */
+	{
+		void * phys_ptr       = nullptr;
+		unsigned const pages  = 1;
+		size_t const log_size = pages << get_page_size_log2();
+
+		ram_alloc().alloc_aligned(log_size, &phys_ptr, get_page_size_log2());
+		addr_t const phys_addr = reinterpret_cast<addr_t>(phys_ptr);
+
+		void * const core_local_ptr  = phys_ptr;
+		addr_t const core_local_addr = phys_addr;
+
+		/* let one page free after the log buffer */
+		region_alloc().remove_range(core_local_addr, log_size + get_page_size());
+
+		memset(core_local_ptr, 0, log_size);
+
+		_rom_fs.insert(new (core_mem_alloc()) Rom_module(phys_addr, log_size,
+		                                                 "core_log"));
+
+		init_core_log(Core_log_range { core_local_addr, log_size } );
+	}
 }
 
 
@@ -534,5 +481,3 @@ void Platform::wait_for_exit()
 	sleep_forever();
 }
 
-
-void Core_parent::exit(int exit_value) { }

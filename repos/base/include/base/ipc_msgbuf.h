@@ -5,17 +5,16 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__IPC_MSGBUF_H_
 #define _INCLUDE__BASE__IPC_MSGBUF_H_
 
 #include <util/noncopyable.h>
-#include <base/native_types.h>
 #include <base/capability.h>
 #include <base/exception.h>
 #include <base/rpc_args.h>
@@ -31,7 +30,7 @@ class Genode::Msgbuf_base : Noncopyable
 {
 	public:
 
-		enum { MAX_CAPS_PER_MSG = 4 };
+		static constexpr Genode::size_t MAX_CAPS_PER_MSG = 4;
 
 	private:
 
@@ -74,6 +73,12 @@ class Genode::Msgbuf_base : Noncopyable
 			for (unsigned i = 0; i < num_words; i++)
 				word(i) = 0;
 		}
+
+		/*
+		 * Noncopyable
+		 */
+		Msgbuf_base(Msgbuf_base const &);
+		Msgbuf_base &operator = (Msgbuf_base const &);
 
 	protected:
 
@@ -193,7 +198,8 @@ class Genode::Msgbuf_base : Noncopyable
 			if (_data_size + num_bytes > _capacity) return;
 
 			/* copy buffer */
-			memcpy(_data_last(), src_addr, num_bytes);
+			if (src_addr && num_bytes)
+				memcpy(_data_last(), src_addr, num_bytes);
 
 			/* increment write pointer to next dword-aligned value */
 			_data_size += align_natural(num_bytes);
@@ -231,7 +237,7 @@ struct Genode::Msgbuf : Msgbuf_base
 	 * This space is used on some platforms to prepend the message with a
 	 * protocol header.
 	 */
-	Headroom headroom;
+	Headroom headroom { };
 
 	/**
 	 * Buffer for data payload

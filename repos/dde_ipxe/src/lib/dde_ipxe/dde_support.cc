@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2010-2015 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /*
@@ -22,14 +22,12 @@
 /* Genode includes */
 #include <base/allocator_avl.h>
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/slab.h>
-#include <base/sleep.h>
 #include <dataspace/client.h>
 #include <io_mem_session/connection.h>
 #include <io_port_session/connection.h>
 #include <irq_session/connection.h>
-#include <os/server.h>
 #include <platform_device/client.h>
 #include <platform_session/connection.h>
 #include <rm_session/connection.h>
@@ -37,20 +35,35 @@
 #include <timer_session/connection.h>
 #include <util/misc_math.h>
 #include <util/retry.h>
+#include <util/reconstructible.h>
 
 /* local includes */
 #include <dde_support.h>
 
+/* DDE support includes */
+#include <dde_ipxe/support.h>
 
-/****************
- ** Migriation **
- ****************/
 
-static Server::Entrypoint *_ep;
+static Genode::Entrypoint *_global_ep;
+static Genode::Env        *_global_env;
+static Genode::Allocator  *_global_alloc;
 
-extern "C" void dde_init(void *ep)
+
+void dde_support_init(Genode::Env &env, Genode::Allocator &alloc)
 {
-	_ep = (Server::Entrypoint*)ep;
+	_global_env   = &env;
+	_global_ep    = &env.ep();
+	_global_alloc = &alloc;
+}
+
+
+/**************************
+ ** Initialization check **
+ **************************/
+
+extern "C" int dde_support_initialized(void)
+{
+	return !!_global_env;
 }
 
 
@@ -58,8 +71,14 @@ extern "C" void dde_init(void *ep)
  ** printf **
  ************/
 
-extern "C" void dde_vprintf(const char *fmt, va_list va) {
-	Genode::vprintf(fmt, va); }
+extern "C" void dde_vprintf(const char *format, va_list list)
+{
+	using namespace Genode;
+
+	char buf[128] { };
+	String_console(buf, sizeof(buf)).vprintf(format, list);
+	log(Cstring(buf));
+}
 
 
 extern "C" void dde_printf(const char *fmt, ...)
@@ -75,14 +94,20 @@ extern "C" void dde_printf(const char *fmt, ...)
  ** Timer **
  ***********/
 
+static Genode::Constructible<Timer::Connection> _timer;
+
+
 extern "C" void dde_udelay(unsigned long usecs)
 {
+	if (!_timer.constructed()) {
+		_timer.construct(*_global_env);
+	}
+
 	/*
 	 * This function is called only once during rdtsc calibration (usecs will be
 	 * 10000, see dde.c 'udelay'.
 	 */
-	static Timer::Connection timer;
-	timer.usleep(usecs);
+	_timer->usleep(usecs);
 }
 
 
@@ -93,21 +118,23 @@ extern "C" void dde_udelay(unsigned long usecs)
 /**
  * DDE iPXE mutual exclusion lock
  */
-static Genode::Lock _ipxe_lock;
+static Genode::Mutex _ipxe_mutex;
 
-extern "C" void dde_lock_enter(void) { _ipxe_lock.lock(); }
-extern "C" void dde_lock_leave(void) { _ipxe_lock.unlock(); }
+extern "C" void dde_lock_enter(void) { _ipxe_mutex.acquire(); }
+extern "C" void dde_lock_leave(void) { _ipxe_mutex.release(); }
 
 
 extern "C" void dde_mdelay(unsigned long msecs)
 {
+	if (!_timer.constructed()) {
+		_timer.construct(*_global_env);
+	}
+
 	/*
-	 * Using one static timer connection here is safe because
-	 * this function is only called while initializing the device
+	 * This function is only called while initializing the device
 	 * and only be the same thread.
 	 */
-	static Timer::Connection timer;
-	timer.msleep(msecs);
+	_timer->msleep(msecs);
 }
 
 
@@ -123,6 +150,8 @@ struct Pci_driver
 		CLASS_NETWORK          = PCI_BASE_CLASS_NETWORK << 16
 	};
 
+	Genode::Region_map &_rm;
+
 	Platform::Connection        _pci;
 	Platform::Device_capability _cap;
 	Platform::Device_capability _last_cap;
@@ -137,12 +166,9 @@ struct Pci_driver
 	Platform::Device::Access_size _access_size(T t)
 	{
 		switch (sizeof(T)) {
-		case 1:
-			return Platform::Device::ACCESS_8BIT;
-		case 2:
-			return Platform::Device::ACCESS_16BIT;
-		default:
-			return Platform::Device::ACCESS_32BIT;
+		case 1:  return Platform::Device::ACCESS_8BIT;
+		case 2:  return Platform::Device::ACCESS_16BIT;
+		default: return Platform::Device::ACCESS_32BIT;
 		}
 	}
 
@@ -158,7 +184,8 @@ struct Pci_driver
 	}
 
 
-	Pci_driver() { }
+	Pci_driver(Genode::Env &env, Genode::Region_map &rm)
+	: _rm(rm), _pci(env) { }
 
 	template <typename T>
 	void config_read(unsigned int devfn, T *val)
@@ -172,21 +199,15 @@ struct Pci_driver
 	{
 		Platform::Device_client client(_cap);
 
-		Genode::size_t donate = 4096;
-		Genode::retry<Platform::Device::Quota_exceeded>(
-			[&] () { client.config_write(devfn, val, _access_size(val)); } ,
-			[&] () {
-				char quota[32];
-				Genode::snprintf(quota, sizeof(quota), "ram_quota=%zd",
-				                 donate);
-				Genode::env()->parent()->upgrade(_pci.cap(), quota);
-				donate *= 2;
-			});
+		_pci.with_upgrade([&] () {
+			client.config_write(devfn, val, _access_size(val)); });
 	}
 
 	int first_device(int *bus, int *dev, int *fun)
 	{
-		_cap = _pci.first_device(CLASS_NETWORK, CLASS_MASK);
+		_cap = _pci.with_upgrade([&] () {
+			return _pci.first_device(CLASS_NETWORK, CLASS_MASK); });
+
 		if (!_cap.valid())
 			return -1;
 
@@ -199,8 +220,9 @@ struct Pci_driver
 		int result = -1;
 
 		_last_cap = _cap;
+		_cap = _pci.with_upgrade([&] () {
+			return _pci.next_device(_cap, CLASS_NETWORK, CLASS_MASK); });
 
-		_cap = _pci.next_device(_cap, CLASS_NETWORK, CLASS_MASK);
 		if (_cap.valid()) {
 			_bus_address(bus, dev, fun);
 			result = 0;
@@ -219,22 +241,24 @@ struct Pci_driver
 
 			size_t donate = size;
 
-			Ram_dataspace_capability ram_cap = Genode::retry<Platform::Session::Out_of_metadata>(
-				[&] () { return _pci.alloc_dma_buffer(size); },
-				[&] () {
-					char quota[32];
-					Genode::snprintf(quota, sizeof(quota), "ram_quota=%zd",
-					                 donate);
-					Genode::env()->parent()->upgrade(_pci.cap(), quota);
-					donate = donate * 2 > size ? 4096 : donate * 2;
-				});
+			Ram_dataspace_capability ram_cap =
+				retry<Out_of_ram>(
+					[&] () {
+						return retry<Out_of_caps>(
+							[&] () { return _pci.alloc_dma_buffer(size); },
+							[&] () { _pci.upgrade_caps(2); });
+					},
+					[&] () {
+						_pci.upgrade_ram(donate);
+						donate = donate * 2 > size ? 4096 : donate * 2;
+					});
 
-			_region.mapped_base = (Genode::addr_t)env()->rm_session()->attach(ram_cap);
+			_region.mapped_base = _rm.attach(ram_cap);
 			_region.base = Dataspace_client(ram_cap).phys_addr();
 
 			return _region.mapped_base;
 		} catch (...) {
-			PERR("failed to allocate dma memory");
+			Genode::error("failed to allocate dma memory");
 			return 0;
 		}
 	}
@@ -246,7 +270,7 @@ struct Pci_driver
 
 static Pci_driver& pci_drv()
 {
-	static Pci_driver _pci_drv;
+	static Pci_driver _pci_drv { *_global_env , _global_env->rm() };
 	return _pci_drv;
 }
 
@@ -289,25 +313,24 @@ extern "C" void dde_pci_writel(int pos, dde_uint32_t val) {
 
 struct Irq_handler
 {
-	Server::Entrypoint                     &ep;
-	Genode::Irq_session_client              irq;
-	Genode::Signal_rpc_member<Irq_handler>  dispatcher;
+	Genode::Irq_session_client           irq;
+	Genode::Signal_handler<Irq_handler>  dispatcher;
 
 	typedef void (*irq_handler)(void*);
 
 	irq_handler  handler;
 	void        *priv;
 
-	void handle(unsigned)
+	void handle()
 	{
 		handler(priv);
 		irq.ack_irq();
 	}
 
-	Irq_handler(Server::Entrypoint &ep, Genode::Irq_session_capability cap,
+	Irq_handler(Genode::Entrypoint &ep, Genode::Irq_session_capability cap,
 	            irq_handler handler, void *priv)
 	:
-		ep(ep), irq(cap), dispatcher(ep, *this, &Irq_handler::handle),
+		irq(cap), dispatcher(ep, *this, &Irq_handler::handle),
 		handler(handler), priv(priv)
 	{
 		irq.sigh(dispatcher);
@@ -317,19 +340,20 @@ struct Irq_handler
 	}
 };
 
-static Irq_handler *_irq_handler;
+
+static Genode::Constructible<Irq_handler> _irq_handler;
+
 
 extern "C" int dde_interrupt_attach(void(*handler)(void *), void *priv)
 {
-	if (_irq_handler) {
-		PERR("Irq_handler already registered");
-		Genode::sleep_forever();
+	if (_irq_handler.constructed()) {
+		Genode::error("Irq_handler already registered");
+		return -1;
 	}
 
 	try {
 		Platform::Device_client device(pci_drv()._cap);
-		_irq_handler = new (Genode::env()->heap())
-			Irq_handler(*_ep, device.irq(0), handler, priv);
+		_irq_handler.construct(*_global_ep, device.irq(0), handler, priv);
 	} catch (...) { return -1; }
 
 	return 0;
@@ -344,8 +368,10 @@ enum { BACKING_STORE_SIZE = 1024 * 1024 };
 
 struct Backing_store
 {
-	Genode::Allocator_avl _avl{Genode::env()->heap()};
-	Backing_store(){
+	Genode::Allocator_avl _avl;
+
+	Backing_store (Genode::Allocator &alloc) : _avl(&alloc)
+	{
 		Genode::addr_t base = pci_drv().alloc_dma_memory(BACKING_STORE_SIZE);
 		/* add to allocator */
 		_avl.add_range(base, BACKING_STORE_SIZE);
@@ -355,7 +381,7 @@ struct Backing_store
 
 static Genode::Allocator_avl& allocator()
 {
-	static Backing_store _instance;
+	static Backing_store _instance { *_global_alloc };
 	return _instance._avl;
 
 }
@@ -366,8 +392,10 @@ extern "C" void *dde_dma_alloc(dde_size_t size, dde_size_t align,
 {
 	void *ptr;
 	if (allocator().alloc_aligned(size, &ptr, Genode::log2(align)).error()) {
-		PERR("memory allocation failed in alloc_memblock (size=%zu, align=%zx,"
-		     " offset=%zx)", (Genode::size_t)size, (Genode::size_t)align, (Genode::size_t)offset);
+		Genode::error("memory allocation failed in alloc_memblock ("
+		              "size=",   size, " "
+		              "align=",  Genode::Hex(align), " "
+		              "offset=", Genode::Hex(offset), ")");
 		return 0;
 	}
 	return ptr;
@@ -386,18 +414,19 @@ extern "C" dde_addr_t dde_dma_get_physaddr(void *virt) {
  ** I/O port **
  **************/
 
-static Genode::Io_port_session_client *_io_port;
+static Genode::Constructible<Genode::Io_port_session_client> _io_port;
+
 
 extern "C" void dde_request_io(dde_uint8_t virt_bar_ioport)
 {
 	using namespace Genode;
 
-	if (_io_port) destroy(env()->heap(), _io_port);
+	if (_io_port.constructed()) { _io_port.destruct(); }
 
 	Platform::Device_client device(pci_drv()._cap);
 	Io_port_session_capability cap = device.io_port(virt_bar_ioport);
 
-	_io_port = new (env()->heap()) Io_port_session_client(cap);
+	_io_port.construct(cap);
 }
 
 
@@ -434,8 +463,8 @@ struct Slab_backend_alloc : public Genode::Allocator,
                             public Genode::Region_map_client
 {
 	enum {
-		VM_SIZE    = 1024 * 1024,
-		BLOCK_SIZE =  64 * 1024,
+		VM_SIZE    = 2 * 1024 * 1024,
+		BLOCK_SIZE =       64 * 1024,
 		ELEMENTS   = VM_SIZE / BLOCK_SIZE,
 	};
 
@@ -443,14 +472,14 @@ struct Slab_backend_alloc : public Genode::Allocator,
 	Genode::Ram_dataspace_capability  _ds_cap[ELEMENTS];
 	int                               _index;
 	Genode::Allocator_avl             _range;
-	Genode::Ram_session              &_ram;
+	Genode::Ram_allocator            &_ram;
 
 	bool _alloc_block()
 	{
 		using namespace Genode;
 
 		if (_index == ELEMENTS) {
-			PERR("Slab-backend exhausted!");
+			error("slab backend exhausted!");
 			return false;
 		}
 
@@ -467,13 +496,16 @@ struct Slab_backend_alloc : public Genode::Allocator,
 		return true;
 	}
 
-	Slab_backend_alloc(Genode::Ram_session &ram)
+	Slab_backend_alloc(Genode::Env &env, Genode::Region_map &rm,
+	                   Genode::Ram_allocator &ram,
+	                   Genode::Allocator &md_alloc)
 	:
+		Rm_connection(env),
 		Region_map_client(Rm_connection::create(VM_SIZE)),
-		_index(0), _range(Genode::env()->heap()), _ram(ram)
+		_index(0), _range(&md_alloc), _ram(ram)
 	{
 		/* reserver attach us, anywere */
-		_base = Genode::env()->rm_session()->attach(dataspace());
+		_base = rm.attach(dataspace());
 	}
 
 	Genode::addr_t start() const { return _base; }
@@ -492,7 +524,7 @@ struct Slab_backend_alloc : public Genode::Allocator,
 
 		done = _alloc_block();
 		if (!done) {
-			PERR("Backend allocator exhausted\n");
+			Genode::error("backend allocator exhausted");
 			return false;
 		}
 
@@ -543,17 +575,17 @@ struct Slab
 		NUM_SLABS = (SLAB_STOP_LOG2 - SLAB_START_LOG2) + 1,
 	};
 
-	Slab_backend_alloc &_back_alloc;
-	Slab_alloc         *_allocator[NUM_SLABS];
-	Genode::addr_t      _start;
-	Genode::addr_t      _end;
+	Genode::Constructible<Slab_alloc> _allocator[NUM_SLABS];
+
+	Genode::addr_t _start;
+	Genode::addr_t _end;
 
 	Slab(Slab_backend_alloc &alloc)
-	: _back_alloc(alloc), _start(alloc.start()), _end(alloc.end())
+	: _start(alloc.start()), _end(alloc.end())
 	{
-		for (unsigned i = 0; i < NUM_SLABS; i++)
-			_allocator[i] = new (Genode::env()->heap())
-				Slab_alloc(1U << (SLAB_START_LOG2 + i), alloc);
+		for (unsigned i = 0; i < NUM_SLABS; i++) {
+			_allocator[i].construct(1U << (SLAB_START_LOG2 + i), alloc);
+		}
 	}
 
 	void *alloc(Genode::size_t size)
@@ -584,7 +616,6 @@ struct Slab
 
 	void free(void *p)
 	{
-		using namespace Genode;
 		Genode::addr_t *addr = ((Genode::addr_t *)p)-1;
 		unsigned index = *(unsigned*)(addr);
 		_allocator[index]->free((void*)(addr));
@@ -594,7 +625,8 @@ struct Slab
 
 static ::Slab& slab()
 {
-	static ::Slab_backend_alloc sb(*Genode::env()->ram_session());
+	static ::Slab_backend_alloc sb(*_global_env, _global_env->rm(),
+	                               _global_env->ram(), *_global_alloc);
 	static ::Slab s(sb);
 	return s;
 }
@@ -619,7 +651,8 @@ struct Io_memory
 
 	Genode::addr_t                      _vaddr;
 
-	Io_memory(Genode::addr_t base, Genode::Io_mem_session_capability cap)
+	Io_memory(Genode::Region_map &rm,
+	          Genode::addr_t base, Genode::Io_mem_session_capability cap)
 	:
 		_mem(cap),
 		_mem_ds(_mem.dataspace())
@@ -627,7 +660,7 @@ struct Io_memory
 		if (!_mem_ds.valid())
 			throw Genode::Exception();
 
-		_vaddr = Genode::env()->rm_session()->attach(_mem_ds);
+		_vaddr = rm.attach(_mem_ds);
 		_vaddr |= base & 0xfff;
 	}
 
@@ -635,14 +668,14 @@ struct Io_memory
 };
 
 
-static Io_memory *_io_mem;
+static Genode::Constructible<Io_memory> _io_mem;
 
 
 extern "C" int dde_request_iomem(dde_addr_t start, dde_addr_t *vaddr)
 {
-	if (_io_mem) {
-		PERR("Io_memory already requested");
-		Genode::sleep_forever();
+	if (_io_mem.constructed()) {
+		Genode::error("Io_memory already requested");
+		return -1;
 	}
 
 	Platform::Device_client device(pci_drv()._cap);
@@ -659,11 +692,11 @@ extern "C" int dde_request_iomem(dde_addr_t start, dde_addr_t *vaddr)
 			virt_iomem_bar ++;
 		}
 	}
-	if (!cap.valid())
-		return -1;
+
+	if (!cap.valid()) { return -1; }
 
 	try {
-		_io_mem = new (Genode::env()->heap()) Io_memory(start, cap);
+		_io_mem.construct(_global_env->rm(), start, cap);
 	} catch (...) { return -1; }
 
 	*vaddr = _io_mem->vaddr();
@@ -674,8 +707,7 @@ extern "C" int dde_request_iomem(dde_addr_t start, dde_addr_t *vaddr)
 extern "C" int dde_release_iomem(dde_addr_t start, dde_size_t size)
 {
 	try {
-		destroy(Genode::env()->heap(), _io_mem);
-		_io_mem = 0;
+		_io_mem.destruct();
 		return 0;
 	} catch (...) { return -1; }
 }

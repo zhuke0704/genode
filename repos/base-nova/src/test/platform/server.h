@@ -4,22 +4,23 @@
  */
 
 /*
- * Copyright (C) 2013-2015 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #pragma once
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/thread.h>
 #include <base/env.h>
-#include <base/sleep.h>
-
-#include <cap_session/connection.h>
+#include <base/thread.h>
+#include <base/rpc_client.h>
 #include <base/rpc_server.h>
+
+/* NOVA includes */
+#include <nova/cap_map.h>
+#include <nova/capability_space.h>
 
 namespace Test {
 	struct Session;
@@ -38,21 +39,20 @@ struct Test::Session : Genode::Session
 {
 	static const char *service_name() { return "TEST"; }
 
+	enum { CAP_QUOTA = 2 };
+
 	GENODE_RPC(Rpc_cap_void, bool, cap_void, Genode::Native_capability,
 	           Genode::addr_t &);
 	GENODE_RPC(Rpc_void_cap, Genode::Native_capability,
 	           void_cap);
 	GENODE_RPC(Rpc_cap_cap, Genode::Native_capability, cap_cap,
 	           Genode::addr_t);
-	GENODE_RPC(Rpc_leak_utcb_address, Genode::addr_t, leak_utcb_address);
-
-	GENODE_RPC_INTERFACE(Rpc_cap_void, Rpc_void_cap, Rpc_cap_cap,
-	                     Rpc_leak_utcb_address);
+	GENODE_RPC_INTERFACE(Rpc_cap_void, Rpc_void_cap, Rpc_cap_cap);
 };
 
 struct Test::Client : Genode::Rpc_client<Session>
 {
-	Client(Capability<Session> cap) : Rpc_client<Session>(cap) { }
+	Client(Genode::Capability<Session> cap) : Rpc_client<Session>(cap) { }
 
 	bool cap_void(Genode::Native_capability cap, Genode::addr_t &local_name) {
 		return call<Rpc_cap_void>(cap, local_name); }
@@ -62,9 +62,6 @@ struct Test::Client : Genode::Rpc_client<Session>
 
 	Genode::Native_capability cap_cap(Genode::addr_t cap) {
 		return call<Rpc_cap_cap>(cap); }
-
-	Genode::addr_t leak_utcb_address() {
-		return call<Rpc_leak_utcb_address>(); }
 };
 
 struct Test::Component : Genode::Rpc_object<Test::Session, Test::Component>
@@ -75,8 +72,6 @@ struct Test::Component : Genode::Rpc_object<Test::Session, Test::Component>
 	Genode::Native_capability void_cap();
 	/* Test to transfer a specific object capability during reply */
 	Genode::Native_capability cap_cap(Genode::addr_t);
-	/* Leak utcb address of entrypoint to manipulate utcb receive window */
-	Genode::addr_t leak_utcb_address();
 };
 
 namespace Test { typedef Genode::Capability<Test::Session> Capability; }
@@ -93,7 +88,7 @@ inline bool Test::Component::cap_void(Genode::Native_capability got_cap,
 		return false;
 
 	/* be evil and keep this cap by manually incrementing the ref count */
-	Genode::Cap_index idx(Genode::cap_map()->find(got_cap.local_name()));
+	Genode::Cap_index idx(Genode::cap_map().find(got_cap.local_name()));
 	idx.inc();
 
 	return true;
@@ -111,8 +106,5 @@ inline Genode::Native_capability Test::Component::void_cap() {
 	return send_cap;
 }
 
-inline Genode::addr_t Test::Component::leak_utcb_address() {
-	return reinterpret_cast<Genode::addr_t>(Genode::Thread::myself()->utcb()); }
-
 inline Genode::Native_capability Test::Component::cap_cap(Genode::addr_t cap) {
-	return Genode::Native_capability(cap); }
+	return Genode::Capability_space::import(cap); }

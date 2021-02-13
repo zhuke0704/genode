@@ -1,39 +1,47 @@
 /*
  * \brief  Implementation of linux/sched.h
  * \author Norman Feske
+ * \author Stefan Kalkowski
  * \date   2015-09-09
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Linux kit includes */
 #include <lx_kit/scheduler.h>
 
+struct process_timer {
+	struct timer_list  timer;
+	Lx::Task          &task;
 
-static void unblock_task(unsigned long task)
+	process_timer(Lx::Task &task) : task(task) {}
+};
+
+
+static void process_timeout(struct timer_list *list)
 {
-	Lx::Task *t = (Lx::Task *)task;
-
-	t->unblock();
+	struct process_timer *timeout = from_timer(timeout, list, timer);
+	timeout->task.unblock();
 }
 
 
 signed long schedule_timeout(signed long timeout)
 {
-	struct timer_list timer;
+	Lx::Task & cur_task = *Lx::scheduler().current();
+	struct process_timer timer { cur_task };
+	timer_setup(&timer.timer, process_timeout, 0);
 
 	unsigned long expire = timeout + jiffies;
-	setup_timer(&timer, unblock_task, (unsigned long)Lx::scheduler().current());
-	mod_timer(&timer, expire);
+	mod_timer(&timer.timer, expire);
 
-	Lx::scheduler().current()->block_and_schedule();
+	cur_task.block_and_schedule();
 
-	del_timer(&timer);
+	del_timer(&timer.timer);
 
 	timeout = (expire - jiffies);
 

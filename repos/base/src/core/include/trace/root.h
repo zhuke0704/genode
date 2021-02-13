@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__TRACE__ROOT_H_
@@ -27,32 +27,36 @@ class Genode::Trace::Root : public Genode::Root_component<Session_component>
 {
 	private:
 
+		Ram_allocator   &_ram;
+		Region_map      &_local_rm;
 		Source_registry &_sources;
 		Policy_registry &_policies;
 
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *args) override
 		{
 			size_t ram_quota       = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
 			size_t arg_buffer_size = Arg_string::find_arg(args, "arg_buffer_size").ulong_value(0);
 			unsigned parent_levels = Arg_string::find_arg(args, "parent_levels").ulong_value(0);
 
-			char label[Trace::Session_label::size()];
-			Arg_string::find_arg(args, "label").string(label, sizeof(label), "");
-
 			if (arg_buffer_size > ram_quota)
-				throw Root::Invalid_args();
+				throw Service_denied();
 
 			return new (md_alloc())
-			       Session_component(*md_alloc(), ram_quota, arg_buffer_size,
-			                         parent_levels, label, _sources, _policies);
+			       Session_component(*this->ep(),
+			                         session_resources_from_args(args),
+			                         session_label_from_args(args),
+			                         session_diag_from_args(args),
+			                         _ram, _local_rm,
+			                         arg_buffer_size, parent_levels,
+			                         _sources, _policies);
 		}
 
-		void _upgrade_session(Session_component *s, const char *args)
+		void _upgrade_session(Session_component *s, const char *args) override
 		{
-			size_t ram_quota = Arg_string::find_arg(args, "ram_quota").ulong_value(0);
-			s->upgrade_ram_quota(ram_quota);
+			s->upgrade(ram_quota_from_args(args));
+			s->upgrade(cap_quota_from_args(args));
 		}
 
 	public:
@@ -60,16 +64,14 @@ class Genode::Trace::Root : public Genode::Root_component<Session_component>
 		/**
 		 * Constructor
 		 *
-		 * \param session_ep       entry point for managing session objects
-		 * \param md_alloc         meta data allocator used by root component
-		 * \param ram_quota        RAM for tracing purposes of this session
-		 * \param arg_buffer_size  session argument-buffer size
+		 * \param session_ep  entry point for managing session objects
 		 */
-		Root(Rpc_entrypoint *session_ep, Allocator *md_alloc,
+		Root(Ram_allocator &ram, Region_map &local_rm,
+		     Rpc_entrypoint &session_ep, Allocator &md_alloc,
 		     Source_registry &sources, Policy_registry &policies)
 		:
-			Root_component<Session_component>(session_ep, md_alloc),
-			_sources(sources), _policies(policies)
+			Root_component<Session_component>(&session_ep, &md_alloc),
+			_ram(ram), _local_rm(local_rm), _sources(sources), _policies(policies)
 		{ }
 };
 

@@ -5,26 +5,26 @@
  */
 
 /*
- * Copyright (C) 2013-2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/cap_map.h>
+/* Genode includes */
+#include <base/log.h>
 
-#include <base/printf.h>
-
-/* base-nova specific include */
+/* NOVA includes */
 #include <nova/syscalls.h>
+#include <nova/cap_map.h>
 
 using namespace Genode;
 
 
-Capability_map *Genode::cap_map()
+Capability_map &Genode::cap_map()
 {
 	static Genode::Capability_map map;
-	return &map;
+	return map;
 }
 
 
@@ -46,7 +46,7 @@ void Cap_range::inc(unsigned id)
 {
 	bool failure = false;
 	{
-		Lock::Guard guard(_lock);
+		Mutex::Guard guard(_mutex);
 
 		if (_cap_array[id] + 1 == 0)
 			failure = true;
@@ -55,8 +55,7 @@ void Cap_range::inc(unsigned id)
 	}
 
 	if (failure)
-		PERR("cap reference counting error - reference overflow of cap=%lx",
-		     _base + id);
+		error("cap reference counting error - reference overflow of cap=", _base + id);
 }
 
 
@@ -66,7 +65,7 @@ void Cap_range::dec(unsigned const id_start, bool revoke, unsigned num_log_2)
 	{
 		unsigned const end = min(id_start + (1U << num_log_2), elements());
 
-		Lock::Guard guard(_lock);
+		Mutex::Guard guard(_mutex);
 
 		for (unsigned id = id_start; id < end; id++) {
 			if (_cap_array[id] == 0) {
@@ -82,8 +81,9 @@ void Cap_range::dec(unsigned const id_start, bool revoke, unsigned num_log_2)
 	}
 
 	if (failure)
-		PERR("cap reference counting error - one counter of cap range %lx+%x "
-		     "has been already zero", _base + id_start, 1 << num_log_2);
+		error("cap reference counting error - one counter of cap ",
+		      "range ", _base + id_start, "+", 1 << num_log_2, " "
+		      "has been already zero");
 }
 
 
@@ -92,7 +92,7 @@ addr_t Cap_range::alloc(size_t const num_log2)
 	addr_t const step = 1UL << num_log2;
 
 	{
-		Lock::Guard guard(_lock);
+		Mutex::Guard guard(_mutex);
 
 		unsigned max  = elements();
 		addr_t   last = _last;
@@ -177,6 +177,12 @@ void Capability_map::remove(Genode::addr_t const sel, uint8_t num_log_2,
 
 	while (last_sel > last_range) {
 		uint8_t left_log2 = log2(last_sel - last_range);
+
+		/* take care for a case which should not happen */
+		if (left_log2 >= sizeof(last_range)*8) {
+			error("cap remove error");
+			return;
+		}
 
 		remove(last_range, left_log2, revoke);
 

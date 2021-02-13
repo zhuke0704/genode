@@ -5,13 +5,14 @@
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Linux kint includes */
+#include <lx_kit/env.h>
 #include <lx_kit/internal/task.h>
 
 typedef Lx::Task::List_element Wait_le;
@@ -20,25 +21,24 @@ typedef Lx::Task::List         Wait_list;
 
 void init_waitqueue_head(wait_queue_head_t *wq)
 {
-	wq->list = new (Genode::env()->heap()) Wait_list;
+	wq->list = new (&Lx_kit::env().heap()) Wait_list;
 }
 
-
-void remove_wait_queue(wait_queue_head_t *wq, wait_queue_t *wait)
+void add_wait_queue(wait_queue_head_t *q, wait_queue_entry_t *wait)
 {
-	Wait_list *list = static_cast<Wait_list*>(wq->list);
-	if (!list)
-		return;
+	printk("%s called\n", __func__);
+}
 
-	destroy(Genode::env()->heap(), list);
+void remove_wait_queue(wait_queue_head_t *wq, wait_queue_entry_t *wait)
+{
+	printk("%s called\n", __func__);
 }
 
 
 int waitqueue_active(wait_queue_head_t *wq)
 {
 	Wait_list *list = static_cast<Wait_list*>(wq->list);
-	if (!list)
-		return 0;
+	if (!list) { return 0; }
 
 	return list->first() ? 1 : 0;
 }
@@ -47,15 +47,11 @@ int waitqueue_active(wait_queue_head_t *wq)
 void __wake_up(wait_queue_head_t *wq, bool all)
 {
 	Wait_list *list = static_cast<Wait_list *>(wq->list);
-	if (!list) {
-		PWRN("wait_queue_head_t is empty, wq: %p called from: %p", wq, __builtin_return_address(0));
-		return;
-	}
+	if (!list) { return; }
 
 	Wait_le *le = list->first();
 	do {
-		if (!le)
-			return;
+		if (!le) { return; }
 
 		le->object()->unblock();
 	} while (all && (le = le->next()));
@@ -68,13 +64,12 @@ void wake_up_interruptible_sync_poll(wait_queue_head_t *wq, int)
 }
 
 
-void __wait_event(wait_queue_head_t wq)
+void ___wait_event(wait_queue_head_t *wq)
 {
-	Wait_list *list = static_cast<Wait_list *>(wq.list);
+	Wait_list *list = static_cast<Wait_list *>(wq->list);
 	if (!list) {
-		PWRN("__wait_event():dd empty list in wq: %p", &wq);
-		init_waitqueue_head(&wq);
-		list = static_cast<Wait_list *>(wq.list);
+		init_waitqueue_head(wq);
+		list = static_cast<Wait_list *>(wq->list);
 	}
 
 	Lx::Task *task = Lx::scheduler().current();
@@ -93,12 +88,32 @@ void init_completion(struct completion *work)
 
 void complete(struct completion *work)
 {
-	work->done = 1;
+	if (work->done != UINT_MAX)
+		work->done++;
 
 	Lx::Task *task = static_cast<Lx::Task*>(work->task);
 	if (task) { task->unblock(); }
 }
 
+void complete_all(struct completion *work)
+{
+	work->done = UINT_MAX;
+
+	Lx::Task *task = static_cast<Lx::Task*>(work->task);
+	if (task) { task->unblock(); }
+}
+
+bool try_wait_for_completion(struct completion *work)
+{
+	int ret = 1;
+
+	if (!work->done)
+		ret = 0;
+	else if (work->done != UINT_MAX)
+		work->done--;
+
+	return ret;
+}
 
 unsigned long wait_for_completion_timeout(struct completion *work,
                                           unsigned long timeout)

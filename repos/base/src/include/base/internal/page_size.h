@@ -5,14 +5,16 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__PAGE_SIZE_H_
 #define _INCLUDE__BASE__INTERNAL__PAGE_SIZE_H_
+
+#include <base/stdint.h>
 
 namespace Genode
 {

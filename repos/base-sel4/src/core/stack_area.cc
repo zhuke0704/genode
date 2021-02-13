@@ -6,16 +6,16 @@
  */
 
 /*
- * Copyright (C) 2010-2015 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <region_map/region_map.h>
-#include <ram_session/ram_session.h>
-#include <base/printf.h>
+#include <base/ram_allocator.h>
+#include <base/log.h>
 #include <base/synced_allocator.h>
 #include <base/thread.h>
 
@@ -50,55 +50,59 @@ class Stack_area_region_map : public Region_map
 		using Ds_slab = Synced_allocator<Tslab<Dataspace_component,
 		                                       get_page_size()> >;
 
-		Ds_slab _ds_slab { platform()->core_mem_alloc() };
-
-		enum { verbose = false };
+		Ds_slab _ds_slab { platform().core_mem_alloc() };
 
 	public:
 
 		/**
 		 * Allocate and attach on-the-fly backing store to the stack area
 		 */
-		Local_addr attach(Dataspace_capability ds_cap, /* ignored capability */
-		                  size_t size, off_t offset,
-		                  bool use_local_addr, Local_addr local_addr,
-		                  bool executable) override
+		Local_addr attach(Dataspace_capability, size_t size, off_t,
+		                  bool, Local_addr local_addr, bool, bool) override
 		{
 			size = round_page(size);
 
 			/* allocate physical memory */
-			Range_allocator &phys_alloc = *platform_specific()->ram_alloc();
+			Range_allocator &phys_alloc = platform_specific().ram_alloc();
 			size_t const num_pages = size >> get_page_size_log2();
 			addr_t const phys = Untyped_memory::alloc_pages(phys_alloc, num_pages);
 			Untyped_memory::convert_to_page_frames(phys, num_pages);
 
-			Dataspace_component *ds = new (&_ds_slab)
+			Dataspace_component &ds = *new (&_ds_slab)
 				Dataspace_component(size, 0, phys, CACHED, true, 0);
-			if (!ds) {
-				PERR("dataspace for core stack does not exist");
-				return (addr_t)0;
-			}
 
 			addr_t const core_local_addr =
 				stack_area_virtual_base() + (addr_t)local_addr;
 
-			if (verbose)
-				PDBG("core_local_addr = %lx, phys_addr = %lx, size = 0x%zx",
-				     core_local_addr, ds->phys_addr(), ds->size());
-
-			if (!map_local(ds->phys_addr(), core_local_addr,
-			               ds->size() >> get_page_size_log2())) {
-				PERR("could not map phys %lx at local %lx",
-				     ds->phys_addr(), core_local_addr);
+			if (!map_local(ds.phys_addr(), core_local_addr,
+			               ds.size() >> get_page_size_log2())) {
+				error(__func__, ": could not map phys ", Hex(ds.phys_addr()), " "
+				      "at local ", Hex(core_local_addr));
 				return (addr_t)0;
 			}
 
-			ds->assign_core_local_addr((void*)core_local_addr);
+			ds.assign_core_local_addr((void*)core_local_addr);
 
 			return local_addr;
 		}
 
-		void detach(Local_addr) override { PWRN("Not implemented!"); }
+		void detach(Local_addr local_addr) override
+		{
+			using Genode::addr_t;
+
+			if ((addr_t)local_addr >= stack_area_virtual_size())
+				return;
+
+			addr_t const detach = stack_area_virtual_base() + (addr_t)local_addr;
+			addr_t const stack  = stack_virtual_size();
+			addr_t const pages  = ((detach & ~(stack - 1)) + stack - detach)
+			                      >> get_page_size_log2();
+
+			unmap_local(detach, pages);
+
+			/* XXX missing XXX */
+			warning(__PRETTY_FUNCTION__, ": not implemented");
+		}
 
 		void fault_handler(Signal_context_capability) override { }
 
@@ -108,38 +112,29 @@ class Stack_area_region_map : public Region_map
 };
 
 
-class Stack_area_ram_session : public Ram_session
+struct Stack_area_ram_allocator : Ram_allocator
 {
-	public:
+	Ram_dataspace_capability alloc(size_t, Cache_attribute) override {
+		return reinterpret_cap_cast<Ram_dataspace>(Native_capability()); }
 
-		Ram_dataspace_capability alloc(size_t size, Cache_attribute cached) {
-			return reinterpret_cap_cast<Ram_dataspace>(Native_capability()); }
+	void free(Ram_dataspace_capability) override {
+		warning(__func__, " not implemented"); }
 
-		void free(Ram_dataspace_capability ds) {
-			PWRN("Not implemented!"); }
-
-		int ref_account(Ram_session_capability ram_session) { return 0; }
-
-		int transfer_quota(Ram_session_capability ram_session, size_t amount) {
-			return 0; }
-
-		size_t quota() { return 0; }
-
-		size_t used() { return 0; }
+	size_t dataspace_size(Ram_dataspace_capability) const override { return 0; }
 };
 
 
 namespace Genode {
 
-	Region_map  *env_stack_area_region_map;
-	Ram_session *env_stack_area_ram_session;
+	Region_map    *env_stack_area_region_map;
+	Ram_allocator *env_stack_area_ram_allocator;
 
 	void init_stack_area()
 	{
 		static Stack_area_region_map rm_inst;
 		env_stack_area_region_map = &rm_inst;
 
-		static Stack_area_ram_session ram_inst;
-		env_stack_area_ram_session = &ram_inst;
+		static Stack_area_ram_allocator ram_inst;
+		env_stack_area_ram_allocator = &ram_inst;
 	}
 }

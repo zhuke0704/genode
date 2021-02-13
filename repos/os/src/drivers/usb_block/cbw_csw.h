@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CBW_CSW_H_
@@ -58,12 +58,12 @@ struct Usb::Cbw : Genode::Mmio
 
 	void dump()
 	{
-		PLOG("Sig: 0x%04x", read<Sig>());
-		PLOG("Tag: %u", read<Tag>());
-		PLOG("Dtl: %u", read<Dtl>());
-		PLOG("Flg: 0x%x", read<Flg>());
-		PLOG("Lun: %u", read<Lun>());
-		PLOG("Cbl: %u", read<Cbl>());
+		Genode::log("Sig: ", Genode::Hex(read<Sig>()));
+		Genode::log("Tag: ", read<Tag>());
+		Genode::log("Dtl: ", read<Dtl>());
+		Genode::log("Flg: ", Genode::Hex(read<Flg>()));
+		Genode::log("Lun: ", read<Lun>());
+		Genode::log("Cbl: ", read<Cbl>());
 	}
 };
 
@@ -80,7 +80,7 @@ struct Test_unit_ready : Usb::Cbw,
 
 	void dump()
 	{
-		PLOG("--- Dump TEST_UNIT_READY command --");
+		Genode::log("--- Dump TEST_UNIT_READY command --");
 		Cbw::dump();
 		Scsi::Cmd_6::dump();
 	}
@@ -98,9 +98,26 @@ struct Request_sense : Usb::Cbw, Scsi::Request_sense
 
 	void dump()
 	{
-		PLOG("--- Dump REQUEST_SENSE command --");
+		Genode::log("--- Dump REQUEST_SENSE command --");
 		Cbw::dump();
 		Scsi::Cmd_6::dump();
+	}
+};
+
+
+struct Start_stop : Usb::Cbw, Scsi::Start_stop
+{
+	Start_stop(addr_t addr, uint32_t tag, uint8_t lun)
+	:
+		Cbw(addr, tag, 0, Usb::ENDPOINT_IN, lun, Scsi::Start_stop::LENGTH),
+		Scsi::Start_stop(addr+15)
+	{ if (verbose_scsi) dump(); }
+
+	void dump()
+	{
+		Genode::log("--- Dump START_STOP command --");
+		Cbw::dump();
+		Scsi::Start_stop::dump();
 	}
 };
 
@@ -116,7 +133,7 @@ struct Inquiry : Usb::Cbw, Scsi::Inquiry
 
 	void dump()
 	{
-		PLOG("--- Dump INQUIRY command --");
+		Genode::log("--- Dump INQUIRY command --");
 		Cbw::dump();
 		Scsi::Cmd_6::dump();
 	}
@@ -134,7 +151,7 @@ struct Read_capacity_10 : Usb::Cbw, Scsi::Read_capacity_10
 
 	void dump()
 	{
-		PLOG("--- Dump READ_CAPACITY_10 command --");
+		Genode::log("--- Dump READ_CAPACITY_10 command --");
 		Cbw::dump();
 		Scsi::Cmd_10::dump();
 	}
@@ -153,7 +170,7 @@ struct Read_10 : Usb::Cbw, Scsi::Read_10
 
 	void dump()
 	{
-		PLOG("--- Dump READ_10 command --");
+		Genode::log("--- Dump READ_10 command --");
 		Cbw::dump();
 		Scsi::Cmd_10::dump();
 	}
@@ -172,7 +189,7 @@ struct Write_10 : Usb::Cbw, Scsi::Write_10
 
 	void dump()
 	{
-		PLOG("--- Dump WRITE_10 command --");
+		Genode::log("--- Dump WRITE_10 command --");
 		Cbw::dump();
 		Scsi::Cmd_10::dump();
 	}
@@ -190,7 +207,7 @@ struct Read_capacity_16 : Usb::Cbw, Scsi::Read_capacity_16
 
 	void dump()
 	{
-		PLOG("--- Dump READ_CAPACITY_16 command --");
+		Genode::log("--- Dump READ_CAPACITY_16 command --");
 		Cbw::dump();
 		Scsi::Cmd_16::dump();
 	}
@@ -209,7 +226,7 @@ struct Read_16 : Usb::Cbw, Scsi::Read_16
 
 	void dump()
 	{
-		PLOG("--- Dump READ_16 command --");
+		Genode::log("--- Dump READ_16 command --");
 		Cbw::dump();
 		Scsi::Cmd_16::dump();
 	}
@@ -228,7 +245,7 @@ struct Write_16 : Usb::Cbw, Scsi::Write_16
 
 	void dump()
 	{
-		PLOG("--- Dump WRITE_16 command --");
+		Genode::log("--- Dump WRITE_16 command --");
 		Cbw::dump();
 		Scsi::Cmd_16::dump();
 	}

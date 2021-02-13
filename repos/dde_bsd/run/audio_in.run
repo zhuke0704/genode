@@ -16,8 +16,7 @@ if {[have_spec linux]} {
 #
 
 set build_components {
-	core init
-	drivers/timer
+	core init timer
 	drivers/audio
 	test/audio_in
 }
@@ -37,7 +36,6 @@ append config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -49,6 +47,7 @@ append config {
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="100"/>
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
@@ -58,15 +57,17 @@ append_platform_drv_config
 
 append config {
 	<start name="audio_drv">
+		<binary name="} [audio_drv_binary] {"/>
 		<resource name="RAM" quantum="8M"/>
 		<provides>
 			<service name="Audio_out"/>
 			<service name="Audio_in"/>
 		</provides>
-		<config recording="yes">
-			<mixer field="outputs.master" value="255"/>
+		<config>
+			<mixer field="outputs.master" value="128"/>
 			<mixer field="record.adc-0:1_source" value="sel2"/>
-			<mixer field="record.adc-0:1" value="255"/>
+			<mixer field="record.adc-0:1" value="128"/>
+			<mixer field="record.enable" value="on"/>
 		</config>
 	</start>
 	<start name="test-audio_in">
@@ -82,8 +83,10 @@ install_config $config
 #
 
 set boot_modules {
-	core init timer audio_drv test-audio_in
+	core ld.lib.so init timer test-audio_in
 }
+
+append boot_modules [audio_drv_binary]
 
 append_platform_drv_boot_modules
 

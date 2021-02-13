@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /*******************
@@ -30,5 +30,6 @@ void down_read(struct rw_semaphore *sem);
 void up_read(struct rw_semaphore *sem);
 void down_write(struct rw_semaphore *sem);
 void up_write(struct rw_semaphore *sem);
+int  down_write_killable(struct rw_semaphore *);
 
 #define __RWSEM_INITIALIZER(name) { 0 }

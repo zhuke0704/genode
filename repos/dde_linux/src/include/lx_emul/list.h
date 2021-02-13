@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /********************
@@ -31,10 +31,11 @@
 #define LIST_POISON1 nullptr
 #define LIST_POISON2 nullptr
 #else
-#define LIST_POISON1 ((void *)0x00100100)
-#define LIST_POISON2 ((void *)0x00200200)
+#define LIST_POISON1 ((void *)0x00000100)
+#define LIST_POISON2 ((void *)0x00000200)
 #endif  /* __cplusplus */
 
+#define	POISON_INUSE 0x5a
 
 /******************
  ** linux/list.h **

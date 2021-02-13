@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_PD_H_
@@ -29,6 +29,12 @@ namespace Genode {
 	{
 		private:
 
+			/*
+			 * Noncopyable
+			 */
+			Platform_pd(Platform_pd const &);
+			Platform_pd &operator = (Platform_pd const &);
+
 			friend class Platform_thread;
 
 			/*
@@ -37,7 +43,7 @@ namespace Genode {
 			 */
 			enum {
 				PD_BITS      = 9,
-				THREAD_BITS  = 9,
+				THREAD_BITS  = 7,
 				VERSION_BITS = 14 - 1, /* preserve 1 bit, see 'make_l4_id' */
 				PD_FIRST     = 0,
 				PD_MAX       = (1 << PD_BITS)      - 1,
@@ -46,10 +52,10 @@ namespace Genode {
 				PD_INVALID   = -1,
 			};
 
-			unsigned _pd_id;    /* plain pd number */
-			unsigned _version;  /* version number */
+			unsigned _pd_id   = 0;
+			unsigned _version = 0;
 
-			Pistachio::L4_ThreadId_t _l4_task_id;  /* L4 task ID */
+			Pistachio::L4_ThreadId_t _l4_task_id { };  /* L4 task ID */
 
 			/**
 			 * Manually construct L4 thread ID from its components
@@ -91,7 +97,7 @@ namespace Genode {
 			 *
 			 * Again a special case for Core thread0.
 			 */
-			int _alloc_thread(int thread_id, Platform_thread *thread);
+			int _alloc_thread(int thread_id, Platform_thread &thread);
 
 			/**
 			 * Thread deallocation
@@ -127,8 +133,8 @@ namespace Genode {
 				return static_pds;
 			}
 
-			Pistachio::L4_Word_t _kip_ptr;
-			Pistachio::L4_Word_t _utcb_ptr;
+			Pistachio::L4_Word_t _kip_ptr  = 0;
+			Pistachio::L4_Word_t _utcb_ptr = 0;
 
 			/**
 			 * Protection-domain creation
@@ -184,7 +190,7 @@ namespace Genode {
 			 * Constructors
 			 */
 			Platform_pd(bool core);
-			Platform_pd(Allocator * md_alloc, char const *,
+			Platform_pd(Allocator &md_alloc, char const *,
 			            signed pd_id = PD_INVALID, bool create = true);
 
 			/**
@@ -195,7 +201,7 @@ namespace Genode {
 			/**
 			 * Register quota donation at allocator guard
 			 */
-			void upgrade_ram_quota(size_t ram_quota) { }
+			void upgrade_ram_quota(size_t) { }
 
 			static Pistachio::L4_Word_t _core_utcb_ptr;
 			static void touch_utcb_space();
@@ -205,21 +211,21 @@ namespace Genode {
 			 *
 			 * This function allocates the physical L4 thread ID.
 			 */
-			bool bind_thread(Platform_thread *thread);
+			bool bind_thread(Platform_thread &thread);
 
-			int bind_initial_thread(Platform_thread *thread);
+			int bind_initial_thread(Platform_thread &thread);
 
 			/**
 			 * Unbind thread from protection domain
 			 *
 			 * Free the thread's slot and update thread object.
 			 */
-			void unbind_thread(Platform_thread *thread);
+			void unbind_thread(Platform_thread &thread);
 
 			/**
 			 * Assign parent interface to protection domain
 			 */
-			void assign_parent(Native_capability parent) { }
+			void assign_parent(Native_capability) { }
 
 			int pd_id() const { return _pd_id; }
 
@@ -228,11 +234,7 @@ namespace Genode {
 			 ** Address-space interface **
 			 *****************************/
 
-			/*
-			 * On Pistachio, we don't use directed unmap but rely on the
-			 * in-kernel mapping database. See 'region_map_support.cc'.
-			 */
-			void flush(addr_t, size_t) { PDBG("not implemented"); }
+			void flush(addr_t, size_t, Core_local_addr) override;
 	};
 }
 

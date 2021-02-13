@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -22,35 +22,36 @@ using namespace Genode;
 Region_map::Local_addr
 Core_region_map::attach(Dataspace_capability ds_cap, size_t size,
                         off_t offset, bool use_local_addr,
-                        Region_map::Local_addr, bool executable)
+                        Region_map::Local_addr, bool, bool)
 {
 	using namespace Okl4;
 
-	auto lambda = [&] (Dataspace_component *ds) -> void* {
+	auto lambda = [&] (Dataspace_component *ds) -> void *
+	{
 		if (!ds)
 			throw Invalid_dataspace();
 
 		if (size == 0)
 			size = ds->size();
 
-		size_t page_rounded_size = (size + get_page_size() - 1)
-			& get_page_mask();
+		size_t const page_rounded_size = (size + get_page_size() - 1)
+		                               & get_page_mask();
 
 		if (use_local_addr) {
-			PERR("Parameter 'use_local_addr' not supported within core");
+			error("parameter 'use_local_addr' not supported within core");
 			return nullptr;
 		}
 
 		if (offset) {
-			PERR("Parameter 'offset' not supported within core");
+			error("parameter 'offset' not supported within core");
 			return nullptr;
 		}
 
 		/* allocate range in core's virtual address space */
 		void *virt_addr;
-		if (!platform()->region_alloc()->alloc(page_rounded_size, &virt_addr)) {
-			PERR("Could not allocate virtual address range in core of size %zd\n",
-			     page_rounded_size);
+		if (!platform().region_alloc().alloc(page_rounded_size, &virt_addr)) {
+			error("could not allocate virtual address range in core of size ",
+			      page_rounded_size);
 			return nullptr;
 		}
 

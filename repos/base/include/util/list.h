@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__LIST_H_
@@ -76,11 +76,11 @@ class Genode::List
 		{
 			/* insert at beginning of the list */
 			if (at == 0) {
-				le->Element::_next = _first;
+				le->List<LT>::Element::_next = _first;
 				_first = const_cast<LT *>(le);
 			} else {
-				le->Element::_next = at->Element::_next;
-				at->Element::_next = const_cast<LT *>(le);
+				le->List<LT>::Element::_next = at->List<LT>::Element::_next;
+				at->List<LT>::Element::_next = const_cast<LT *>(le);
 			}
 		}
 
@@ -93,7 +93,7 @@ class Genode::List
 
 			/* if specified element is the first of the list */
 			if (le == _first) {
-				_first = le->Element::_next;
+				_first = le->List<LT>::Element::_next;
 
 			} else {
 
@@ -106,10 +106,10 @@ class Genode::List
 				if (!e->_next) return;
 
 				/* e->_next is the element to remove, skip it in list */
-				e->Element::_next = e->Element::_next->Element::_next;
+				e->List<LT>::Element::_next = e->List<LT>::Element::_next->List<LT>::Element::_next;
 			}
 
-			le->Element::_next = 0;
+			le->List<LT>::Element::_next = 0;
 		}
 };
 

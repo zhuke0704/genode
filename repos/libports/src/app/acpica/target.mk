@@ -1,4 +1,6 @@
-TARGET = acpica
-SRC_CC = os.cc printf.cc
+TARGET   := acpica
+SRC_CC   := os.cc printf.cc report.cc
+REQUIRES := x86
+LIBS     += base acpica
 
-include $(PRG_DIR)/target.inc
+CC_CXX_WARN_STRICT =

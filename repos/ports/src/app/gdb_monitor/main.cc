@@ -5,12 +5,13 @@
  */
 
 /*
- * Copyright (C) 2010-2016 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
+#include <libc/component.h>
 
 /*
  * Suppress messages of libc dummy functions
@@ -24,16 +25,22 @@ extern "C" int  sigsuspend()  { return -1; }
 /*
  * version.c
  */
-extern "C" const char version[] = "7.3.1";
+extern "C" const char version[] = "8.1.1";
 extern "C" const char host_name[] = "";
 
 
-extern "C" int gdbserver_main(int argc, const char *argv[]);
+extern int gdbserver_main(int argc, char *argv[]);
 
-int main()
+extern Genode::Env *genode_env;
+
+void Libc::Component::construct(Libc::Env &env)
 {
-	int argc = 3;
-	const char *argv[] = { "gdbserver", "/dev/terminal", "target", 0 };
+	genode_env = &env;
 
-	return gdbserver_main(argc, argv);
+	int argc = 3;
+	char *argv[] = { "gdbserver", "/dev/terminal", "target", 0 };
+
+	Libc::with_libc([&] () {
+		gdbserver_main(argc, argv);
+	});
 }

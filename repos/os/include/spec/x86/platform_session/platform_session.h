@@ -5,19 +5,20 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#pragma once
+#ifndef _INCLUDE__SPEC__X86__PLATFORM_SESSION__PLATFORM_SESSION_H_
+#define _INCLUDE__SPEC__X86__PLATFORM_SESSION__PLATFORM_SESSION_H_
 
-/* base */
+/* Genode includes */
 #include <session/session.h>
-#include <ram_session/ram_session.h>
+#include <base/ram_allocator.h>
 
-/* os */
+/* os includes */
 #include <platform_device/platform_device.h>
 #include <platform_device/capability.h>
 
@@ -30,11 +31,14 @@ struct Platform::Session : Genode::Session
 	 ** Exception types **
 	 *********************/
 
-	class Alloc_failed    : public Genode::Exception { };
-	class Out_of_metadata : public Alloc_failed { };
-	class Fatal           : public Alloc_failed { };
+	class Fatal : public Genode::Out_of_ram { };
 
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Platform"; }
+
+	enum { RAM_QUOTA = 16 * 1024, CAP_QUOTA = 2 };
 
 	virtual ~Session() { }
 
@@ -84,23 +88,25 @@ struct Platform::Session : Genode::Session
 	 *********************/
 
 	GENODE_RPC_THROW(Rpc_first_device, Device_capability, first_device,
-	                 GENODE_TYPE_LIST(Out_of_metadata),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 unsigned, unsigned);
 	GENODE_RPC_THROW(Rpc_next_device, Device_capability, next_device,
-	                 GENODE_TYPE_LIST(Out_of_metadata),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 Device_capability, unsigned, unsigned);
 	GENODE_RPC(Rpc_release_device, void, release_device, Device_capability);
 	GENODE_RPC_THROW(Rpc_alloc_dma_buffer, Genode::Ram_dataspace_capability,
 	                 alloc_dma_buffer,
-	                 GENODE_TYPE_LIST(Out_of_metadata, Fatal),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps, Fatal),
 	                 Genode::size_t);
 	GENODE_RPC(Rpc_free_dma_buffer, void, free_dma_buffer,
 	           Genode::Ram_dataspace_capability);
 	GENODE_RPC_THROW(Rpc_device, Device_capability, device,
-	                 GENODE_TYPE_LIST(Out_of_metadata),
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps),
 	                 String const &);
 
 	GENODE_RPC_INTERFACE(Rpc_first_device, Rpc_next_device,
 	                     Rpc_release_device, Rpc_alloc_dma_buffer,
 	                     Rpc_free_dma_buffer, Rpc_device);
 };
+
+#endif /* _INCLUDE__SPEC__X86__PLATFORM_SESSION__PLATFORM_SESSION_H_ */

@@ -5,16 +5,17 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__UPGRADEABLE_CLIENT_H_
 #define _INCLUDE__BASE__INTERNAL__UPGRADEABLE_CLIENT_H_
 
 #include <base/env.h>
+#include <base/log.h>
 
 namespace Genode { template <typename> struct Upgradeable_client; }
 
@@ -27,19 +28,20 @@ struct Genode::Upgradeable_client : CLIENT
 {
 	typedef Genode::Capability<typename CLIENT::Rpc_interface> Capability;
 
-	Capability _cap;
+	Parent &_parent;
+	Parent::Client::Id _id;
 
-	Upgradeable_client(Capability cap) : CLIENT(cap), _cap(cap) { }
+	Upgradeable_client(Parent &parent, Capability cap, Parent::Client::Id id)
+	: CLIENT(cap), _parent(parent), _id(id) { }
 
 	void upgrade_ram(size_t quota)
 	{
-		PINF("upgrading quota donation for Env::%s (%zu bytes)",
-		     CLIENT::Rpc_interface::service_name(), quota);
+		_parent.upgrade(_id, String<64>("ram_quota=", quota).string());
+	}
 
-		char buf[128];
-		snprintf(buf, sizeof(buf), "ram_quota=%zu", quota);
-
-		env()->parent()->upgrade(_cap, buf);
+	void upgrade_caps(size_t quota)
+	{
+		_parent.upgrade(_id, String<64>("cap_quota=", quota).string());
 	}
 };
 

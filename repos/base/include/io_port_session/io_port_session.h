@@ -16,10 +16,10 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__IO_PORT_SESSION__IO_PORT_SESSION_H_
@@ -33,7 +33,12 @@ namespace Genode { struct Io_port_session; }
 
 struct Genode::Io_port_session : Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "IO_PORT"; }
+
+	enum { CAP_QUOTA = 2 };
 
 	virtual ~Io_port_session() { }
 

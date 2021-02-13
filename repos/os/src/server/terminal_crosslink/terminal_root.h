@@ -5,28 +5,27 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _TERMINAL_ROOT_H_
 #define _TERMINAL_ROOT_H_
 
 /* Genode includes */
-#include <cap_session/cap_session.h>
 #include <root/component.h>
 
 /* local includes */
 #include "terminal_session_component.h"
 
 
-namespace Terminal {
+namespace Terminal_crosslink {
 
 	using namespace Genode;
 
-	class Root : public Rpc_object<Typed_root<Session> >
+	class Root : public Root_component<Session_component>
 	{
 		private:
 
@@ -41,8 +40,8 @@ namespace Terminal {
 
 		public:
 
-			Session_capability session(Root::Session_args const &args,
-			                           Genode::Affinity   const &)
+			Session_capability session(Root::Session_args const &,
+			                           Genode::Affinity   const &) override
 			{
 				if (!(_session_state & FIRST_SESSION_OPEN)) {
 					_session_state |= FIRST_SESSION_OPEN;
@@ -55,9 +54,9 @@ namespace Terminal {
 				return Session_capability();
 			}
 
-			void upgrade(Genode::Session_capability, Root::Upgrade_args const &) { }
+			void upgrade(Genode::Session_capability, Root::Upgrade_args const &) override { }
 
-			void close(Genode::Session_capability session)
+			void close(Genode::Session_capability session) override
 			{
 				if (_session_component1.belongs_to(session))
 					_session_state &= ~FIRST_SESSION_OPEN;
@@ -68,10 +67,10 @@ namespace Terminal {
 			/**
 			 * Constructor
 			 */
-			Root(Rpc_entrypoint *ep, Allocator *md_alloc,
-			     Cap_session &cap_session)
-			: _session_component1(_session_component2, cap_session, "terminal_ep1"),
-			  _session_component2(_session_component1, cap_session, "terminal_ep2"),
+			Root(Env &env, Allocator &alloc)
+			: Root_component(&env.ep().rpc_ep(), &alloc),
+			  _session_component1(env, _session_component2),
+			  _session_component2(env, _session_component1),
 			  _session_state(0)
 			{ }
 	};

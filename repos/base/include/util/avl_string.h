@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__AVL_STRING_H_
@@ -28,7 +28,7 @@ class Genode::Avl_string_base : public Avl_node<Avl_string_base>
 {
 	private:
 
-		const char *_str;
+		struct { const char *_str; };
 
 	protected:
 
@@ -78,8 +78,7 @@ class Genode::Avl_string : public Avl_string_base
 
 		Avl_string(const char *str) : Avl_string_base(_str_buf)
 		{
-			strncpy(_str_buf, str, sizeof(_str_buf));
-			_str_buf[STR_LEN - 1] = 0;
+			copy_cstring(_str_buf, str, sizeof(_str_buf));
 		}
 };
 

@@ -5,26 +5,23 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/env.h>
+#include <base/component.h>
 #include <base/heap.h>
-#include <base/rpc_server.h>
-#include <base/signal.h>
 #include <base/sleep.h>
 #include <loader_session/loader_session.h>
-#include <cap_session/connection.h>
 #include <root/component.h>
+#include <os/session_policy.h>
 
 /* local includes */
 #include <child.h>
-#include <nitpicker.h>
-#include <ram_session_client_guard.h>
+#include <gui.h>
 #include <rom.h>
 
 
@@ -41,107 +38,79 @@ class Loader::Session_component : public Rpc_object<Session>
 {
 	private:
 
-		struct Local_rom_service : Service
+		struct Local_rom_factory : Local_service<Rom_session_component>::Factory
 		{
-			Rpc_entrypoint             &_ep;
+			Entrypoint                 &_ep;
 			Allocator                  &_md_alloc;
-			Parent_service              _parent_rom_service;
 			Rom_module_registry        &_rom_modules;
-			Lock                        _lock;
-			List<Rom_session_component> _rom_sessions;
+			Mutex                       _mutex { };
+			List<Rom_session_component> _rom_sessions { };
 
-			void _close(Rom_session_component *rom)
+			void _close(Rom_session_component &rom)
 			{
-				_rom_sessions.remove(rom);
-				destroy(&_md_alloc, rom);
+				_rom_sessions.remove(&rom);
+				Genode::destroy(_md_alloc, &rom);
 			}
 
-			Local_rom_service(Rpc_entrypoint      &ep,
+			Local_rom_factory(Entrypoint          &ep,
 			                  Allocator           &md_alloc,
 			                  Rom_module_registry &rom_modules)
 			:
-				Service("virtual_rom"),
-				_ep(ep),
-				_md_alloc(md_alloc),
-				_parent_rom_service(Rom_session::service_name()),
-				_rom_modules(rom_modules)
+				_ep(ep), _md_alloc(md_alloc), _rom_modules(rom_modules)
 			{ }
 
-			~Local_rom_service()
+			~Local_rom_factory()
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
-				while (_rom_sessions.first()) {
-					_ep.remove(_rom_sessions.first());
-					_close(_rom_sessions.first());
-				}
+				while (_rom_sessions.first())
+					_close(*_rom_sessions.first());
 			}
 
-			Genode::Session_capability session(char     const *args,
-			                                   Affinity const &affinity)
+			Rom_session_component &create(Args const &args, Affinity) override
 			{
 				/* try to find ROM module at local ROM service */
 				try {
-					Lock::Guard guard(_lock);
+					Mutex::Guard guard(_mutex);
 
-					char name[Session::Name::MAX_SIZE];
-					
-					/* extract filename from session arguments */
-					Arg_string::find_arg(args, "filename")
-						.string(name, sizeof(name), "");
+					Session_label const label = label_from_args(args.string());
+					Session_label const name  = label.last_element();
 
-					Rom_module &module = _rom_modules.lookup_and_lock(name);
+					Rom_module &module = _rom_modules.lookup_and_lock(name.string());
 
-					Rom_session_component *rom = new (&_md_alloc)
-						Rom_session_component(module);
+					Rom_session_component *rom = new (_md_alloc)
+						Rom_session_component(_ep, module);
 
 					_rom_sessions.insert(rom);
 
-					return _ep.manage(rom);
+					return *rom;
 
 				} catch (...) { }
 
-				/* fall back to parent_rom_service */
-				return _parent_rom_service.session(args, affinity);
+				throw Service_denied();
 			}
 
-			void close(Session_capability session)
+			void upgrade(Rom_session_component &, Args const &) override { }
+
+			void destroy(Rom_session_component &session) override
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
-				Rom_session_component *component;
-
-				_ep.apply(session, [&] (Rom_session_component *rsc) {
-					component = rsc;
-					if (component) _ep.remove(component);
-				});
-
-				if (component) {
-					_close(component);
-					return;
-				}
-
-				_parent_rom_service.close(session);
+				_close(session);
 			}
-
-			void upgrade(Session_capability session, const char *) { }
 		};
+
+		typedef Local_service<Rom_session_component> Local_rom_service;
 
 		/**
 		 * Common base class of 'Local_cpu_service' and 'Local_pd_service'
 		 */
-		struct Intercepted_parent_service : Service
+		struct Intercepted_parent_service : Genode::Parent_service
 		{
-			Signal_context_capability fault_sigh;
+			Signal_context_capability fault_sigh { };
 
-			Intercepted_parent_service(char const *name) : Service(name) { }
-
-			void close(Session_capability session)
-			{
-				env()->parent()->close(session);
-			}
-
-			void upgrade(Session_capability session, const char *) { }
+			Intercepted_parent_service(Env &env, Service::Name const &name)
+			: Parent_service(env, name) { }
 		};
 
 		/**
@@ -150,20 +119,17 @@ class Loader::Session_component : public Rpc_object<Session>
 		 */
 		struct Local_cpu_service : Intercepted_parent_service
 		{
-			Local_cpu_service() : Intercepted_parent_service("CPU") { }
+			Local_cpu_service(Env &env) : Intercepted_parent_service(env, "CPU") { }
 
-			Genode::Session_capability session(char     const *args,
-			                                   Affinity const &affinity)
+			void initiate_request(Session_state &session) override
 			{
-				Capability<Cpu_session> cap = env()->parent()->session<Cpu_session>(args, affinity);
-				Cpu_session_client(cap).exception_sigh(fault_sigh);
-				return cap;
-			}
+				Intercepted_parent_service::initiate_request(session);
 
-			void upgrade(Session_capability session, const char *args)
-			{
-				try { env()->parent()->upgrade(session, args); }
-				catch (Genode::Ipc_error)    { throw Unavailable();    }
+				if (session.phase != Session_state::AVAILABLE)
+					return;
+
+				Cpu_session_client cpu(reinterpret_cap_cast<Cpu_session>(session.cap));
+				cpu.exception_sigh(fault_sigh);
 			}
 		};
 
@@ -172,109 +138,107 @@ class Loader::Session_component : public Rpc_object<Session>
 		 */
 		struct Local_pd_service : Intercepted_parent_service
 		{
-			Local_pd_service() : Intercepted_parent_service("PD") { }
+			Local_pd_service(Env &env) : Intercepted_parent_service(env, "PD") { }
 
-			Genode::Session_capability session(char     const *args,
-			                                   Affinity const &affinity)
+			void initiate_request(Session_state &session) override
 			{
-				Pd_session_client pd(env()->parent()->session<Pd_session>(args, affinity));
+				Intercepted_parent_service::initiate_request(session);
+
+				if (session.phase != Session_state::AVAILABLE)
+					return;
+
+				Pd_session_client pd(reinterpret_cap_cast<Pd_session>(session.cap));
 
 				Region_map_client(pd.address_space()).fault_handler(fault_sigh);
 				Region_map_client(pd.stack_area())   .fault_handler(fault_sigh);
 				Region_map_client(pd.linker_area())  .fault_handler(fault_sigh);
-
-				return pd;
 			}
 		};
 
-		struct Local_nitpicker_service : Service
+		struct Local_gui_factory : Local_service<Gui::Session_component>::Factory
 		{
-			Rpc_entrypoint &_ep;
-			Ram_session    &_ram;
-			Allocator      &_md_alloc;
+			Entrypoint    &_ep;
+			Env           &_env;
+			Region_map    &_rm;
+			Ram_allocator &_ram;
 
-			Area                       _max_size;
-			Nitpicker::View_capability _parent_view;
+			Area                       _max_size    { };
+			Gui::View_capability _parent_view { };
 
-			Signal_context_capability view_ready_sigh;
+			Signal_context_capability view_ready_sigh { };
 
-			Nitpicker::Session_component *open_session;
+			Constructible<Gui::Session_component> session { };
 
-			Local_nitpicker_service(Rpc_entrypoint &ep, Ram_session &ram,
-			                        Allocator &md_alloc)
-			:
-				Service("virtual_nitpicker"),
-				_ep(ep),
-				_ram(ram),
-				_md_alloc(md_alloc),
-				open_session(0)
-			{ }
+			Local_gui_factory(Entrypoint &ep, Env &env,
+			                  Region_map &rm, Ram_allocator &ram)
+			: _ep(ep), _env(env), _rm(rm), _ram(ram) { }
 
-			~Local_nitpicker_service()
-			{
-				if (!open_session)
-					return;
+			void constrain_geometry(Area size) { _max_size = size; }
 
-				_ep.dissolve(open_session);
-				destroy(&_md_alloc, open_session);
-			}
-
-			void constrain_geometry(Area size)
-			{
-				_max_size = size;
-			}
-
-			void parent_view(Nitpicker::View_capability view)
+			void parent_view(Gui::View_capability view)
 			{
 				_parent_view = view;
 			}
 
-			Genode::Session_capability session(char     const *args,
-			                                   Affinity const &)
+			Gui::Session_component &create(Args const &args, Affinity) override
 			{
-				if (open_session)
-					throw Unavailable();
+				if (session.constructed()) {
+					warning("attempt to open more than one GUI session");
+					throw Service_denied();
+				}
 
-				open_session = new (&_md_alloc)
-					Nitpicker::Session_component(_ep,
-					                             _ram,
-					                             _max_size,
-					                             _parent_view,
-					                             view_ready_sigh,
-					                             args);
-
-				return _ep.manage(open_session);
+				session.construct(_ep, _env, _rm, _ram, _max_size,
+				                  _parent_view, view_ready_sigh, args.string());
+				return *session;
 			}
 
-			void upgrade(Genode::Session_capability session, const char *) { }
+			void upgrade(Gui::Session_component &, Args const &) override { }
+			void destroy(Gui::Session_component &) override { }
 		};
+
+		typedef Local_service<Gui::Session_component> Local_gui_service;
 
 		enum { STACK_SIZE = 2*4096 };
 
-		size_t                    _ram_quota;
-		Ram_session_client_guard  _ram_session_client;
-		Heap                      _md_alloc;
-		size_t                    _subsystem_ram_quota_limit;
-		Rpc_entrypoint            _ep;
-		Dataspace_capability      _ldso_ds;
-		Service_registry          _parent_services;
-		Rom_module_registry       _rom_modules;
-		Local_rom_service         _rom_service;
-		Local_cpu_service         _cpu_service;
-		Local_pd_service          _pd_service;
-		Local_nitpicker_service   _nitpicker_service;
-		Signal_context_capability _fault_sigh;
-		Child                    *_child;
+		Env                        &_env;
+		Session_label         const _label;
+		Xml_node              const _config;
+		Cap_quota             const _cap_quota;
+		Ram_quota             const _ram_quota;
+		Cap_quota_guard             _cap_guard { _cap_quota };
+		Ram_quota_guard             _ram_guard { _ram_quota };
+		Constrained_ram_allocator   _local_ram { _env.ram(), _ram_guard, _cap_guard };
+		Heap                        _md_alloc { _local_ram, _env.rm() };
+		size_t                      _subsystem_cap_quota_limit = 0;
+		size_t                      _subsystem_ram_quota_limit = 0;
+		Parent_services             _parent_services { };
+		Rom_module_registry         _rom_modules { _env, _config, _local_ram, _md_alloc };
+		Local_rom_factory           _rom_factory { _env.ep(), _md_alloc, _rom_modules };
+		Local_rom_service           _rom_service { _rom_factory };
+		Local_cpu_service           _cpu_service { _env };
+		Local_pd_service            _pd_service  { _env };
+		Local_gui_factory           _gui_factory { _env.ep(), _env, _env.rm(), _local_ram };
+		Local_gui_service           _gui_service { _gui_factory };
+		Signal_context_capability   _fault_sigh { };
+		Constructible<Child>        _child { };
 
 		/**
-		 * Return virtual nitpicker session component
+		 * Return virtual GUI session component
 		 */
-		Nitpicker::Session_component &_virtual_nitpicker_session() const
+		Gui::Session_component &_virtual_gui_session()
 		{
-			if (!_nitpicker_service.open_session)
+			if (!_gui_factory.session.constructed())
 				throw View_does_not_exist();
 
-			return *_nitpicker_service.open_session;
+			return *_gui_factory.session;
+		}
+
+		Gui::Session_component const &_virtual_gui_session() const
+		{
+			if (!_gui_factory.session.constructed())
+				throw View_does_not_exist();
+
+			return *_gui_factory.session;
 		}
 
 	public:
@@ -282,34 +246,31 @@ class Loader::Session_component : public Rpc_object<Session>
 		/**
 		 * Constructor
 		 */
-		Session_component(size_t quota, Ram_session &ram, Cap_session &cap,
-		                  Dataspace_capability ldso_ds)
+		Session_component(Env &env, Session_label const &label, Xml_node config,
+		                  Cap_quota cap_quota, Ram_quota ram_quota)
 		:
-			_ram_quota(quota),
-			_ram_session_client(env()->ram_session_cap(), _ram_quota),
-			_md_alloc(&_ram_session_client, env()->rm_session()),
-			_subsystem_ram_quota_limit(0),
-			_ep(&cap, STACK_SIZE, "session_ep"),
-			_ldso_ds(ldso_ds),
-			_rom_modules(_ram_session_client, _md_alloc),
-			_rom_service(_ep, _md_alloc, _rom_modules),
-			_nitpicker_service(_ep, _ram_session_client, _md_alloc),
-			_child(0)
-		{ }
+			_env(env), _label(label), _config(config),
+			_cap_quota(cap_quota), _ram_quota(ram_quota)
+		{
+			/* fetch all parent-provided ROMs according to the config */
+			config.for_each_sub_node("parent-rom", [&] (Xml_node rom)
+			{
+				typedef Rom_module::Name Name;
+				Name name = rom.attribute_value("name", Name());
+				_rom_modules.fetch_parent_rom_module(name);
+			});
+		}
 
 		~Session_component()
 		{
-			if (_child)
-				destroy(&_md_alloc, _child);
+			_child.destruct();
 
 			/*
 			 * The parent-service registry is populated by the 'Child'
 			 * on demand. Revert those allocations.
 			 */
-			while (Service *service = _parent_services.find_by_server(0)) {
-				_parent_services.remove(service);
-				destroy(env()->heap(), service);
-			}
+			_parent_services.for_each([&] (Parent_service &service) {
+				destroy(_md_alloc, &service); });
 		}
 
 
@@ -330,24 +291,29 @@ class Loader::Session_component : public Rpc_object<Session>
 				throw Rom_module_does_not_exist(); }
 		}
 
-		void ram_quota(size_t quantum) override
+		void cap_quota(Cap_quota caps) override
 		{
-			_subsystem_ram_quota_limit = quantum;
+			_subsystem_cap_quota_limit = caps.value;
+		}
+
+		void ram_quota(Ram_quota quantum) override
+		{
+			_subsystem_ram_quota_limit = quantum.value;
 		}
 
 		void constrain_geometry(Area size) override
 		{
-			_nitpicker_service.constrain_geometry(size);
+			_gui_factory.constrain_geometry(size);
 		}
 
-		void parent_view(Nitpicker::View_capability view) override
+		void parent_view(Gui::View_capability view) override
 		{
-			_nitpicker_service.parent_view(view);
+			_gui_factory.parent_view(view);
 		}
 
 		void view_ready_sigh(Signal_context_capability sigh) override
 		{
-			_nitpicker_service.view_ready_sigh = sigh;
+			_gui_factory.view_ready_sigh = sigh;
 		}
 
 		void fault_sigh(Signal_context_capability sigh) override
@@ -372,35 +338,39 @@ class Loader::Session_component : public Rpc_object<Session>
 
 		void start(Name const &binary_name, Name const &label) override
 		{
-			if (_child) {
-				PWRN("cannot start subsystem twice");
+			if (_child.constructed()) {
+				warning("cannot start subsystem twice");
 				return;
 			}
 
-			size_t const ram_quota = (_subsystem_ram_quota_limit > 0) ?
-			                         min(_subsystem_ram_quota_limit, _ram_session_client.avail()) :
-			                         _ram_session_client.avail();
+			size_t const cap_quota = (_subsystem_cap_quota_limit > 0)
+			                       ? min(_subsystem_cap_quota_limit, _cap_quota.value)
+			                       : _cap_quota.value;
+
+			size_t const ram_quota = (_subsystem_ram_quota_limit > 0)
+			                       ? min(_subsystem_ram_quota_limit, _ram_quota.value)
+			                       : _ram_quota.value;
 
 			try {
-				_child = new (&_md_alloc)
-					Child(binary_name.string(), label.string(), _ldso_ds,
-					      _ep, _ram_session_client,
-					      ram_quota, _parent_services, _rom_service,
-					      _cpu_service, _pd_service, _nitpicker_service,
-					      _fault_sigh);
+				_child.construct(_env, _md_alloc, binary_name.string(),
+				                 prefixed_label(_label, Session_label(label.string())),
+				                 Cap_quota{cap_quota}, Ram_quota{ram_quota},
+				                 _parent_services, _rom_service,
+				                 _cpu_service, _pd_service, _gui_service,
+				                 _fault_sigh);
 			}
-			catch (Genode::Parent::Service_denied) {
+			catch (Genode::Service_denied) {
 				throw Rom_module_does_not_exist(); }
 		}
 
 		void view_geometry(Rect rect, Point offset) override
 		{
-			_virtual_nitpicker_session().loader_view_geometry(rect, offset);
+			_virtual_gui_session().loader_view_geometry(rect, offset);
 		}
 
 		Area view_size() const override
 		{
-			return _virtual_nitpicker_session().loader_view_size();
+			return _virtual_gui_session().loader_view_size();
 		}
 };
 
@@ -409,61 +379,53 @@ class Loader::Root : public Root_component<Session_component>
 {
 	private:
 
-		Ram_session         &_ram;
-		Cap_session         &_cap;
-		Dataspace_capability _ldso_ds;
+		Env           &_env;
+		Xml_node const _config;
 
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *args) override
 		{
-			size_t quota =
-				Arg_string::find_arg(args, "ram_quota").ulong_value(0);
+			Xml_node session_config("<policy/>");
 
-			return new (md_alloc()) Session_component(quota, _ram, _cap, _ldso_ds);
+			Session_label const label = label_from_args(args);
+
+			try { session_config = Session_policy(label, _config); }
+			catch (...) { }
+
+			return new (md_alloc()) Session_component(_env, label, session_config,
+			                                          cap_quota_from_args(args),
+			                                          ram_quota_from_args(args));
 		}
 
 	public:
 
-		/**
-		 * Constructor
-		 *
-		 * \param session_ep  entry point for managing ram session objects
-		 * \param md_alloc    meta-data allocator to be used by root
-		 *                    component
-		 */
-		Root(Rpc_entrypoint &session_ep, Allocator &md_alloc,
-		     Ram_session &ram, Cap_session &cap, Dataspace_capability ldso_ds)
+		Root(Env &env, Xml_node config, Allocator &md_alloc)
 		:
-			Root_component<Session_component>(&session_ep, &md_alloc),
-			_ram(ram), _cap(cap), _ldso_ds(ldso_ds)
+			Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _config(config)
 		{ }
 };
 
 
-Genode::Dataspace_capability request_ldso_ds()
+namespace Loader { struct Main; }
+
+
+struct Loader::Main
 {
-	try {
-		static Genode::Rom_connection rom("ld.lib.so");
-		return rom.dataspace();
-	} catch (...) { }
-	return Genode::Dataspace_capability();
-}
+	Env &_env;
+
+	Heap _heap { _env.ram(), _env.rm() };
+
+	Attached_rom_dataspace _config { _env, "config" };
+
+	Root _root { _env, _config.xml(), _heap };
+
+	Main(Env &env) : _env(env)
+	{
+		_env.parent().announce(_env.ep().manage(_root));
+	}
+};
 
 
-int main()
-{
-	using namespace Genode;
-
-	enum { STACK_SIZE = 8*1024 };
-	static Cap_connection cap;
-	static Rpc_entrypoint ep(&cap, STACK_SIZE, "loader_ep");
-
-	static Loader::Root root(ep, *env()->heap(), *env()->ram_session(), cap,
-	                         request_ldso_ds());
-
-	env()->parent()->announce(ep.manage(&root));
-
-	sleep_forever();
-	return 0;
-}
+void Component::construct(Genode::Env &env) { static Loader::Main main(env); }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__IMX_FRAMEBUFFER_SESSION__CONNECTION_H_
@@ -39,7 +39,7 @@ class Framebuffer::Imx_connection : public Genode::Connection<Imx_session>,
 			char argbuf[ARGBUF_SIZE];
 
 			/* donate ram quota for storing server-side meta data */
-			strncpy(argbuf, "ram_quota=8K", sizeof(argbuf));
+			copy_cstring(argbuf, "ram_quota=8K", sizeof(argbuf));
 
 			/* set optional session-constructor arguments */
 			if (width)
@@ -70,20 +70,6 @@ class Framebuffer::Imx_connection : public Genode::Connection<Imx_session>,
 			                                              mode.format())),
 			Imx_client(cap())
 		{ }
-
-		/**
-		 * Constructor
-		 *
-		 * \noapi
-		 * \deprecated  Use the constructor with 'Env &' as first
-		 *              argument instead
-		 */
-		Imx_connection(unsigned     width  = 0,
-		               unsigned     height = 0,
-		               Mode::Format format = Mode::INVALID)
-		: Genode::Connection<Imx_session>(_connect(*Genode::env()->parent(),
-		                                           width, height, format)),
-		  Imx_client(cap()) { }
 };
 
 #endif /* _INCLUDE__IMX_FRAMEBUFFER_SESSION__CONNECTION_H_ */

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__RPC_CAP_FACTORY_H_
@@ -16,10 +16,10 @@
 
 /* Genode includes */
 #include <util/list.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/capability.h>
 #include <base/tslab.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 namespace Genode { class Rpc_cap_factory; }
 
@@ -35,9 +35,12 @@ class Genode::Rpc_cap_factory
 			Cap_object(addr_t cap_sel) : _cap_sel(cap_sel) {}
 		};
 
-		Tslab<Cap_object, 128> _slab;
-		List<Cap_object>       _list;
-		Lock                   _lock;
+		enum { SBS = 960*sizeof(long) };
+		uint8_t _initial_sb[SBS];
+
+		Tslab<Cap_object, SBS> _slab;
+		List<Cap_object>       _list { };
+		Mutex                  _mutex { };
 
 	public:
 
@@ -50,13 +53,13 @@ class Genode::Rpc_cap_factory
 		 *
 		 * \throw Allocator::Out_of_memory
 		 *
-		 * This function is invoked via Nova_native_pd::alloc_rpc_cap.
+		 * This function is invoked via Native_pd::alloc_rpc_cap.
 		 */
 		Native_capability alloc(Native_capability ep, addr_t entry, addr_t mtd);
 
 		Native_capability alloc(Native_capability)
 		{
-			PWRN("unexpected call to non-implemented Rpc_cap_factory::alloc");
+			warning("unexpected call to non-implemented Rpc_cap_factory::alloc");
 			return Native_capability();
 		}
 

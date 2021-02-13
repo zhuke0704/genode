@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -21,6 +21,8 @@
 #include <base/internal/platform_env.h>
 #include <base/internal/native_thread.h>
 #include <base/internal/globals.h>
+#include <base/internal/parent_socket_handle.h>
+#include <base/internal/capability_space_tpl.h>
 
 using namespace Genode;
 
@@ -31,16 +33,18 @@ using namespace Genode;
 
 size_t Region_map_mmap::_dataspace_size(Dataspace_capability ds)
 {
-	if (ds.valid())
-		return Dataspace_client(ds).size();
+	if (local(ds))
+		return Local_capability<Dataspace>::deref(ds)->size();
 
-	return Local_capability<Dataspace>::deref(ds)->size();
+	return Dataspace_client(ds).size();
+
 }
 
 
 int Region_map_mmap::_dataspace_fd(Dataspace_capability ds)
 {
-	return Linux_dataspace_client(ds).fd().dst().socket;
+	Untyped_capability fd_cap = Linux_dataspace_client(ds).fd();
+	return lx_dup(Capability_space::ipc_cap_data(fd_cap).dst.socket.value);
 }
 
 
@@ -55,45 +59,51 @@ bool Region_map_mmap::_dataspace_writable(Dataspace_capability ds)
  ** Local_parent **
  ******************/
 
-Session_capability Local_parent::session(Service_name const &service_name,
+Session_capability Local_parent::session(Parent::Client::Id  id,
+                                         Service_name const &service_name,
                                          Session_args const &args,
                                          Affinity     const &affinity)
 {
-	if (strcmp(service_name.string(), Rm_session::service_name()) == 0)
-	{
-		Local_rm_session *session = new (_alloc) Local_rm_session(_alloc);
+	if (strcmp(service_name.string(), Rm_session::service_name()) == 0) {
 
-		return Local_capability<Session>::local_cap(session);
+		Local_rm_session *local_rm_session = new (_alloc)
+			Local_rm_session(_alloc, _local_sessions_id_space, id);
+
+		return local_rm_session->local_session_cap();
 	}
 
-	return Expanding_parent_client::session(service_name, args, affinity);
+	return Expanding_parent_client::session(id, service_name, args, affinity);
 }
 
 
-void Local_parent::close(Session_capability session)
+Parent::Close_result Local_parent::close(Client::Id id)
 {
+	auto close_local_fn = [&] (Local_session &local_session)
+	{
+		Capability<Rm_session> rm =
+			static_cap_cast<Rm_session>(local_session.local_session_cap());
+		destroy(_alloc, Local_capability<Rm_session>::deref(rm));
+	};
+
 	/*
-	 * Handle non-local capabilities
+	 * Local RM sessions are present in the '_local_sessions_id_space'. If the
+	 * apply succeeds, 'id' referred to the local session. Otherwise, we
+	 * forward the request to the parent.
 	 */
-	if (session.valid()) {
-		Parent_client::close(session);
-		return;
+	try {
+		_local_sessions_id_space.apply<Local_session>(id, close_local_fn);
+		return CLOSE_DONE;
 	}
+	catch (Id_space<Client>::Unknown_id) { }
 
-	/*
-	 * Detect capability to local RM session
-	 */
-	Capability<Rm_session> rm = static_cap_cast<Rm_session>(session);
-
-	destroy(_alloc, Local_capability<Rm_session>::deref(rm));
+	return Parent_client::close(id);
 }
 
 
 Local_parent::Local_parent(Parent_capability parent_cap,
-                           Emergency_ram_reserve &reserve,
                            Allocator &alloc)
 :
-	Expanding_parent_client(parent_cap, reserve), _alloc(alloc)
+	Expanding_parent_client(parent_cap), _alloc(alloc)
 { }
 
 
@@ -125,69 +135,37 @@ static unsigned long get_env_ulong(const char *key)
 
 static Parent_capability obtain_parent_cap()
 {
-	long local_name = get_env_ulong("parent_local_name");
+	long const local_name = get_env_ulong("parent_local_name");
 
-	/* produce typed capability manually */
-	typedef Native_capability::Dst Dst;
-	Dst const dst(PARENT_SOCKET_HANDLE);
-	return reinterpret_cap_cast<Parent>(Native_capability(dst, local_name));
+	Untyped_capability parent_cap =
+		Capability_space::import(Rpc_destination(Lx_sd{PARENT_SOCKET_HANDLE}),
+		                         Rpc_obj_key(local_name));
+
+	return reinterpret_cap_cast<Parent>(parent_cap);
 }
 
 
 Local_parent &Platform_env::_parent()
 {
-	static Local_parent local_parent(obtain_parent_cap(), *this, _heap);
+	static Local_parent local_parent(obtain_parent_cap(), _heap);
 	return local_parent;
 }
 
 
 Platform_env::Platform_env()
 :
-	Platform_env_base(static_cap_cast<Ram_session>(_parent().session("Env::ram_session", "")),
-	                  static_cap_cast<Cpu_session>(_parent().session("Env::cpu_session", "")),
-	                  static_cap_cast<Pd_session> (_parent().session("Env::pd_session",  ""))),
-	_heap(Platform_env_base::ram_session(), Platform_env_base::rm_session()),
-	_emergency_ram_ds(ram_session()->alloc(_emergency_ram_size()))
+	Platform_env_base(_parent(),
+	                  static_cap_cast<Cpu_session>(_parent().session_cap(Parent::Env::cpu())),
+	                  static_cap_cast<Pd_session> (_parent().session_cap(Parent::Env::pd()))),
+	_heap(Platform_env_base::pd_session(), Platform_env_base::rm_session())
 {
-	/* attach stack area to local address space */
-	_local_pd_session._address_space.attach_at(_local_pd_session._stack_area.dataspace(),
-	                                           stack_area_virtual_base(),
-	                                           stack_area_virtual_size());
+	_attach_stack_area();
 
-	env_stack_area_region_map  = &_local_pd_session._stack_area;
-	env_stack_area_ram_session = ram_session();
+	env_stack_area_region_map    = &_local_pd_session._stack_area;
+	env_stack_area_ram_allocator = Platform_env_base::pd_session();
 
 	/* register TID and PID of the main thread at core */
 	Linux_native_cpu_client native_cpu(cpu_session()->native_cpu());
 	native_cpu.thread_id(parent()->main_thread_cap(), lx_getpid(), lx_gettid());
 }
 
-
-/*****************************
- ** Support for IPC library **
- *****************************/
-
-namespace Genode {
-
-	Socket_pair server_socket_pair()
-	{
-		Linux_native_cpu_client native_cpu(env()->cpu_session()->native_cpu());
-
-		Socket_pair socket_pair;
-
-		Thread *thread = Thread::myself();
-		if (thread) {
-			socket_pair.server_sd = native_cpu.server_sd(thread->cap()).dst().socket;
-			socket_pair.client_sd = native_cpu.client_sd(thread->cap()).dst().socket;
-			thread->native_thread().socket_pair = socket_pair;
-		}
-		return socket_pair;
-	}
-
-	void destroy_server_socket_pair(Socket_pair socket_pair)
-	{
-		/* close local file descriptor if it is valid */
-		if (socket_pair.server_sd != -1) lx_close(socket_pair.server_sd);
-		if (socket_pair.client_sd != -1) lx_close(socket_pair.client_sd);
-	}
-}

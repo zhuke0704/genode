@@ -5,15 +5,18 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/thread.h>
 #include <base/env.h>
+
+/* base-internal includes */
+#include <base/internal/globals.h>
 
 using namespace Genode;
 
@@ -22,8 +25,7 @@ using namespace Genode;
  ** Startup library support **
  *****************************/
 
-void prepare_init_main_thread() { }
-
+void prepare_init_main_thread()   { }
 void prepare_reinit_main_thread() { }
 
 
@@ -36,6 +38,7 @@ void Thread::_thread_bootstrap() { }
 
 void Thread::_init_platform_thread(size_t, Type type)
 {
-	if (type == NORMAL) { return; }
-	_thread_cap = Genode::env()->parent()->main_thread_cap();
+	if (type == NORMAL) return;
+
+	_thread_cap = main_thread_cap();
 }

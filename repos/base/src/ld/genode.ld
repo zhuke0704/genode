@@ -5,18 +5,19 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 ENTRY(_start)
 
 PHDRS
 {
-	ro PT_LOAD;
-	rw PT_LOAD;
+	ro PT_LOAD FLAGS(5);
+	rw PT_LOAD FLAGS(6);
+	boot PT_LOAD FLAGS(4);
 }
 
 SECTIONS
@@ -26,7 +27,7 @@ SECTIONS
 		_prog_img_beg = .;
 
 		/* put entry code at the start of the text segment / raw binary */
-		*(.text.crt0)
+		KEEP (*(.text.crt0))
 
 		*(.init)
 		*(.text .text.* .gnu.linkonce.t.*)
@@ -52,8 +53,6 @@ SECTIONS
 	.eh_frame_hdr : { *(.eh_frame_hdr) }
 
 	. = ALIGN(0x1000);
-
-	_prog_img_data = .;
 
 	.data : {
 		/*
@@ -120,17 +119,11 @@ SECTIONS
 	}
 	_bss_end = ALIGN(4);
 
+	/* separate location for the binaries of the boot modules */
+	.data.boot_modules_binaries : { *(.data.boot_modules_binaries) } : boot
+
 	/* end of program image -- must be after last section */
 	_prog_img_end = .;
-
-	/*
-	 * Separate location for the binaries of the boot modules
-	 *
-	 * This is merely used by base-hw yet to enable on-demand mapping.
-	 * Must be a subsection of data as object copy may not copy the content
-	 * to the uImage otherwise.
-	 */
-	.data.boot_modules_binaries : { *(.data.boot_modules_binaries) } : rw
 
 	/DISCARD/ : {
 		*(.note)

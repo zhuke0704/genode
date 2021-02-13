@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _SECTION_H_
@@ -22,6 +22,12 @@ class Section : public Scout::Parent_element
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Section(Section const &);
+		Section &operator = (Section const &);
+
 		enum { _SH  = 8 };   /* shadow height */
 		enum { _STH = 20 };  /* shadow height */
 
@@ -29,19 +35,18 @@ class Section : public Scout::Parent_element
 		Scout::Horizontal_shadow<PT, 160> _shadow;
 
 		char  const *_txt;
-		int          _txt_w, _txt_h;
-		int          _txt_len;
 		Scout::Font *_font;
+		int          _txt_w   = _font->string_width(_txt, Scout::strlen(_txt)).decimal();
+		int          _txt_h   = _font->bounding_box().h();
+		int          _txt_len = Scout::strlen(_txt);
 		int          _r_add;
 
 	public:
 
 		Section(const char *txt, Scout::Font *font)
-		: _bg(_STH), _shadow(_SH), _txt(txt), _font(font), _r_add(100)
+		:
+			_bg(_STH), _shadow(_SH), _txt(txt), _font(font), _r_add(100)
 		{
-			_txt_w   = font->str_w(_txt, Scout::strlen(_txt));
-			_txt_h   = font->str_h(_txt, Scout::strlen(_txt));
-			_txt_len = Scout::strlen(_txt);
 			append(&_bg);
 			append(&_shadow);
 		}
@@ -49,7 +54,7 @@ class Section : public Scout::Parent_element
 		/**
 		 * Element interface
 		 */
-		void format_fixed_width(int w)
+		void format_fixed_width(int w) override
 		{
 			using namespace Scout;
 
@@ -63,7 +68,7 @@ class Section : public Scout::Parent_element
 			                           _shadow.size().h())));
 		}
 
-		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position)
+		void draw(Scout::Canvas_base &canvas, Scout::Point abs_position) override
 		{
 			using namespace Scout;
 

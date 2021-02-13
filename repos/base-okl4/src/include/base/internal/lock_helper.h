@@ -8,24 +8,20 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 #define _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 
 /* Genode includes */
-#include <base/native_types.h>
 #include <base/thread.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/schedule.h>
-#include <l4/ipc.h>
-} }
+/* base-internal includes */
+#include <base/internal/okl4.h>
 
 
 /**
@@ -81,9 +77,8 @@ static inline void thread_switch_to(Genode::Thread *thread_base)
 /**
  * Unconditionally block the calling thread
  */
-static inline void thread_stop_myself()
+static inline void thread_stop_myself(Genode::Thread *myself)
 {
-	Genode::Thread *myself = Genode::Thread::myself();
 	Okl4::L4_ThreadId_t tid = myself ?
 	                          myself->native_thread().l4id :
 	                          main_thread_tid;

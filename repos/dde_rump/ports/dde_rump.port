@@ -1,33 +1,17 @@
 LICENSE   := BSD
 VERSION   := git
-DOWNLOADS := rump.git nblibs.git
+DOWNLOADS := rump.git aarch64.svn libc.svn
 
-URL(rump) := https://github.com/rumpkernel/buildrump.sh.git
-REV(rump) := fd4bdac4ad6357a36b9a0af6abde02bf3bb42232
+URL(rump) := https://github.com/ssumpf/rump.git
 DIR(rump) := src/lib/dde_rump
+REV(rump) := 206ffa06cedd0779af0043997fd182b00ff4688c
 
-URL(nblibs) := https://github.com/rumpkernel/src-netbsd.git
-REV(nblibs) := b71ee7667ea9904c28b089feadc594a62f406bd5
-DIR(nblibs) := src/lib/dde_rump/nblibs
+URL(aarch64) := https://github.com/justincormack/netbsd-src/trunk/src/sys/arch
+REV(aarch64) := HEAD
+DIR(aarch64) := src/lib/dde_rump_aarch64_backport
 
-PATCHES   := $(shell find $(REP_DIR)/patches/*.patch)
-PATCH_OPT := -N -d ${DIR(rump)} -p1
+URL(libc) := https://github.com/justincormack/netbsd-src/trunk/src/common/lib/libc/arch/aarch64/atomic
+REV(libc) := HEAD
+DIR(libc) := src/lib/libc
 
-GIT_NETBSD_COMMIT := 0875d49ae93a8101d5321b7a73983daee5c1b581
-NETBSD_SRC        := src/lib/dde_rump/src
-
-
-# checkout NetBSD sources
-default: checkout_src
-checkout_src: $(DOWNLOADS)
-	@$(MSG_PREFIX)"checkout NetBSD src "
-	$(VERBOSE)if [ -d "$(NETBSD_SRC)/.git" ]; then cd $(NETBSD_SRC) && git checkout -f; fi
-	$(VERBOSE)src/lib/dde_rump/checkout.sh git src/lib/dde_rump/src
-	$(VERBOSE)cd $(NETBSD_SRC) && git reset --hard $(GIT_NETBSD_COMMIT)
-	$(VERBOSE)ln -sf ../src/common src/lib/dde_rump/nblibs/common
-
-
-DIRS := include/rump
-DIR_CONTENT(include/rump) := src/lib/dde_rump/src/sys/rump/include/rump/*.h
-
-# vi: set ft=make :
+PATCHES := patches/rump.patch patches/aarch64.patch

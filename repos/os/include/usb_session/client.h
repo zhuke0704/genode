@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 #ifndef _INCLUDE__USB_SESSION__CLIENT_H_
 #define _INCLUDE__USB_SESSION__CLIENT_H_
@@ -41,11 +41,12 @@ class Usb::Session_client : public Genode::Rpc_client<Session>
 		 *                         transmission buffer
 		 */
 		Session_client(Session_capability       session,
-		               Genode::Range_allocator *tx_buffer_alloc,
+		               Genode::Range_allocator &tx_buffer_alloc,
+		               Genode::Region_map      &rm,
 		               Genode::Signal_context_capability state_change)
 		:
 			Genode::Rpc_client<Session>(session),
-			_tx(call<Rpc_tx_cap>(), tx_buffer_alloc)
+			_tx(call<Rpc_tx_cap>(), rm, tx_buffer_alloc)
 		{
 			if (state_change.valid())
 				sigh_state_change(state_change);
@@ -68,7 +69,7 @@ class Usb::Session_client : public Genode::Rpc_client<Session>
 			call<Rpc_config_descr>(device_descr, config_descr);
 		}
 
-		unsigned alt_settings(unsigned index)
+		unsigned alt_settings(unsigned index) override
 		{
 			return call<Rpc_alt_settings>(index);
 		}
@@ -79,20 +80,26 @@ class Usb::Session_client : public Genode::Rpc_client<Session>
 			call<Rpc_iface_descr>(index, alt_setting, interface_descr);
 		}
 
+		bool interface_extra(unsigned index, unsigned alt_setting,
+		                     Interface_extra *interface_data) override
+		{
+			return call<Rpc_iface_extra>(index, alt_setting, interface_data);
+		}
+
 		void endpoint_descriptor(unsigned              interface_num,
-		                             unsigned              alt_setting,
-		                             unsigned              endpoint_num,
-		                             Endpoint_descriptor  *endpoint_descr) override
+		                         unsigned              alt_setting,
+		                         unsigned              endpoint_num,
+		                         Endpoint_descriptor  *endpoint_descr) override
 		{
 			call<Rpc_ep_descr>(interface_num, alt_setting, endpoint_num, endpoint_descr);
 		}
 
-		void claim_interface(unsigned interface_num)
+		void claim_interface(unsigned interface_num) override
 		{
 			call<Rpc_claim_interface>(interface_num);
 		}
 
-		void release_interface(unsigned interface_num)
+		void release_interface(unsigned interface_num) override
 		{
 			call<Rpc_release_interface>(interface_num);
 		}

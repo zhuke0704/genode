@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <scout_gfx/random.h>
@@ -117,6 +117,12 @@ class Iconbar_event_handler : public Scout::Event_handler
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Iconbar_event_handler(Iconbar_event_handler const &);
+		Iconbar_event_handler &operator = (Iconbar_event_handler const &);
+
 		Fader   *_fader;
 		Browser *_browser;
 		int      _icon_id;
@@ -127,16 +133,14 @@ class Iconbar_event_handler : public Scout::Event_handler
 		 * Constructor
 		 */
 		Iconbar_event_handler(Fader *fader, int icon_id, Browser *browser)
-		{
-			_fader   = fader;
-			_browser = browser;
-			_icon_id = icon_id;
-		}
+		:
+			_fader(fader), _browser(browser), _icon_id(icon_id)
+		{ }
 
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &ev)
+		void handle_event(Event const &ev) override
 		{
 			static int key_cnt;
 
@@ -193,19 +197,25 @@ class Browser_sizer_event_handler : public Scout::Sizer_event_handler
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Browser_sizer_event_handler(Browser_sizer_event_handler const &);
+		Browser_sizer_event_handler &operator = (Browser_sizer_event_handler const &);
+
 		Browser_window<PT> *_browser_win;
-		Anchor              *_ca;         /* original visible element     */
+		Anchor             *_ca = nullptr;    /* original visible element */
 
 		/**
 		 * Event handler interface
 		 */
-		void start_drag()
+		void start_drag() override
 		{
 			Sizer_event_handler::start_drag();
 			_ca = _browser_win->curr_anchor();
 		}
 
-		void do_drag()
+		void do_drag() override
 		{
 			Sizer_event_handler::do_drag();
 			_browser_win->go_to(_ca, 0);
@@ -216,11 +226,10 @@ class Browser_sizer_event_handler : public Scout::Sizer_event_handler
 		/**
 		 * Constructor
 		 */
-		Browser_sizer_event_handler(Browser_window<PT> *browser_win):
-			Sizer_event_handler(browser_win)
-		{
-			_browser_win = browser_win;
-		}
+		Browser_sizer_event_handler(Browser_window<PT> *browser_win)
+		:
+			Sizer_event_handler(browser_win), _browser_win(browser_win)
+		{ }
 };
 
 
@@ -232,15 +241,15 @@ template <typename PT>
 Browser_window<PT>::Browser_window(Document *initial_content,
                                    Graphics_backend &gfx_backend,
                                    Point position, Area size,
-                                   Area max_size, int attr)
+                                   Area max_size, Config const &config)
 :
 	Browser(_IH + _TH), Window(gfx_backend, position, size, max_size, true),
+	_config(config),
 	_gfx_backend(gfx_backend)
 {
 	/* init attributes */
 	_ypos     = 0;
 	_document = initial_content;
-	_attr     = attr;
 
 	/* init docview and history with initial document */
 	_docview.texture(&_texture);
@@ -468,4 +477,4 @@ void Browser_window<PT>::handle_scroll(int view_pos)
 	ypos_sb(-view_pos, 0);
 }
 
-template class Browser_window<Genode::Pixel_rgb565>;
+template class Scout::Browser_window<Genode::Pixel_rgb888>;

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__TRACE__TYPES_H_
@@ -17,6 +17,9 @@
 /* Genode includes */
 #include <util/string.h>
 #include <base/affinity.h>
+#include <base/exception.h>
+#include <base/fixed_stdint.h>
+#include <base/session_label.h>
 
 namespace Genode { namespace Trace {
 
@@ -25,7 +28,6 @@ namespace Genode { namespace Trace {
 	 *********************/
 
 	struct Policy_too_large        : Exception { };
-	struct Out_of_metadata         : Exception { };
 	struct Nonexistent_subject     : Exception { };
 	struct Already_traced          : Exception { };
 	struct Source_is_dead          : Exception { };
@@ -33,7 +35,6 @@ namespace Genode { namespace Trace {
 	struct Traced_by_other_session : Exception { };
 	struct Subject_not_traced      : Exception { };
 
-	typedef String<160> Session_label;
 	typedef String<32>  Thread_name;
 
 	struct Policy_id;
@@ -78,10 +79,19 @@ struct Genode::Trace::Subject_id
  */
 struct Genode::Trace::Execution_time
 {
-	unsigned long long value;
+	uint64_t thread_context;
+	addr_t   scheduling_context;
+	uint16_t quantum { 0 };
+	uint16_t priority { 0 };
 
-	Execution_time() : value(0) { }
-	Execution_time(unsigned long long value) : value(value) { }
+	Execution_time() : thread_context(0), scheduling_context(0) { }
+	Execution_time(uint64_t thread_context, uint64_t scheduling_context)
+	: thread_context(thread_context), scheduling_context(scheduling_context) { }
+
+	Execution_time(uint64_t thread_context, uint64_t scheduling_context,
+	               unsigned quantum, unsigned priority)
+	: thread_context(thread_context), scheduling_context(scheduling_context),
+	  quantum(quantum), priority(priority) { }
 };
 
 
@@ -109,16 +119,16 @@ class Genode::Trace::Subject_info
 
 	private:
 
-		Session_label      _session_label;
-		Thread_name        _thread_name;
-		State              _state;
-		Policy_id          _policy_id;
-		Execution_time     _execution_time;
-		Affinity::Location _affinity;
+		Session_label      _session_label  { };
+		Thread_name        _thread_name    { };
+		State              _state          { INVALID };
+		Policy_id          _policy_id      { 0 };
+		Execution_time     _execution_time { 0, 0 };
+		Affinity::Location _affinity       { };
 
 	public:
 
-		Subject_info() : _state(INVALID) { }
+		Subject_info() { }
 
 		Subject_info(Session_label const &session_label,
 		             Thread_name   const &thread_name,

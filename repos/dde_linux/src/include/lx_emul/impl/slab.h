@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* Linux kit includes */
@@ -18,18 +18,23 @@
 void *kmalloc(size_t size, gfp_t flags)
 {
 	if (flags & __GFP_DMA)
-		PWRN("GFP_DMA memory (below 16 MiB) requested (%p)", __builtin_return_address(0));
+		Genode::warning("GFP_DMA memory (below 16 MiB) requested "
+		                "(", __builtin_return_address(0), ")");
 	if (flags & __GFP_DMA32)
-		PWRN("GFP_DMA32 memory (below 4 GiB) requested (%p)", __builtin_return_address(0));
+		Genode::warning("GFP_DMA32 memory (below 4 GiB) requested"
+		                "(", __builtin_return_address(0), ")");
 
 	void *addr = nullptr;
 
 	addr = (flags & GFP_LX_DMA)
-		? Lx::Malloc::dma().alloc(size, 12)
+		? Lx::Malloc::dma().alloc(size)
 		: Lx::Malloc::mem().alloc(size);
 
+	if (!addr)
+		return 0;
+
 	if ((Genode::addr_t)addr & 0x3)
-		PERR("unaligned kmalloc %lx", (Genode::addr_t)addr);
+		Genode::error("unaligned kmalloc ", (Genode::addr_t)addr);
 
 	if (flags & __GFP_ZERO)
 		Genode::memset(addr, 0, size);
@@ -39,6 +44,12 @@ void *kmalloc(size_t size, gfp_t flags)
 
 
 void *kzalloc(size_t size, gfp_t flags)
+{
+	return kmalloc(size, flags | __GFP_ZERO);
+}
+
+
+void *kvzalloc(size_t size, gfp_t flags)
 {
 	return kmalloc(size, flags | __GFP_ZERO);
 }
@@ -68,8 +79,8 @@ void kfree(void const *p)
 	else if (Lx::Malloc::dma().inside((Genode::addr_t)p))
 		Lx::Malloc::dma().free(p);
 	else
-		PERR("%s: unknown block at %p, called from %p", __func__,
-		     p, __builtin_return_address(0));
+		Genode::error(__func__, ": unknown block at ", p, ", "
+		              "called from ", __builtin_return_address(0));
 }
 
 
@@ -82,7 +93,7 @@ static size_t _ksize(void *p)
 	else if (Lx::Malloc::dma().inside((Genode::addr_t)p))
 		size = Lx::Malloc::dma().size(p);
 	else
-		PERR("%s: unknown block at %p", __func__, p);
+		Genode::error(__func__, ": unknown block at ", p);
 
 	return size;
 }
@@ -165,7 +176,24 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size, size_t align
 	 * XXX SLAB_LX_DMA is never used anywhere else, remove it?
 	 */
 	enum { SLAB_LX_DMA = 0x80000000ul, };
-	return new (Genode::env()->heap()) kmem_cache(size, flags & SLAB_LX_DMA, ctor);
+	return new (Lx::Malloc::mem()) kmem_cache(size, flags & SLAB_LX_DMA, ctor);
+}
+
+
+struct kmem_cache *kmem_cache_create_usercopy(const char *name, size_t size,
+                                              size_t align, slab_flags_t flags,
+                                              size_t useroffset, size_t usersize,
+                                              void (*ctor)(void *))
+{
+	/* XXX copied from above */
+	enum { SLAB_LX_DMA = 0x80000000ul, };
+	return new (Lx::Malloc::mem()) kmem_cache(size, flags & SLAB_LX_DMA, ctor);
+}
+
+
+void kmem_cache_destroy(struct kmem_cache *cache)
+{
+	destroy(Lx::Malloc::mem(), cache);
 }
 
 

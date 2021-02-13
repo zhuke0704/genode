@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2015 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -19,22 +19,13 @@
 #include <base/env.h>
 #include <base/sleep.h>
 #include <base/snprintf.h>
+#include <deprecated/env.h>
 
 /* base-internal includes */
 #include <base/internal/stack_allocator.h>
+#include <base/internal/globals.h>
 
 using namespace Genode;
-
-
-/**
- * Return the managed dataspace holding the stack area
- *
- * This function is provided by the process environment.
- */
-namespace Genode {
-	extern Region_map  * const env_stack_area_region_map;
-	extern Ram_session * const env_stack_area_ram_session;
-}
 
 
 void Stack::size(size_t const size)
@@ -57,7 +48,7 @@ void Stack::size(size_t const size)
 	/* allocate and attach backing store for the stack enhancement */
 	addr_t const ds_addr = _base - ds_size - stack_area_virtual_base();
 	try {
-		Ram_session * const ram = env_stack_area_ram_session;
+		Ram_allocator * const ram = env_stack_area_ram_allocator;
 		Ram_dataspace_capability const ds_cap = ram->alloc(ds_size);
 		Region_map * const rm = env_stack_area_region_map;
 		void * const attach_addr = rm->attach_at(ds_cap, ds_addr, ds_size);
@@ -65,9 +56,7 @@ void Stack::size(size_t const size)
 		if (ds_addr != (addr_t)attach_addr)
 			throw Thread::Out_of_stack_space();
 	}
-	catch (Ram_session::Alloc_failed) {
-		throw Thread::Stack_alloc_failed();
-	}
+	catch (Out_of_ram) { throw Thread::Stack_alloc_failed(); }
 
 	/* update stack information */
 	_base -= ds_size;
@@ -77,14 +66,6 @@ void Stack::size(size_t const size)
 Stack *
 Thread::_alloc_stack(size_t stack_size, char const *name, bool main_thread)
 {
-	/*
-	 * Synchronize stack list when creating new threads from multiple threads
-	 *
-	 * XXX: remove interim fix
-	 */
-	static Lock alloc_lock;
-	Lock::Guard _lock_guard(alloc_lock);
-
 	/* allocate stack */
 	Stack *stack = Stack_allocator::stack_allocator().alloc(this, main_thread);
 	if (!stack)
@@ -113,12 +94,12 @@ Thread::_alloc_stack(size_t stack_size, char const *name, bool main_thread)
 	/* allocate and attach backing store for the stack */
 	Ram_dataspace_capability ds_cap;
 	try {
-		ds_cap = env_stack_area_ram_session->alloc(ds_size);
+		ds_cap = env_stack_area_ram_allocator->alloc(ds_size);
 		addr_t attach_addr = ds_addr - stack_area_virtual_base();
 		if (attach_addr != (addr_t)env_stack_area_region_map->attach_at(ds_cap, attach_addr, ds_size))
 			throw Stack_alloc_failed();
 	}
-	catch (Ram_session::Alloc_failed) { throw Stack_alloc_failed(); }
+	catch (Out_of_ram) { throw Stack_alloc_failed(); }
 
 	/*
 	 * Now the stack is backed by memory, so it is safe to access its members.
@@ -143,7 +124,7 @@ void Thread::_free_stack(Stack *stack)
 	stack->~Stack();
 
 	Genode::env_stack_area_region_map->detach((void *)ds_addr);
-	Genode::env_stack_area_ram_session->free(ds_cap);
+	Genode::env_stack_area_ram_allocator->free(ds_cap);
 
 	/* stack ready for reuse */
 	Stack_allocator::stack_allocator().free(stack);
@@ -159,7 +140,7 @@ void Thread::name(char *dst, size_t dst_len)
 Thread::Name Thread::name() const { return _stack->name(); }
 
 
-void Thread::join() { _join_lock.lock(); }
+void Thread::join() { _join.block(); }
 
 
 void *Thread::alloc_secondary_stack(char const *name, size_t stack_size)
@@ -190,6 +171,14 @@ void *Thread::stack_base() const { return (void*)_stack->base(); }
 void Thread::stack_size(size_t const size) { _stack->size(size); }
 
 
+Thread::Stack_info Thread::mystack()
+{
+	addr_t base = Stack_allocator::addr_to_base(&base);
+	Stack *stack = Stack_allocator::base_to_stack(base);
+	return { stack->base(), stack->top() };
+}
+
+
 size_t Thread::stack_virtual_size()
 {
 	return Genode::stack_virtual_size();
@@ -215,16 +204,22 @@ Thread::Thread(size_t weight, const char *name, size_t stack_size,
 	_affinity(affinity),
 	_trace_control(nullptr),
 	_stack(type == REINITIALIZED_MAIN ?
-	       _stack : _alloc_stack(stack_size, name, type == MAIN)),
-	_join_lock(Lock::LOCKED)
+	       _stack : _alloc_stack(stack_size, name, type == MAIN))
 {
 	_init_platform_thread(weight, type);
+}
 
-	if (_cpu_session) {
-		Dataspace_capability ds = _cpu_session->trace_control();
-		if (ds.valid())
-			_trace_control = env()->rm_session()->attach(ds);
-	}
+
+void Thread::_init_cpu_session_and_trace_control()
+{
+	/* if no CPU session is given, use it from the environment */
+	if (!_cpu_session) {
+		_cpu_session = env_deprecated()->cpu_session(); }
+
+	/* initialize trace control now that the CPU session must be valid */
+	Dataspace_capability ds = _cpu_session->trace_control();
+	if (ds.valid()) {
+		_trace_control = env_deprecated()->rm_session()->attach(ds); }
 }
 
 
@@ -247,13 +242,15 @@ Thread::Thread(Env &env, Name const &name, size_t stack_size)
 Thread::~Thread()
 {
 	if (Thread::myself() == this) {
-		PERR("thread '%s' tried to self de-struct - sleeping forever.",
-		     _stack->name().string());
+		error("thread '", _stack->name().string(), "' "
+		      "tried to self de-struct - sleeping forever.");
 		sleep_forever();
 	}
 
 	_deinit_platform_thread();
 	_free_stack(_stack);
+
+	cxx_free_tls(this);
 
 	/*
 	 * We have to detach the trace control dataspace last because
@@ -262,5 +259,5 @@ Thread::~Thread()
 	 * detached trace control dataspace.
 	 */
 	if (_trace_control)
-		env()->rm_session()->detach(_trace_control);
+		env_deprecated()->rm_session()->detach(_trace_control);
 }

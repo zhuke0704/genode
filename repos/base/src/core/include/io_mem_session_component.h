@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__IO_MEM_SESSION_COMPONENT_H_
@@ -35,15 +35,15 @@ namespace Genode {
 			 */
 			struct Dataspace_attr
 			{
-				size_t          size;
-				addr_t          core_local_addr;
-				addr_t          phys_addr;
-				Cache_attribute cacheable;
+				size_t          size            { 0 };
+				addr_t          core_local_addr { 0 };
+				addr_t          phys_addr       { 0 };
+				Cache_attribute cacheable       { UNCACHED };
 
 				/**
 				 * Base address of request used for freeing mem-ranges
 				 */
-				addr_t req_base;
+				addr_t req_base { 0 };
 
 				/**
 				 * Default constructor
@@ -51,7 +51,7 @@ namespace Genode {
 				 * This constructor enables Dataspace_attr objects to be
 				 * returned from the '_prepare_io_mem' function.
 				 */
-				Dataspace_attr() : size(0) { }
+				Dataspace_attr() { }
 
 				/**
 				 * Constructor
@@ -84,13 +84,13 @@ namespace Genode {
 				bool valid() { return size() != 0; }
 			};
 
-			Range_allocator            *_io_mem_alloc;
+			Range_allocator            &_io_mem_alloc;
 			Io_dataspace_component      _ds;
-			Rpc_entrypoint             *_ds_ep;
-			Io_mem_dataspace_capability _ds_cap;
-			Cache_attribute             _cacheable;
+			Rpc_entrypoint             &_ds_ep;
+			Io_mem_dataspace_capability _ds_cap    { };
+			Cache_attribute             _cacheable { UNCACHED };
 
-			Dataspace_attr _prepare_io_mem(const char *args, Range_allocator *ram_alloc);
+			Dataspace_attr _prepare_io_mem(const char *args, Range_allocator &ram_alloc);
 
 
 			/********************************************
@@ -127,9 +127,9 @@ namespace Genode {
 			 *                      particular MMIO region base, size and
 			 *                      caching demands
 			 */
-			Io_mem_session_component(Range_allocator *io_mem_alloc,
-			                         Range_allocator *ram_alloc,
-			                         Rpc_entrypoint  *ds_ep,
+			Io_mem_session_component(Range_allocator &io_mem_alloc,
+			                         Range_allocator &ram_alloc,
+			                         Rpc_entrypoint  &ds_ep,
 			                         const char      *args);
 
 			/**
@@ -142,7 +142,7 @@ namespace Genode {
 			 ** Io-mem session interface **
 			 ******************************/
 
-			Io_mem_dataspace_capability dataspace() { return _ds_cap; }
+			Io_mem_dataspace_capability dataspace() override { return _ds_cap; }
 	};
 }
 

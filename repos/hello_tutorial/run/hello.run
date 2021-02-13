@@ -14,10 +14,14 @@ install_config {
 <config>
 	<parent-provides>
 		<service name="LOG"/>
+		<service name="PD"/>
+		<service name="CPU"/>
+		<service name="ROM"/>
 	</parent-provides>
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="50"/>
 	<start name="hello_server">
 		<resource name="RAM" quantum="1M"/>
 		<provides> <service name="Hello"/> </provides>
@@ -31,7 +35,7 @@ install_config {
 # Boot image
 #
 
-build_boot_image { core init hello_client hello_server }
+build_boot_image { core ld.lib.so init hello_client hello_server }
 
 append qemu_args " -nographic "
 

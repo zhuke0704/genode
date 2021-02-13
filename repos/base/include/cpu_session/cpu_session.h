@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__CPU_SESSION__CPU_SESSION_H_
@@ -18,25 +18,43 @@
 #include <cpu_thread/cpu_thread.h>
 #include <base/stdint.h>
 #include <base/rpc_args.h>
-#include <thread/capability.h>
 #include <session/session.h>
 #include <dataspace/capability.h>
 #include <pd_session/pd_session.h>
 
-namespace Genode { struct Cpu_session; }
+namespace Genode {
+
+	struct Cpu_session;
+	struct Cpu_session_client;
+
+	typedef Capability<Cpu_thread> Thread_capability;
+}
 
 
 struct Genode::Cpu_session : Session
 {
+	/**
+	 * \noapi
+	 */
+	static const char *service_name() { return "CPU"; }
+
+	/*
+	 * A CPU session consumes a dataspace capability for the session-object
+	 * allocation, its session capability, the capability of the 'Native_cpu'
+	 * RPC interface, and a capability for the trace-control dataspace.
+	 */
+	enum { CAP_QUOTA = 6 };
+
+	typedef Cpu_session_client Client;
+
+
 	/*********************
 	 ** Exception types **
 	 *********************/
 
 	class Thread_creation_failed : public Exception { };
 	class Quota_exceeded         : public Thread_creation_failed { };
-	class Out_of_metadata        : public Exception { };
 
-	static const char *service_name() { return "CPU"; }
 
 	enum { THREAD_NAME_LEN = 32 };
 	enum { PRIORITY_LIMIT = 1 << 16 };
@@ -75,8 +93,8 @@ struct Genode::Cpu_session : Session
 	 * \param utcb      base of the UTCB that will be used by the thread
 	 * \return          capability representing the new thread
 	 * \throw           Thread_creation_failed
-	 * \throw           Out_of_metadata
-	 * \throw           Quota_exceeded
+	 * \throw           Out_of_ram
+	 * \throw           Out_of_caps
 	 */
 	virtual Thread_capability create_thread(Capability<Pd_session> pd,
 	                                        Name const            &name,
@@ -202,7 +220,7 @@ struct Genode::Cpu_session : Session
 	/**
 	 * Common base class of kernel-specific CPU interfaces
 	 */
-	struct Native_cpu { };
+	struct Native_cpu;
 
 	/**
 	 * Return capability to kernel-specific CPU operations
@@ -215,7 +233,7 @@ struct Genode::Cpu_session : Session
 	 *********************/
 
 	GENODE_RPC_THROW(Rpc_create_thread, Thread_capability, create_thread,
-	                 GENODE_TYPE_LIST(Thread_creation_failed, Out_of_metadata),
+	                 GENODE_TYPE_LIST(Thread_creation_failed, Out_of_ram, Out_of_caps),
 	                 Capability<Pd_session>, Name const &, Affinity::Location,
 	                 Weight, addr_t);
 	GENODE_RPC(Rpc_kill_thread, void, kill_thread, Thread_capability);

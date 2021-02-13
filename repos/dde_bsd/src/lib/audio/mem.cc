@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -57,7 +57,7 @@ class Bsd::Slab_backend_alloc : public Genode::Allocator,
 		addr_t                            _ds_phys[ELEMENTS]; /* physical bases of dataspaces */
 		int                               _index;             /* current index in ds_cap */
 		Genode::Allocator_avl             _range;             /* manage allocations */
-		Genode::Ram_session              &_ram;               /* ram session to allocate ds from */
+		Genode::Ram_allocator            &_ram;               /* allocator to allocate ds from */
 
 		bool _alloc_block()
 		{
@@ -81,9 +81,10 @@ class Bsd::Slab_backend_alloc : public Genode::Allocator,
 
 	public:
 
-		Slab_backend_alloc(Genode::Ram_session &ram, Genode::Region_map &rm,
-		                   Genode::Allocator &md_alloc)
+		Slab_backend_alloc(Genode::Env &env, Genode::Ram_allocator &ram,
+		                   Genode::Region_map &rm, Genode::Allocator &md_alloc)
 		:
+			Rm_connection(env),
 			Region_map_client(Rm_connection::create(VM_SIZE)),
 			_index(0), _range(&md_alloc), _ram(ram)
 		{
@@ -132,7 +133,7 @@ class Bsd::Slab_alloc : public Genode::Slab
 
 		static Genode::size_t _calculate_block_size(Genode::size_t object_size)
 		{
-			Genode::size_t const block_size = 16*object_size;
+			Genode::size_t const block_size = 8*object_size;
 			return Genode::align_addr(block_size, 12);
 		}
 
@@ -163,7 +164,7 @@ class Bsd::Malloc
 
 		enum {
 			SLAB_START_LOG2 = 5,  /* 32 B */
-			SLAB_STOP_LOG2  = 16, /* 64 KiB */
+			SLAB_STOP_LOG2  = 17, /* 128 KiB */
 			NUM_SLABS = (SLAB_STOP_LOG2 - SLAB_START_LOG2) + 1,
 		};
 
@@ -311,7 +312,7 @@ static Bsd::Malloc *_malloc;
 
 void Bsd::mem_init(Genode::Env &env, Genode::Allocator &alloc)
 {
-	static Bsd::Slab_backend_alloc sb(env.ram(), env.rm(), alloc);
+	static Bsd::Slab_backend_alloc sb(env, env.ram(), env.rm(), alloc);
 	static Bsd::Malloc m(sb, alloc);
 	_malloc = &m;
 }
@@ -328,7 +329,7 @@ extern "C" void *malloc(size_t size, int type, int flags)
 {
 	void *addr = malloc_backend().alloc(size);
 
-	if (flags & M_ZERO)
+	if (addr && (flags & M_ZERO))
 		Genode::memset(addr, 0, size);
 
 	return addr;

@@ -5,6 +5,13 @@
  * \date   2013-11-11
  */
 
+/*
+ * Copyright (C) 2013-2017 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #ifndef _DIRECTORY_H_
 #define _DIRECTORY_H_
 
@@ -17,17 +24,25 @@
 #include <file.h>
 
 #include <lx_util.h>
+#include <stdio.h>
 
 
-namespace File_system {
+namespace Lx_fs {
 	using namespace Genode;
+	using namespace File_system;
 	class Directory;
 }
 
 
-class File_system::Directory : public Node
+class Lx_fs::Directory : public Node
 {
 	private:
+
+		/*
+		 * Noncopyable
+		 */
+		Directory(Directory const &);
+		Directory &operator = (Directory const &);
 
 		typedef Genode::Path<MAX_PATH_LEN> Path;
 
@@ -42,11 +57,19 @@ class File_system::Directory : public Node
 			if (create) {
 				mode_t ugo = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
 				ret = mkdir(path, ugo);
-				if (ret == -1)
-					throw No_space();
+				if (ret == -1) {
+					switch (errno) {
+						case ENAMETOOLONG: throw Name_too_long();
+						case EACCES:       throw Permission_denied();
+						case ENOENT:       throw Lookup_failed();
+						case EEXIST:       throw Node_already_exists();
+						case ENOSPC:
+						default:           throw No_space();
+					}
+				}
 			}
 
-			struct stat s;
+			struct stat s { };
 
 			ret = lstat(path, &s);
 			if (ret == -1)
@@ -62,6 +85,16 @@ class File_system::Directory : public Node
 				throw Lookup_failed();
 
 			return fd;
+		}
+
+		size_t _num_entries() const
+		{
+			unsigned num = 0;
+
+			rewinddir(_fd);
+			while (readdir(_fd)) ++num;
+
+			return num;
 		}
 
 	public:
@@ -81,12 +114,30 @@ class File_system::Directory : public Node
 			closedir(_fd);
 		}
 
+		void update_modification_time(Timestamp const time) override
+		{
+			struct timespec ts[2] = {
+				{ .tv_sec = (time_t)0,          .tv_nsec = 0 },
+				{ .tv_sec = (time_t)time.value, .tv_nsec = 0 }
+			};
+
+			/* silently ignore errors */
+			futimens(dirfd(_fd), (const timespec*)&ts);
+		}
+
+		void rename(Directory &dir_to, char const *name_from, char const *name_to)
+		{
+			int ret = renameat(dirfd(_fd), name_from,
+			                   dirfd(dir_to._fd), name_to);
+			if (ret != 0)
+				throw Unavailable();
+		}
+
 		/* FIXME returned file node must be locked */
-		File * file(char const *name, Mode mode, bool create)
+		File * file(char const *name, Mode mode, bool create) override
 		{
 			File *file = new (&_alloc) File(dirfd(_fd), name, mode, create);
 
-			file->lock();
 			return file;
 		}
 
@@ -97,7 +148,6 @@ class File_system::Directory : public Node
 
 			Directory *dir = new (&_alloc) Directory(_alloc, dir_path.base(), create);
 
-			dir->lock();
 			return dir;
 		}
 
@@ -126,19 +176,18 @@ class File_system::Directory : public Node
 			else
 				throw Lookup_failed();
 
-			node->lock();
 			return node;
 		}
 
-		size_t read(char *dst, size_t len, seek_off_t seek_offset)
+		size_t read(char *dst, size_t len, seek_off_t seek_offset) override
 		{
 			if (len < sizeof(Directory_entry)) {
-				PERR("read buffer too small for directory entry");
+				Genode::error("read buffer too small for directory entry");
 				return 0;
 			}
 
 			if (seek_offset % sizeof(Directory_entry)) {
-				PERR("seek offset not aligned to sizeof(Directory_entry)");
+				Genode::error("seek offset not aligned to sizeof(Directory_entry)");
 				return 0;
 			}
 
@@ -154,35 +203,63 @@ class File_system::Directory : public Node
 			if (!dent)
 				return 0;
 
-			Directory_entry *e = (Directory_entry *)(dst);
+			Path dent_path(dent->d_name, _path.base());
 
-			switch (dent->d_type) {
-			case DT_REG: e->type = Directory_entry::TYPE_FILE;      break;
-			case DT_DIR: e->type = Directory_entry::TYPE_DIRECTORY; break;
-			case DT_LNK: e->type = Directory_entry::TYPE_SYMLINK;   break;
-			default:
-				return 0;
-			}
+			struct stat st { };
+			lstat(dent_path.base(), &st);
 
-			strncpy(e->name, dent->d_name, sizeof(e->name));
+			auto type = [] (unsigned char type)
+			{
+				switch (type) {
+				case DT_REG: return Node_type::CONTINUOUS_FILE;
+				case DT_DIR: return Node_type::DIRECTORY;
+				case DT_LNK: return Node_type::SYMLINK;
+				default:     return Node_type::CONTINUOUS_FILE;
+				}
+			};
+
+			Directory_entry &e = *(Directory_entry *)(dst);
+			e = {
+				.inode = (unsigned long)dent->d_ino,
+				.type  = type(dent->d_type),
+				.rwx   = { .readable   = (st.st_mode & S_IRUSR),
+				           .writeable  = (st.st_mode & S_IWUSR),
+				           .executable = (st.st_mode & S_IXUSR) },
+				.name  = { dent->d_name }
+			};
 
 			return sizeof(Directory_entry);
 		}
 
-		size_t write(char const *src, size_t len, seek_off_t seek_offset)
+		size_t write(char const *, size_t, seek_off_t) override
 		{
 			/* writing to directory nodes is not supported */
 			return 0;
 		}
 
-		size_t num_entries() const
+		bool sync() override
 		{
-			unsigned num = 0;
+			int ret = fsync(dirfd(_fd));
+			return ret ? false : true;
+		}
 
-			rewinddir(_fd);
-			while (readdir(_fd)) ++num;
+		Status status() override
+		{
+			struct stat st { };
 
-			return num;
+			int fd = dirfd(_fd);
+			if (fd == -1 || fstat(fd, &st) < 0)
+				st.st_mtime = 0;
+
+			return {
+				.size  = _num_entries() * sizeof(File_system::Directory_entry),
+				.type  = Node_type::DIRECTORY,
+				.rwx   = { .readable   = (st.st_mode & S_IRUSR),
+				           .writeable  = (st.st_mode & S_IWUSR),
+				           .executable = (st.st_mode & S_IXUSR) },
+				.inode = inode(),
+				.modification_time = { st.st_mtime }
+			};
 		}
 };
 

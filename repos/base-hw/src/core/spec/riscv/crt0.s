@@ -5,16 +5,36 @@
  */
 
 /*
- * Copyright (C) 2015-2016 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 .section ".text"
 
-.global _core_start
-_core_start:
+	/***********************
+	 ** kernel entry code **
+	 ***********************/
+
+	.global _start
+	_start:
+
+	la x29, kernel_stack
+	la x30, kernel_stack_size
+	ld x30, (x30)
+	add sp, x29, x30
+	la x30, kernel_init
+
+	jalr x30
+
+
+	/*********************************
+	 ** core main thread entry code **
+	 *********************************/
+
+	.global _core_start
+	_core_start:
 
 	/* create environment for main thread */
 	jal init_main_thread

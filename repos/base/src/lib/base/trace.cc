@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -26,6 +26,19 @@ using namespace Genode;
 
 
 namespace Genode { bool inhibit_tracing = true; /* cleared by '_main' */ }
+
+static Env *_env_ptr;
+
+namespace Genode { void init_tracing(Env &env) { _env_ptr = &env; } }
+
+static Env &_env()
+{
+	if (_env_ptr)
+		return *_env_ptr;
+
+	struct Missing_call_of_init_tracing { };
+	throw  Missing_call_of_init_tracing();
+}
 
 
 /*******************
@@ -47,13 +60,18 @@ bool Trace::Logger::_evaluate_control()
 
 			/* unload policy */
 			if (policy_module) {
-				env()->rm_session()->detach(policy_module);
+
+				/* revoke relocations */
+				for (unsigned i = 0; i < sizeof(Trace::Policy_module)/sizeof(void *); i++) {
+					((addr_t *)policy_module)[i] -= (addr_t)(policy_module);
+				}
+				_env().rm().detach(policy_module);
 				policy_module = 0;
 			}
 
 			/* unmap trace buffer */
 			if (buffer) {
-				env()->rm_session()->detach(buffer);
+				_env().rm().detach(buffer);
 				buffer = 0;
 			}
 
@@ -69,7 +87,8 @@ bool Trace::Logger::_evaluate_control()
 		}
 	}
 
-	if (enabled && (policy_version != control->policy_version())) {
+	bool const new_policy = policy_version != control->policy_version();
+	if (enabled && (new_policy || policy_module == 0)) {
 
 		/* suppress tracing during policy change */
 		Control::Inhibit_guard guard(*control);
@@ -78,7 +97,7 @@ bool Trace::Logger::_evaluate_control()
 		Dataspace_capability policy_ds = Cpu_thread_client(thread_cap).trace_policy();
 
 		if (!policy_ds.valid()) {
-			PWRN("could not obtain trace policy");
+			warning("could not obtain trace policy");
 			control->error();
 			enabled = false;
 			return false;
@@ -88,7 +107,13 @@ bool Trace::Logger::_evaluate_control()
 			max_event_size = 0;
 			policy_module  = 0;
 
-			policy_module = env()->rm_session()->attach(policy_ds);
+			enum {
+				MAX_SIZE = 0, NO_OFFSET = 0, ANY_LOCAL_ADDR = false,
+				EXECUTABLE = true
+			};
+
+			policy_module = _env().rm().attach(policy_ds, MAX_SIZE, NO_OFFSET,
+			                                   ANY_LOCAL_ADDR, nullptr, EXECUTABLE);
 
 			/* relocate function pointers of policy callback table */
 			for (unsigned i = 0; i < sizeof(Trace::Policy_module)/sizeof(void *); i++) {
@@ -104,14 +129,14 @@ bool Trace::Logger::_evaluate_control()
 		Dataspace_capability buffer_ds = Cpu_thread_client(thread_cap).trace_buffer();
 
 		if (!buffer_ds.valid()) {
-			PWRN("could not obtain trace buffer");
+			warning("could not obtain trace buffer");
 			control->error();
 			enabled = false;
 			return false;
 		}
 
 		try {
-			buffer = env()->rm_session()->attach(buffer_ds);
+			buffer = _env().rm().attach(buffer_ds);
 			buffer->init(Dataspace_client(buffer_ds).size());
 		} catch (...) { }
 
@@ -122,12 +147,25 @@ bool Trace::Logger::_evaluate_control()
 }
 
 
+__attribute__((optimize("-fno-delete-null-pointer-checks")))
 void Trace::Logger::log(char const *msg, size_t len)
 {
 	if (!this || !_evaluate_control()) return;
 
 	memcpy(buffer->reserve(len), msg, len);
 	buffer->commit(len);
+}
+
+
+__attribute__((optimize("-fno-delete-null-pointer-checks")))
+bool Trace::Logger::log_captured(char const *msg, size_t len)
+{
+	if (!this || !_evaluate_control()) return false;
+
+	len = policy_module->log_output(buffer->reserve(len), msg, len);
+	buffer->commit(len);
+
+	return len != 0;
 }
 
 
@@ -144,7 +182,7 @@ void Trace::Logger::init(Thread_capability thread, Cpu_session *cpu_session,
 	Dataspace_capability ds = cpu->trace_control();
 	size_t size             = Dataspace_client(ds).size();
 	if ((index + 1)*sizeof(Trace::Control) > size) {
-		PERR("thread control index is out of range");
+		error("thread control index is out of range");
 		return;
 	}
 
@@ -152,16 +190,7 @@ void Trace::Logger::init(Thread_capability thread, Cpu_session *cpu_session,
 }
 
 
-Trace::Logger::Logger()
-:
-	cpu(nullptr),
-	control(nullptr),
-	enabled(false),
-	policy_version(0),
-	policy_module(0),
-	max_event_size(0),
-	pending_init(false)
-{ }
+Trace::Logger::Logger() { }
 
 
 /************
@@ -171,10 +200,10 @@ Trace::Logger::Logger()
 /**
  * return logger instance for the main thread **
  */
-static Trace::Logger *main_trace_logger()
+static Trace::Logger &main_trace_logger()
 {
 	static Trace::Logger logger;
-	return &logger;
+	return logger;
 }
 
 
@@ -184,38 +213,36 @@ static Trace::Control *main_trace_control;
 Trace::Logger *Thread::_logger()
 {
 	if (inhibit_tracing)
-		return 0;
+		return nullptr;
 
 	Thread * const myself = Thread::myself();
 
-	Trace::Logger * const logger = myself ? &myself->_trace_logger
-	                                      : main_trace_logger();
+	Trace::Logger &logger = myself ? myself->_trace_logger
+	                               : main_trace_logger();
 
 	/* logger is already being initialized */
-	if (logger->init_pending())
-		return logger;
+	if (logger.init_pending())
+		return &logger;
 
 	/* lazily initialize trace object */
-	if (!logger->initialized()) {
-		logger->init_pending(true);
+	if (!logger.initialized()) {
+		logger.init_pending(true);
 
 		Thread_capability thread_cap = myself ? myself->_thread_cap
-		                                      : env()->parent()->main_thread_cap();
+		                                      : _env().parent().main_thread_cap();
 
-		Genode::Cpu_session *cpu = myself ? myself->_cpu_session
-		                                  : env()->cpu_session();
-		if (!cpu) cpu = env()->cpu_session();
+		Cpu_session &cpu = myself ? *myself->_cpu_session : _env().cpu();
 
 		if (!myself)
 			if (!main_trace_control) {
-				Dataspace_capability ds = env()->cpu_session()->trace_control();
+				Dataspace_capability ds = _env().cpu().trace_control();
 				if (ds.valid())
-					main_trace_control = env()->rm_session()->attach(ds);
+					main_trace_control = _env().rm().attach(ds);
 			}
 
-		logger->init(thread_cap, cpu,
-		             myself ? myself->_trace_control : main_trace_control);
+		logger.init(thread_cap, &cpu,
+		            myself ? myself->_trace_control : main_trace_control);
 	}
 
-	return logger;
+	return &logger;
 }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <scout/misc_math.h>
@@ -82,7 +82,6 @@ Icon<PT, W, H>::Icon()
 	memset(_pixel,  0, sizeof(_pixel));
 	memset(_alpha,  0, sizeof(_alpha));
 	memset(_shadow, 0, sizeof(_shadow));
-	_icon_alpha = 255;
 }
 
 
@@ -199,8 +198,8 @@ Element *Icon<PT, W, H>::find(Point position)
 	return 0;
 }
 
-template class Horizontal_shadow<Genode::Pixel_rgb565, 40>;
-template class Horizontal_shadow<Genode::Pixel_rgb565, 160>;
-template class Icon<Genode::Pixel_rgb565, 16, 16>;
-template class Icon<Genode::Pixel_rgb565, 32, 32>;
-template class Icon<Genode::Pixel_rgb565, 64, 64>;
+template class Scout::Horizontal_shadow<Genode::Pixel_rgb888, 40>;
+template class Scout::Horizontal_shadow<Genode::Pixel_rgb888, 160>;
+template class Scout::Icon<Genode::Pixel_rgb888, 16, 16>;
+template class Scout::Icon<Genode::Pixel_rgb888, 32, 32>;
+template class Scout::Icon<Genode::Pixel_rgb888, 64, 64>;

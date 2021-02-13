@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 
@@ -21,7 +21,9 @@
 struct completion;
 
 void complete(struct completion *);
+void complete_all(struct completion *);
 void init_completion(struct completion *c);
+bool try_wait_for_completion(struct completion *);
 
 void          wait_for_completion(struct completion *c);
 unsigned long wait_for_completion_timeout(struct completion *c,

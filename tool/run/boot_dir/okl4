@@ -1,3 +1,10 @@
+proc binary_name_ld_lib_so { } { return "ld-okl4.lib.so" }
+proc binary_name_core_o    { } { return "core-okl4.o"    }
+proc binary_name_timer     { } { return "pit_timer_drv"  }
+
+proc kernel_files { } { return okl4 }
+
+
 ##
 # Get the base-okl4 repository
 #
@@ -20,24 +27,6 @@ proc okl4_dir { } {
 	}
 
 	return $_okl4_dir
-}
-
-
-##
-# Return the location of the OKL4 kernel
-#
-proc okl4 { } {
-	if {[okl4_external]} { return [okl4_dir]/build/pistachio/bin/kernel }
-	return bin/kernel
-}
-
-
-##
-# Return whether okl4 kernel is provided from the outside
-#
-proc okl4_external { } {
-	if {"[okl4_dir]" == "[base_okl4_dir]/contrib/okl4"} { return 0 }
-	return 1
 }
 
 
@@ -97,12 +86,21 @@ set weaver_xml_template {
 		</config>
 	</kernel>
 
-	<rootprogram file="core" virtpool="virtual" physpool="physical" />
+	<rootprogram file="core" virtpool="virtual" physpool="physical" direct="true" />
 }
 
 
 proc run_boot_string { } {
-	return "OKL4 -"
+	return "\n\r\033\\\[1m\033\\\[33mOKL4 -"
+}
+
+
+proc core_link_address { } { return "0x03000000" }
+
+
+proc elfweaver {} {
+	if { ![file exists tool/okl4/elfweaver] } { build LIB=tools }
+	return tool/okl4/elfweaver
 }
 
 
@@ -110,25 +108,22 @@ proc run_boot_string { } {
 # Populate directory with binaries on OKL4
 #
 proc run_boot_dir {binaries} {
+
 	global weaver_xml_template
 
 	#
-	# Strip binaries
+	# Build kernel and dynamic linker if needed
 	#
-	copy_and_strip_genode_binaries_to_run_dir $binaries
+	set kernel_arg ""
+	set ld_arg     ""
+	if {![file exists [run_dir]/genode/okl4]}      { set kernel_arg kernel/okl4 }
+	if {![file exists [run_dir]/genode/ld.lib.so]} { set ld_arg     lib/ld/okl4 }
+	set targets "$kernel_arg $ld_arg"
+	if {[llength $targets]} { build $targets }
+	if {$kernel_arg != ""} { file copy -force bin/okl4 [run_dir]/genode/okl4 }
 
-	#
-	# Build kernel if needed
-	#
-	# Once the kernel is exists, it gets never revisited automatically.
-	# Consequently, when changing the kernel sources, the kernel build must be
-	# issued explicitly via 'make kernel'. This way, the rare case of changing
-	# the kernel does not stand in the way of the everyday's work flow of
-	# executing run scripts as quick as possible.
-	#
-	if {![okl4_external] && ![file exists [okl4]]} { build { kernel } }
-
-	exec cp [okl4] [run_dir]/kernel
+	build_core_image $binaries
+	exec mv [run_dir]/image.elf [run_dir].image
 
 	#
 	# Generate ELF weaver config
@@ -137,55 +132,54 @@ proc run_boot_dir {binaries} {
 	puts $fh {<?xml version="1.0"?>}
 	puts $fh {<!DOCTYPE image SYSTEM "weaver-1.1.dtd">}
 	puts $fh {<image>}
-	regsub okl4_kernel $weaver_xml_template "[run_dir]/kernel" weaver_xml_template
-	regsub core $weaver_xml_template "[run_dir]/genode/core" weaver_xml_template
+	regsub okl4_kernel $weaver_xml_template "[run_dir]/genode/okl4" weaver_xml_template
+	regsub \"core\" $weaver_xml_template "\"[run_dir].image\"" weaver_xml_template
 	puts $fh $weaver_xml_template
-	puts $fh {	<pd name="modules">}
-	puts $fh "		<memsection name=\"config\" file=\"[run_dir]/genode/config\" direct=\"true\" />"
-	foreach binary $binaries {
-		if {$binary != "core"} {
-			puts $fh "		<memsection name=\"$binary\" file=\"[run_dir]/genode/$binary\" direct=\"true\" />" }
-	}
-	puts $fh {	</pd>}
 	puts $fh {</image>}
 	close $fh
 
 	#
 	# Run ELF Weaver to create a boot image
 	#
-	set ret [exec "./tool/okl4/elfweaver" merge --output "[run_dir]/image.elf" "[run_dir].weaver.xml"]
+	set ret [exec [elfweaver] merge --output "[run_dir]/image.elf" "[run_dir].weaver.xml"]
 	if {[regexp "error" $ret dummy]} {
 		puts stderr "Elfweaver failed: $ret"
 		exit -6
 	}
 	exec [cross_dev_prefix]strip [run_dir]/image.elf
-	exec cp [run_dir]/image.elf [run_dir].elf
 
 	#
 	# Keep only the ELF boot image, but remove stripped binaries
 	#
-	exec rm -r [run_dir]/genode
+	remove_genode_dir
+
+	exec mkdir -p [run_dir]/boot
+	exec mv [run_dir]/image.elf [run_dir]/boot/image.elf
 
 	if {[have_include "image/iso"] || [have_include "image/disk"]} {
-		#
-		# Install GRUB
-		#
-		install_iso_bootloader_to_run_dir
+
+		if {[have_include "image/disk"]} {
+			exec mkdir -p [run_dir]/boot/grub
+			exec cp [genode_dir]/tool/boot/bender [run_dir]/boot/bender
+		}
+
+		if {[have_include "image/iso"]} {
+			install_iso_bootloader_to_run_dir
+		}
 
 		#
-		# Generate grub config file
+		# Generate GRUB config file
 		#
 		# The core binary is part of the 'binaries' list but it must
 		# appear right after 'sigma0' as boot module. Hence the special case.
 		#
-		set fh [open "[run_dir]/boot/grub/menu.lst" "WRONLY CREAT TRUNC"]
-		puts $fh "timeout 0"
-		puts $fh "default 0"
-		puts $fh "hiddenmenu"
-		puts $fh "\ntitle Genode on OKL4"
-		puts $fh " kernel /boot/bender"
-		puts $fh " module /image.elf"
-		puts $fh " vbeset 0x117"
+		set fh [open "[run_dir]/boot/grub/grub.cfg" "WRONLY CREAT TRUNC"]
+		puts $fh "set timeout=0"
+		puts $fh "menuentry 'Genode on OKL4' {"
+		puts $fh " insmod multiboot"
+		puts $fh " multiboot /boot/bender"
+		puts $fh " module /boot/image.elf"
+		puts $fh "}"
 		close $fh
 	}
 
@@ -207,9 +201,24 @@ proc run_boot_dir {binaries} {
 		# load okl4 at 256M to avoid overwritting binary, adjust by need
 		puts $fh " addr 0x10000000"
 		puts $fh " exec /boot/bender"
-		puts $fh " load /image.elf"
+		puts $fh " load /boot/image.elf"
 		close $fh
 
 		generate_tftp_config
 	}
+}
+
+
+##
+# Base source archive within depot
+#
+proc base_src { } {
+
+	if {[have_spec x86_32]} { return base-okl4 }
+
+	global specs
+
+	puts stderr "Test requires base-okl4 kernel archive, which is missing for this build configuration"
+	puts stderr "  SPECS=\"$specs\""
+	exit 0
 }

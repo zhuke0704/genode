@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* local includes */
@@ -22,6 +22,10 @@ Decorator::Window_base::Hover Decorator::Window::hover(Point abs_pos) const
 		return hover;
 
 	hover.window_id = id();
+
+	/* omit the decoration checks below whenever the content is hovered */
+	if (geometry().contains(abs_pos))
+		return hover;
 
 	Rect const closer_geometry =
 		_theme.absolute(_theme.element_geometry(Theme::ELEMENT_TYPE_CLOSER),

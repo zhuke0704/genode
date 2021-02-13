@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NOVA_NATIVE_PD__CLIENT_H_
@@ -20,10 +20,10 @@
 namespace Genode { struct Nova_native_pd_client; }
 
 
-struct Genode::Nova_native_pd_client : Rpc_client<Nova_native_pd>
+struct Genode::Nova_native_pd_client : Rpc_client<Pd_session::Native_pd>
 {
 	explicit Nova_native_pd_client(Capability<Native_pd> cap)
-	: Rpc_client<Nova_native_pd>(static_cap_cast<Nova_native_pd>(cap)) { }
+	: Rpc_client<Pd_session::Native_pd>(static_cap_cast<Pd_session::Native_pd>(cap)) { }
 
 	Native_capability alloc_rpc_cap(Native_capability ep,
 	                                addr_t entry, addr_t mtd) override

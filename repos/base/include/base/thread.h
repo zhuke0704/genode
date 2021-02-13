@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__THREAD_H_
@@ -16,11 +16,10 @@
 
 /* Genode includes */
 #include <base/exception.h>
-#include <base/lock.h>
+#include <base/blockade.h>
 #include <base/trace/logger.h>
 #include <cpu/consts.h>
 #include <util/string.h>
-#include <ram_session/ram_session.h>  /* for 'Ram_dataspace_capability' type */
 #include <cpu_session/cpu_session.h>  /* for 'Thread_capability' type */
 
 namespace Genode {
@@ -50,6 +49,10 @@ class Genode::Thread
 		typedef Affinity::Location  Location;
 		typedef Cpu_session::Name   Name;
 		typedef Cpu_session::Weight Weight;
+
+		struct Stack_info { addr_t base; addr_t top; };
+
+		struct Tls { struct Base; Base *ptr; };
 
 	private:
 
@@ -85,6 +88,12 @@ class Genode::Thread
 		 */
 		void _deinit_platform_thread();
 
+		/*
+		 * Noncopyable
+		 */
+		Thread(Thread const &);
+		Thread &operator = (Thread const &);
+
 	protected:
 
 		/**
@@ -92,7 +101,7 @@ class Genode::Thread
 		 *
 		 * Used if thread creation involves core's CPU service.
 		 */
-		Thread_capability _thread_cap;
+		Thread_capability _thread_cap { };
 
 		/**
 		 * Pointer to cpu session used for this thread
@@ -120,9 +129,9 @@ class Genode::Thread
 		Native_thread *_native_thread = nullptr;
 
 		/**
-		 * Lock used for synchronizing the finalization of the thread
+		 * Blockade used for synchronizing the finalization of the thread
 		 */
-		Lock _join_lock;
+		Blockade _join { };
 
 		/**
 		 * Thread type
@@ -134,7 +143,7 @@ class Genode::Thread
 
 	private:
 
-		Trace::Logger _trace_logger;
+		Trace::Logger _trace_logger { };
 
 		/**
 		 * Return 'Trace::Logger' instance of calling thread
@@ -144,12 +153,25 @@ class Genode::Thread
 		static Trace::Logger *_logger();
 
 		/**
+		 * Base pointer to thread-local storage
+		 *
+		 * The opaque pointer allows higher-level thread libraries (i.e.,
+		 * pthread) to implement TLS. It should never be used outside such
+		 * libraries.
+		 */
+		Tls _tls { };
+
+		friend class Tls::Base;
+
+		/**
 		 * Hook for platform-specific constructor supplements
 		 *
 		 * \param weight  weighting regarding the CPU session quota
 		 * \param type    enables selection of special initialization
 		 */
 		void _init_platform_thread(size_t weight, Type type);
+
+		void _init_cpu_session_and_trace_control();
 
 	public:
 
@@ -309,24 +331,19 @@ class Genode::Thread
 		Thread_capability cap() const { return _thread_cap; }
 
 		/**
-		 * Cancel currently blocking operation
-		 */
-		void cancel_blocking();
-
-		/**
 		 * Return kernel-specific thread meta data
 		 */
 		Native_thread &native_thread();
 
 		/**
-		 * Return top of stack
+		 * Return top of primary stack
 		 *
 		 * \return  pointer just after first stack element
 		 */
 		void *stack_top() const;
 
 		/**
-		 * Return base of stack
+		 * Return base of primary stack
 		 *
 		 * \return  pointer to last stack element
 		 */
@@ -353,6 +370,11 @@ class Genode::Thread
 		 * \return  pointer to caller's 'Thread' object
 		 */
 		static Thread *myself();
+
+		/**
+		 * Return information about the current stack
+		 */
+		static Stack_info mystack();
 
 		/**
 		 * Ensure that the stack has a given size at the minimum
@@ -391,6 +413,16 @@ class Genode::Thread
 		}
 
 		/**
+		 * Log null-terminated string as trace event using log_output policy
+		 *
+		 * \return true if trace is really put to buffer
+		 */
+		static bool trace_captured(char const *cstring)
+		{
+			return _logger()->log_captured(cstring, strlen(cstring));
+		}
+
+		/**
 		 * Log binary data as trace event
 		 */
 		static void trace(char const *data, size_t len)
@@ -399,70 +431,15 @@ class Genode::Thread
 		}
 
 		/**
-		 * Log trace event as defined in base/trace.h
+		 * Log trace event as defined in base/trace/events.h
 		 */
 		template <typename EVENT>
 		static void trace(EVENT const *event) { _logger()->log(event); }
-};
-
-
-template <unsigned STACK_SIZE>
-class Genode::Thread_deprecated : public Thread
-{
-	public:
 
 		/**
-		 * Constructor
-		 *
-		 * \param weight    weighting regarding the CPU session quota
-		 * \param name      thread name (for debugging)
-		 * \param type      enables selection of special construction
+		 * Thread affinity
 		 */
-		explicit Thread_deprecated(size_t weight, const char *name)
-		: Thread(weight, name, STACK_SIZE, Type::NORMAL) { }
-
-		/**
-		 * Constructor
-		 *
-		 * \param weight     weighting regarding the CPU session quota
-		 * \param name       thread name (for debugging)
-		 * \param type       enables selection of special construction
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(size_t weight, const char *name, Type type)
-		: Thread(weight, name, STACK_SIZE, type) { }
-
-		/**
-		 * Constructor
-		 *
-		 * \param weight       weighting regarding the CPU session quota
-		 * \param name         thread name (for debugging)
-		 * \param cpu_session  thread created via specific cpu session
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(size_t weight, const char *name,
-		                Cpu_session * cpu_session)
-		: Thread(weight, name, STACK_SIZE, Type::NORMAL, cpu_session) { }
-
-		/**
-		 * Shortcut for 'Thread(DEFAULT_WEIGHT, name, type)'
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(const char *name, Type type = NORMAL)
-		: Thread(Weight::DEFAULT_WEIGHT, name, STACK_SIZE, type) { }
-
-		/**
-		 * Shortcut for 'Thread(DEFAULT_WEIGHT, name, cpu_session)'
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(const char *name, Cpu_session * cpu_session)
-		: Thread(Weight::DEFAULT_WEIGHT, name, STACK_SIZE,
-		              Type::NORMAL, cpu_session)
-		{ }
+		Affinity::Location affinity() const { return _affinity; }
 };
 
 #endif /* _INCLUDE__BASE__THREAD_H_ */

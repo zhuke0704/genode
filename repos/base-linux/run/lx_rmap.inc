@@ -27,16 +27,14 @@ set config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RM"/>
+		<service name="PD"/>
 		<service name="LOG"/>
-		<service name="IO_PORT"/>
-		<service name="IO_MEM"/>
-		<service name="IRQ"/>
 		<service name="CPU"/>
 	</parent-provides>
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
-	</default-route>}
+	</default-route>
+	<default caps="100"/>}
 
 append_if [expr {$test_type eq "static"}] config {
 	<start name="test-lx_rmap_static">}
@@ -53,7 +51,7 @@ install_config $config
 # Boot modules
 #
 
-set boot_modules { core init}
+set boot_modules { core ld.lib.so init }
 
 lappend_if [expr {$test_type eq "static"}]  boot_modules test-lx_rmap_static
 lappend_if [expr {$test_type eq "dynamic"}] boot_modules test-lx_rmap_dynamic

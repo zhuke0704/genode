@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /***************
@@ -21,7 +21,7 @@
 
 #define WARN_ON(condition) ({ \
 	int ret = !!(condition); \
-	if (ret) lx_printf("[%s] WARN_ON(" #condition ") \n", __func__); \
+	if (ret) lx_printf("[%s] WARN_ON(%s) \n", __func__, #condition); \
 	ret; })
 
 #define WARN(condition, fmt, arg...) ({ \
@@ -39,8 +39,14 @@
 
 #define BUG_ON(condition) do { if (condition) BUG(); } while(0)
 
+#define BUILD_BUG_ON_INVALID(e) ((void)(sizeof((__force long)(e))))
+#define BUILD_BUG_ON_ZERO(e) (sizeof(struct { int:(-!!(e)); }))
+
 #define BUILD_BUG_ON_MSG(cond,msg) ({ \
 		extern int __attribute__((error(msg))) build_bug(); \
 		if (cond) { build_bug(); } })
 
 #define BUILD_BUG() BUILD_BUG_ON_MSG(1,"BUILD_BUG failed")
+
+#define BUILD_BUG_ON_NOT_POWER_OF_2(n)          \
+	BUG_ON((n) == 0 || (((n) & ((n) - 1)) != 0))

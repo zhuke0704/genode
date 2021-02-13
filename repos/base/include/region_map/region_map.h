@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REGION_MAP__REGION_MAP_H_
@@ -17,13 +17,13 @@
 #include <base/exception.h>
 #include <base/stdint.h>
 #include <base/signal.h>
+#include <base/quota_guard.h>
 #include <dataspace/capability.h>
-#include <thread/capability.h>
 
 namespace Genode { struct Region_map; }
 
 
-struct Genode::Region_map
+struct Genode::Region_map : Interface
 {
 	/**
 	 * State of region map
@@ -87,40 +87,37 @@ struct Genode::Region_map
 	 ** Exception types **
 	 *********************/
 
-	class Attach_failed     : public Exception     { };
-	class Invalid_args      : public Attach_failed { };
-	class Invalid_dataspace : public Attach_failed { };
-	class Region_conflict   : public Attach_failed { };
-	class Out_of_metadata   : public Attach_failed { };
-
-	class Invalid_thread    : public Exception { };
-	class Unbound_thread    : public Exception { };
+	class Invalid_dataspace : public Exception { };
+	class Region_conflict   : public Exception { };
 
 
 	/**
-	 * Map dataspace into local address space
+	 * Map dataspace into region map
 	 *
-	 * \param ds               capability of dataspace to map
-	 * \param size             size of the locally mapped region
-	 *                         default (0) is the whole dataspace
-	 * \param offset           start at offset in dataspace (page-aligned)
-	 * \param use_local_addr   if set to true, attach the dataspace at
-	 *                         the specified 'local_addr'
-	 * \param local_addr       local destination address
-	 * \param executable       if the mapping should be executable
+	 * \param ds                 capability of dataspace to map
+	 * \param size               size of the locally mapped region
+	 *                           default (0) is the whole dataspace
+	 * \param offset             start at offset in dataspace (page-aligned)
+	 * \param use_local_addr     if set to true, attach the dataspace at
+	 *                           the specified 'local_addr'
+	 * \param local_addr         local destination address
+	 * \param executable         if the mapping should be executable
+	 * \param writeable          if the mapping should be writeable
 	 *
-	 * \throw Attach_failed    if dataspace or offset is invalid,
-	 *                         or on region conflict
-	 * \throw Out_of_metadata  if meta-data backing store is exhausted
+	 * \throw Invalid_dataspace
+	 * \throw Region_conflict
+	 * \throw Out_of_ram         RAM quota of meta-data backing store is exhausted
+	 * \throw Out_of_caps        cap quota of meta-data backing store is exhausted
 	 *
-	 * \return                 local address of mapped dataspace
+	 * \return                   address of mapped dataspace within region map
 	 *
 	 */
 	virtual Local_addr attach(Dataspace_capability ds,
 	                          size_t size = 0, off_t offset = 0,
 	                          bool use_local_addr = false,
 	                          Local_addr local_addr = (void *)0,
-	                          bool executable = false) = 0;
+	                          bool executable = false,
+	                          bool writeable = true) = 0;
 
 	/**
 	 * Shortcut for attaching a dataspace at a predefined local address
@@ -168,8 +165,9 @@ struct Genode::Region_map
 
 	GENODE_RPC_THROW(Rpc_attach, Local_addr, attach,
 	                 GENODE_TYPE_LIST(Invalid_dataspace, Region_conflict,
-	                                  Out_of_metadata, Invalid_args),
-	                 Dataspace_capability, size_t, off_t, bool, Local_addr, bool);
+	                                  Out_of_ram, Out_of_caps),
+	                 Dataspace_capability, size_t, off_t, bool, Local_addr,
+	                 bool, bool);
 	GENODE_RPC(Rpc_detach, void, detach, Local_addr);
 	GENODE_RPC(Rpc_fault_handler, void, fault_handler, Signal_context_capability);
 	GENODE_RPC(Rpc_state, State, state);

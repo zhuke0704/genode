@@ -5,33 +5,55 @@
  */
 
  /*
-  * Copyright (C) 2009-2015 Genode Labs GmbH
+  * Copyright (C) 2009-2017 Genode Labs GmbH
   *
   * This file is part of the Genode OS framework, which is distributed
-  * under the terms of the GNU General Public License version 2.
+  * under the terms of the GNU Affero General Public License version 3.
   */
 
-#include <base/printf.h>
-#include <base/sleep.h>
+/* Genode includes */
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/log.h>
+#include <util/xml_generator.h>
 
-#include <os/reporter.h>
+/* local includes */
+#include <acpi.h>
+#include <smbios_table_reporter.h>
 
-#include "acpi.h"
 
-int main(int argc, char **argv)
-{
+namespace Acpi {
 	using namespace Genode;
 
-	try {
-		Acpi::generate_report();
-	} catch (Genode::Xml_generator::Buffer_exceeded) {
-		PERR("ACPI report too large - failure");
-		throw;
-	} catch (...) {
-		PERR("Unknown exception occured - failure");
-		throw;
-	}
-
-	Genode::sleep_forever();
-	return 0;
+	struct Main;
 }
+
+struct Acpi::Main
+{
+	Genode::Env &_env;
+	Genode::Heap _heap { _env.ram(), _env.rm() };
+
+	struct Acpi_reporter
+	{
+		Acpi_reporter(Env &env, Heap &heap)
+		{
+			try {
+				Acpi::generate_report(env, heap);
+			} catch (Genode::Xml_generator::Buffer_exceeded) {
+				error("ACPI report too large - failure");
+				throw;
+			} catch (...) {
+				error("Unknown exception occured - failure");
+				throw;
+			}
+		}
+	};
+
+	Acpi_reporter         _acpi_reporter { _env, _heap };
+	Smbios_table_reporter _smbt_reporter { _env, _heap };
+
+	Main(Env &env) : _env(env) { }
+};
+
+
+void Component::construct(Genode::Env &env) { static Acpi::Main main(env); }

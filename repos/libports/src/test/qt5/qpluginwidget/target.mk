@@ -1,17 +1,23 @@
-# identify the QT5 repository by searching for a file that is unique for QT5
-QT5_REP_DIR := $(call select_from_repositories,lib/import/import-qt5.inc)
-QT5_REP_DIR := $(realpath $(dir $(QT5_REP_DIR))../..)
+QMAKE_PROJECT_FILE = $(PRG_DIR)/qpluginwidget.pro
 
-include $(QT5_REP_DIR)/src/app/qt5/tmpl/target_defaults.inc
+QMAKE_TARGET_BINARIES = test-qpluginwidget
 
-include $(QT5_REP_DIR)/src/app/qt5/tmpl/target_final.inc
+QT5_PORT_LIBS = libQt5Core libQt5Gui libQt5Network libQt5Widgets
 
-LIBS += qt5_qpluginwidget qt5_network qoost
+LIBS = libc libm mesa qt5_component stdcxx libqgenodeviewwidget libqpluginwidget qoost $(QT5_PORT_LIBS)
 
-$(TARGET): test-plugin.tar
+include $(call select_from_repositories,lib/import/import-qt5_qmake.mk)
 
-test-plugin.tar: config.plugin
+#
+# create tar archive for test plugin
+#
+
+TEST_PLUGIN_TAR = $(BUILD_BASE_DIR)/bin/test-plugin.tar
+
+$(TARGET): $(TEST_PLUGIN_TAR)
+
+$(TEST_PLUGIN_TAR): config.plugin
 	$(VERBOSE)tar cf $@ -C $(PRG_DIR) config.plugin
 
 clean:
-	$(VERBOSE)rm test-plugin.tar
+	$(VERBOSE)rm $(TEST_PLUGIN_TAR)

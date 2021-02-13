@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL_H_
@@ -21,11 +21,11 @@ namespace Linker {
 	 */
 	template <typename T>
 	static inline T trunc_page(T addr) {
-		return addr & Genode::_align_mask((T)12); }
+		return addr & _align_mask((T)12); }
 
 	template <typename T>
 	static inline T round_page(T addr) {
-		return Genode::align_addr(addr, (T)12); }
+		return align_addr(addr, (T)12); }
 
 	/**
 	 * Extract file name from path

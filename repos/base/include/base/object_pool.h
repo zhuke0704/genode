@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__OBJECT_POOL_H_
@@ -19,6 +19,7 @@
 #include <util/avl_tree.h>
 #include <util/noncopyable.h>
 #include <base/capability.h>
+#include <base/mutex.h>
 #include <base/weak_ptr.h>
 
 namespace Genode { template <typename> class Object_pool; }
@@ -33,16 +34,17 @@ namespace Genode { template <typename> class Object_pool; }
  * objects managed by one and the same object pool.
  */
 template <typename OBJ_TYPE>
-class Genode::Object_pool
+class Genode::Object_pool : Interface, Noncopyable
 {
 	public:
 
-		class Entry : public Avl_node<Entry>
+		class Entry : Avl_node<Entry>
 		{
 			private:
 
 				friend class Object_pool;
 				friend class Avl_tree<Entry>;
+				friend class Avl_node<Entry>;
 
 				struct Entry_lock : Weak_object<Entry_lock>, Noncopyable
 				{
@@ -53,7 +55,7 @@ class Genode::Object_pool
 						Weak_object<Entry_lock>::lock_for_destruction(); }
 				};
 
-				Untyped_capability _cap;
+				Untyped_capability _cap  { };
 				Entry_lock         _lock { *this };
 
 				inline unsigned long _obj_id() { return _cap.local_name(); }
@@ -93,14 +95,14 @@ class Genode::Object_pool
 
 	private:
 
-		Avl_tree<Entry> _tree;
-		Lock            _lock;
+		Avl_tree<Entry> _tree { };
+		Mutex           _mutex { };
 
 	protected:
 
 		bool empty()
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			return _tree.first() == nullptr;
 		}
 
@@ -108,13 +110,13 @@ class Genode::Object_pool
 
 		void insert(OBJ_TYPE *obj)
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			_tree.insert(obj);
 		}
 
 		void remove(OBJ_TYPE *obj)
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			_tree.remove(obj);
 		}
 
@@ -130,7 +132,7 @@ class Genode::Object_pool
 			Weak_ptr ptr;
 
 			{
-				Lock::Guard lock_guard(_lock);
+				Mutex::Guard lock_guard(_mutex);
 
 				Entry * entry = _tree.first() ?
 					_tree.first()->find_by_obj_id(capid) : nullptr;
@@ -163,7 +165,7 @@ class Genode::Object_pool
 				OBJ_TYPE * obj;
 
 				{
-					Lock::Guard lock_guard(_lock);
+					Mutex::Guard lock_guard(_mutex);
 
 					if (!((obj = (OBJ_TYPE*) _tree.first()))) return;
 

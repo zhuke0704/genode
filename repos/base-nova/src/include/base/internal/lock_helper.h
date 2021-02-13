@@ -9,17 +9,16 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 #define _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 
 /* Genode includes */
-#include <base/native_types.h>
 #include <base/thread.h>
 #include <base/stdint.h>
 
@@ -45,16 +44,15 @@ static inline bool thread_check_stopped_and_restart(Genode::Thread *thread_base)
 }
 
 
-static inline void thread_switch_to(Genode::Thread *thread_base) { }
+static inline void thread_switch_to(Genode::Thread *) { }
 
 
-static inline void thread_stop_myself()
+static inline void thread_stop_myself(Genode::Thread *myself)
 {
 	using namespace Genode;
 	using namespace Nova;
 
 	addr_t sem;
-	Thread *myself = Thread::myself();
 	if (myself)
 		sem = myself->native_thread().exc_pt_sel + SM_SEL_EC;
 	else

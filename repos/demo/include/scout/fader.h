@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__FADER_H_
@@ -27,9 +27,9 @@ class Scout::Fader : public Tick
 {
 	protected:
 
-		int _curr_value;   /* current value       */
-		int _dst_value;    /* desired final value */
-		int _step;
+		int _curr_value = 0;   /* current value       */
+		int _dst_value  = 0;   /* desired final value */
+		int _step       = 0;
 
 	public:
 
@@ -63,7 +63,7 @@ class Scout::Fader : public Tick
 		/**
 		 * Tick interface
 		 */
-		int on_tick()
+		int on_tick() override
 		{
 			if (_curr_value == _dst_value)
 				return 0;

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__LOG_ROOT_H_
@@ -28,14 +28,9 @@ namespace Genode {
 			/**
 			 * Root component interface
 			 */
-			Log_session_component *_create_session(const char *args)
+			Log_session_component *_create_session(const char *args) override
 			{
-				char label_buf[Log_session_component::LABEL_LEN];
-
-				Arg label_arg = Arg_string::find_arg(args, "label");
-				label_arg.string(label_buf, sizeof(label_buf), "");
-
-				return new (md_alloc()) Log_session_component(label_buf);
+				return new (md_alloc()) Log_session_component(label_from_args(args));
 			}
 
 		public:
@@ -46,8 +41,10 @@ namespace Genode {
 			 * \param session_ep  entry point for managing cpu session objects
 			 * \param md_alloc    meta-data allocator to be used by root component
 			 */
-			Log_root(Rpc_entrypoint *session_ep, Allocator *md_alloc):
-				Root_component<Log_session_component>(session_ep, md_alloc) { }
+			Log_root(Rpc_entrypoint &session_ep, Allocator &md_alloc)
+			:
+				Root_component<Log_session_component>(&session_ep, &md_alloc)
+			{ }
 	};
 }
 

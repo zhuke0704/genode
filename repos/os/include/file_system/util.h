@@ -4,6 +4,13 @@
  * \date   2012-04-11
  */
 
+/*
+ * Copyright (C) 2012-2017 Genode Labs GmbH
+ *
+ * This file is part of the Genode OS framework, which is distributed
+ * under the terms of the GNU Affero General Public License version 3.
+ */
+
 #ifndef _FILE_SYSTEM__UTIL_H_
 #define _FILE_SYSTEM__UTIL_H_
 
@@ -52,17 +59,6 @@ namespace File_system {
 
 
 	/**
-	 * Return true if specified path is a base name (contains no path delimiters)
-	 *
-	 * \deprecated  use !contains_path_delimiter instead
-	 */
-	static inline bool is_basename(char const *path)
-	{
-		return !contains_path_delimiter(path);
-	}
-
-
-	/**
 	 * Return true if 'str' is a valid node name
 	 */
 	static inline bool valid_name(char const *str)
@@ -89,7 +85,6 @@ namespace File_system {
 			} catch (Lookup_failed) {
 				Genode::Path<MAX_PATH_LEN> target(path);
 				target.strip_last_element();
-				target.remove_trailing('/');
 				fs.close(ensure_dir(fs, target.base()));
 			}
 		}

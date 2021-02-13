@@ -5,15 +5,14 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* base includes */
-#include <base/native_types.h>
-#include <base/printf.h>
+#include <base/capability.h>
 
 /* base-internal includes */
 #include <base/internal/capability_data.h>
@@ -81,7 +80,7 @@ Capability_space::create_rpc_obj_cap(Native_capability ep_cap,
                                      Rpc_obj_key rpc_obj_key)
 {
 	/* allocate core-local selector for RPC object */
-	Cap_sel const rpc_obj_sel = platform_specific()->core_sel_alloc().alloc();
+	Cap_sel const rpc_obj_sel = platform_specific().core_sel_alloc().alloc();
 
 	/* create Genode capability */
 	Native_capability::Data &data =
@@ -94,14 +93,14 @@ Capability_space::create_rpc_obj_cap(Native_capability ep_cap,
 
 	/* mint endpoint capability into RPC object capability */
 	{
-		seL4_CNode     const service    = seL4_CapInitThreadCNode;
-		seL4_Word      const dest_index = rpc_obj_sel.value();
-		uint8_t        const dest_depth = 32;
-		seL4_CNode     const src_root   = seL4_CapInitThreadCNode;
-		seL4_Word      const src_index  = ep_sel.value();
-		uint8_t        const src_depth  = 32;
-		seL4_CapRights const rights     = seL4_AllRights;
-		seL4_CapData_t const badge      = seL4_CapData_Badge_new(rpc_obj_key.value());
+		seL4_CNode       const service    = seL4_CapInitThreadCNode;
+		seL4_Word        const dest_index = rpc_obj_sel.value();
+		uint8_t          const dest_depth = 32;
+		seL4_CNode       const src_root   = seL4_CapInitThreadCNode;
+		seL4_Word        const src_index  = ep_sel.value();
+		uint8_t          const src_depth  = 32;
+		seL4_CapRights_t const rights     = seL4_AllRights;
+		seL4_Word        const badge      = rpc_obj_key.value();
 
 		int const ret = seL4_CNode_Mint(service,
 		                                dest_index,
@@ -111,10 +110,10 @@ Capability_space::create_rpc_obj_cap(Native_capability ep_cap,
 		                                src_depth,
 		                                rights,
 		                                badge);
-		ASSERT(ret == 0);
+		ASSERT(ret == seL4_NoError);
 	}
 
-	return Native_capability(data);
+	return Native_capability(&data);
 }
 
 
@@ -133,7 +132,7 @@ Native_capability Capability_space::create_ep_cap(Thread &ep_thread)
 		local_capability_space().create_capability(ep_sel, pd_session,
 		                                           Rpc_obj_key());
 
-	return Native_capability(data);
+	return Native_capability(&data);
 }
 
 
@@ -165,19 +164,19 @@ Native_capability Capability_space::lookup(Rpc_obj_key rpc_obj_key)
 {
 	Native_capability::Data *data = local_capability_space().lookup(rpc_obj_key);
 
-	return data ? Native_capability(*data) : Native_capability();
+	return data ? Native_capability(data) : Native_capability();
 }
 
 
 unsigned Capability_space::alloc_rcv_sel()
 {
-	return platform_specific()->alloc_core_rcv_sel();
+	return platform_specific().alloc_core_rcv_sel();
 }
 
 
 void Capability_space::reset_sel(unsigned sel)
 {
-	return platform_specific()->reset_sel(sel);
+	return platform_specific().reset_sel(sel);
 }
 
 
@@ -190,5 +189,18 @@ Native_capability Capability_space::import(Ipc_cap_data ipc_cap_data)
 		local_capability_space().create_capability(ipc_cap_data.sel, pd_session,
 		                                           ipc_cap_data.rpc_obj_key);
 
-	return Native_capability(data);
+	return Native_capability(&data);
+}
+
+
+Native_capability
+Capability_space::create_notification_cap(Cap_sel &notify_cap)
+{
+	Pd_session const *pd_session = nullptr;
+
+	Native_capability::Data &data =
+		local_capability_space().create_capability(notify_cap, pd_session,
+		                                           Rpc_obj_key());
+
+	return Native_capability(&data);
 }

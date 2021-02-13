@@ -2,9 +2,9 @@ LICENSE   := BSD
 VERSION   := 1.4
 DOWNLOADS := openjpeg.archive
 
-URL(openjpeg) := http://openjpeg.googlecode.com/files/openjpeg_v1_4_sources_r697.tgz
+URL(openjpeg) := https://github.com/uclouvain/openjpeg/archive/version.$(VERSION).tar.gz
 DIR(openjpeg) := src/lib/openjpeg
-SHA(openjpeg) := 9ef6a08ecf5944962b4e2cd7569ac01a8eaa66d0
+SHA(openjpeg) := 7cc1f5a51dcac7379d083f0ee005c09c876a6795aaeda3608c5c83fecb81fad9
 
 DIRS := include/openjpeg
 DIR_CONTENT(include/openjpeg) := src/lib/openjpeg/libopenjpeg/openjpeg.h

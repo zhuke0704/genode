@@ -1,7 +1,14 @@
-# identify the qt5 repository by searching for a file that is unique for qt5
-QT5_REP_DIR := $(call select_from_repositories,lib/import/import-qt5.inc)
-QT5_REP_DIR := $(realpath $(dir $(QT5_REP_DIR))../..)
+QMAKE_PROJECT_FILE = $(PRG_DIR)/qt_launchpad.pro
 
-include $(QT5_REP_DIR)/src/app/qt5/tmpl/target_defaults.inc
+QMAKE_TARGET_BINARIES = qt_launchpad
 
-include $(QT5_REP_DIR)/src/app/qt5/tmpl/target_final.inc
+QT5_PORT_LIBS += libQt5Core libQt5Gui libQt5Widgets
+
+LIBS = base libc libm mesa stdcxx launchpad $(QT5_PORT_LIBS)
+
+include $(call select_from_repositories,lib/import/import-qt5_qmake.mk)
+
+QT5_GENODE_LIBS_APP += ld.lib.so launchpad.lib.a
+QT5_GENODE_LIBS_APP := $(filter-out qt5_component.lib.so,$(QT5_GENODE_LIBS_APP))
+
+qmake_prepared.tag: qmake_root/lib/ld.lib.so qmake_root/lib/launchpad.lib.a

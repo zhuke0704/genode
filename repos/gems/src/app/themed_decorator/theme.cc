@@ -5,15 +5,15 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <os/texture_rgb888.h>
-#include <nitpicker_gfx/text_painter.h>
+#include <nitpicker_gfx/tff_font.h>
 #include <util/xml_node.h>
 #include <decorator/xml_utils.h>
 
@@ -36,31 +36,33 @@ struct Texture_from_png_file
 	typedef Genode::Texture<Genode::Pixel_rgb888> Texture;
 
 	File       png_file;
-	Png_image  png_image { png_file.data<void>() };
+	Png_image  png_image;
 	Texture   &texture { *png_image.texture<Genode::Pixel_rgb888>() };
 
-	Texture_from_png_file(char const *path, Genode::Allocator &alloc)
+	Texture_from_png_file(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+	                      Genode::Allocator &alloc, char const *path)
 	:
-		png_file(path, alloc)
+		png_file(path, alloc), png_image(ram, rm, alloc, png_file.data<void>())
 	{ }
 };
 
 
 static Genode::Texture<Genode::Pixel_rgb888> const &
-texture_by_id(Texture_id texture_id, Genode::Allocator &alloc)
+texture_by_id(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+              Genode::Allocator &alloc, Texture_id texture_id)
 {
 	if (texture_id == TEXTURE_ID_DEFAULT) {
-		static Texture_from_png_file texture("theme/default.png", alloc);
+		static Texture_from_png_file texture(ram, rm, alloc, "theme/default.png");
 		return texture.texture;
 	}
 
 	if (texture_id == TEXTURE_ID_CLOSER) {
-		static Texture_from_png_file texture("theme/closer.png", alloc);
+		static Texture_from_png_file texture(ram, rm, alloc, "theme/closer.png");
 		return texture.texture;
 	}
 
 	if (texture_id == TEXTURE_ID_MAXIMIZER) {
-		static Texture_from_png_file texture("theme/maximizer.png", alloc);
+		static Texture_from_png_file texture(ram, rm, alloc, "theme/maximizer.png");
 		return texture.texture;
 	}
 
@@ -70,14 +72,15 @@ texture_by_id(Texture_id texture_id, Genode::Allocator &alloc)
 
 
 static Genode::Texture<Genode::Pixel_rgb888> const &
-texture_by_element_type(Decorator::Theme::Element_type type, Genode::Allocator &alloc)
+texture_by_element_type(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+                        Genode::Allocator &alloc, Decorator::Theme::Element_type type)
 {
 	switch (type) {
 	case Decorator::Theme::ELEMENT_TYPE_CLOSER:
-		return texture_by_id(TEXTURE_ID_CLOSER, alloc);
+		return texture_by_id(ram, rm, alloc, TEXTURE_ID_CLOSER);
 
 	case Decorator::Theme::ELEMENT_TYPE_MAXIMIZER:
-		return texture_by_id(TEXTURE_ID_MAXIMIZER, alloc);
+		return texture_by_id(ram, rm, alloc, TEXTURE_ID_MAXIMIZER);
 	}
 	struct Invalid_element_type { };
 	throw  Invalid_element_type();
@@ -87,7 +90,8 @@ texture_by_element_type(Decorator::Theme::Element_type type, Genode::Allocator &
 static Text_painter::Font const &title_font(Genode::Allocator &alloc)
 {
 	static File tff_file("theme/font.tff", alloc);
-	static Text_painter::Font font(tff_file.data<char>());
+	static Tff_font::Allocated_glyph_buffer glyph_buffer(tff_file.data<char>(), alloc);
+	static Tff_font font(tff_file.data<char>(), glyph_buffer);
 
 	return font;
 }
@@ -106,7 +110,8 @@ Decorator::Area Decorator::Theme::background_size() const
 	if (decor_margins().none() && aura_margins().none())
 		return Decorator::Area(0, 0);
 
-	Genode::Texture<Pixel_rgb888> const &texture = texture_by_id(TEXTURE_ID_DEFAULT, _alloc);
+	Genode::Texture<Pixel_rgb888> const &texture =
+		texture_by_id(_ram, _rm, _alloc, TEXTURE_ID_DEFAULT);
 
 	return texture.size();
 }
@@ -115,6 +120,8 @@ Decorator::Area Decorator::Theme::background_size() const
 struct Margins_from_metadata : Decorator::Theme::Margins
 {
 	Margins_from_metadata(char const *sub_node, Genode::Allocator &alloc)
+	:
+		Decorator::Theme::Margins()
 	{
 		Genode::Xml_node aura = metadata(alloc).sub_node(sub_node);
 		top    = aura.attribute_value("top",    0UL);
@@ -150,7 +157,8 @@ Decorator::Rect Decorator::Theme::title_geometry() const
 
 
 static Decorator::Rect
-element_geometry(Genode::Allocator &alloc, char const *sub_node_type,
+element_geometry(Genode::Ram_allocator &ram, Genode::Region_map &rm,
+                 Genode::Allocator &alloc, char const *sub_node_type,
                  Texture_id texture_id)
 {
 	using namespace Decorator;
@@ -161,7 +169,7 @@ element_geometry(Genode::Allocator &alloc, char const *sub_node_type,
 		return Rect(Point(0, 0), Area(0, 0));
 
 	return Rect(point_attribute(node.sub_node(sub_node_type)),
-	            texture_by_id(texture_id, alloc).size());
+	            texture_by_id(ram, rm, alloc, texture_id).size());
 }
 
 
@@ -169,19 +177,19 @@ Decorator::Rect Decorator::Theme::element_geometry(Element_type type) const
 {
 
 	if (type == ELEMENT_TYPE_CLOSER)
-		return ::element_geometry(_alloc, "closer", TEXTURE_ID_CLOSER);
+		return ::element_geometry(_ram, _rm, _alloc, "closer", TEXTURE_ID_CLOSER);
 
 	if (type == ELEMENT_TYPE_MAXIMIZER)
-		return ::element_geometry(_alloc, "maximizer", TEXTURE_ID_MAXIMIZER);
+		return ::element_geometry(_ram, _rm, _alloc, "maximizer", TEXTURE_ID_MAXIMIZER);
 
 	struct Invalid_element_type { };
 	throw  Invalid_element_type();
 }
 
 
-void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
-                                       Decorator::Alpha_surface alpha_surface,
-                                       unsigned alpha) const
+void Decorator::Theme::draw_background(Decorator::Pixel_surface &pixel_surface,
+                                       Decorator::Alpha_surface &alpha_surface,
+                                       Area const area, unsigned alpha) const
 {
 	/*
 	 * Back out early there is neither a decor nor an aura. In this case, we
@@ -191,7 +199,8 @@ void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
 	if (!background_size().valid())
 		return;
 
-	Genode::Texture<Pixel_rgb888> const &texture = texture_by_id(TEXTURE_ID_DEFAULT, _alloc);
+	Genode::Texture<Pixel_rgb888> const &texture =
+		texture_by_id(_ram, _rm, _alloc, TEXTURE_ID_DEFAULT);
 
 	typedef Genode::Surface_base::Point Point;
 	typedef Genode::Surface_base::Rect  Rect;
@@ -199,19 +208,19 @@ void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
 	unsigned const left  = aura_margins().left  + decor_margins().left;
 	unsigned const right = aura_margins().right + decor_margins().right;
 
-	unsigned const middle = left + right < pixel_surface.size().w()
-	                      ? pixel_surface.size().w() - left - right
+	unsigned const middle = left + right < area.w()
+	                      ? area.w() - left - right
 	                      : 0;
 
 	Rect const orig_clip = pixel_surface.clip();
 
 	/* left */
 	if (left) {
-		Rect curr_clip = Rect(Point(0, 0), Area(left, pixel_surface.size().h()));
+		Rect curr_clip = Rect(Point(0, 0), Area(left, area.h()));
 		pixel_surface.clip(curr_clip);
 		alpha_surface.clip(curr_clip);
 
-		Rect const rect(Point(0, 0), pixel_surface.size());
+		Rect const rect(Point(0, 0), area);
 
 		Icon_painter::paint(pixel_surface, rect, texture, alpha);
 		Icon_painter::paint(alpha_surface, rect, texture, alpha);
@@ -219,11 +228,11 @@ void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
 
 	/* middle */
 	if (middle) {
-		Rect curr_clip = Rect(Point(left, 0), Area(middle, pixel_surface.size().h()));
+		Rect curr_clip = Rect(Point(left, 0), Area(middle, area.h()));
 		pixel_surface.clip(curr_clip);
 		alpha_surface.clip(curr_clip);
 
-		Rect const rect(Point(0, 0), pixel_surface.size());
+		Rect const rect(Point(0, 0), area);
 
 		Icon_painter::paint(pixel_surface, rect, texture, alpha);
 		Icon_painter::paint(alpha_surface, rect, texture, alpha);
@@ -231,15 +240,15 @@ void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
 
 	/* right */
 	if (right) {
-		Rect curr_clip = Rect(Point(left + middle, 0), Area(right, pixel_surface.size().h()));
+		Rect curr_clip = Rect(Point(left + middle, 0), Area(right, area.h()));
 		pixel_surface.clip(curr_clip);
 		alpha_surface.clip(curr_clip);
 
 		Point at(0, 0);
-		Area size = pixel_surface.size();
+		Area size = area;
 
-		if (texture.size().w() > pixel_surface.size().w()) {
-			at = Point((int)pixel_surface.size().w() - (int)texture.size().w(), 0);
+		if (texture.size().w() > area.w()) {
+			at = Point((int)area.w() - (int)texture.size().w(), 0);
 			size = Area(texture.size().w(), size.h());
 		}
 
@@ -251,9 +260,9 @@ void Decorator::Theme::draw_background(Decorator::Pixel_surface pixel_surface,
 }
 
 
-void Decorator::Theme::draw_title(Decorator::Pixel_surface pixel_surface,
-                                  Decorator::Alpha_surface alpha_surface,
-                                  char const *title) const
+void Decorator::Theme::draw_title(Decorator::Pixel_surface &pixel_surface,
+                                  Decorator::Alpha_surface &,
+                                  Area const area, char const *title) const
 {
 	/* skip title drawing if the metadata lacks a title declaration */
 	if (!title_geometry().area().valid())
@@ -261,18 +270,20 @@ void Decorator::Theme::draw_title(Decorator::Pixel_surface pixel_surface,
 
 	Text_painter::Font const &font = title_font(_alloc);
 
-	Area  const label_area(font.str_w(title), font.str_h(title));
-	Rect  const surface_rect(Point(0, 0), pixel_surface.size());
-	Rect  const title_rect = absolute(title_geometry(), surface_rect);
-	Point const centered_text_pos = title_rect.center(label_area) - Point(0, 1);
+	Area  const label_area(font.string_width(title).decimal(),
+	                       font.bounding_box().h());
+	Rect  const target_rect(Point(0, 0), area);
+	Rect  const title_rect = absolute(title_geometry(), target_rect);
+	Point const pos = title_rect.center(label_area) - Point(0, 1);
 
-	Text_painter::paint(pixel_surface, centered_text_pos, font,
-	                    Genode::Color(0, 0, 0), title);
+	Text_painter::paint(pixel_surface, Text_painter::Position(pos.x(), pos.y()),
+	                    font, Genode::Color(0, 0, 0), title);
 }
 
 
-void Decorator::Theme::draw_element(Decorator::Pixel_surface pixel_surface,
-                                    Decorator::Alpha_surface alpha_surface,
+void Decorator::Theme::draw_element(Decorator::Pixel_surface &pixel_surface,
+                                    Decorator::Alpha_surface &alpha_surface,
+                                    Area area,
                                     Element_type element_type,
                                     unsigned alpha) const
 {
@@ -280,11 +291,11 @@ void Decorator::Theme::draw_element(Decorator::Pixel_surface pixel_surface,
 		return;
 
 	Genode::Texture<Pixel_rgb888> const &texture =
-		texture_by_element_type(element_type, _alloc);
+		texture_by_element_type(_ram, _rm, _alloc, element_type);
 
-	Rect  const surface_rect(Point(0, 0), pixel_surface.size());
+	Rect  const target_rect(Point(0, 0), area);
 	Rect  const element_rect = element_geometry(element_type);
-	Point const pos = absolute(element_rect.p1(), surface_rect);
+	Point const pos = absolute(element_rect.p1(), target_rect);
 	Rect  const rect(pos, element_rect.area());
 
 	Icon_painter::paint(pixel_surface, rect, texture, alpha);

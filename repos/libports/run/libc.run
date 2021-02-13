@@ -1,4 +1,4 @@
-build "core init test/libc"
+build "core init timer test/libc"
 
 create_boot_directory
 
@@ -6,11 +6,9 @@ install_config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
-		<service name="CAP"/>
 		<service name="PD"/>
 		<service name="RM"/>
 		<service name="CPU"/>
@@ -19,23 +17,26 @@ install_config {
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
+	<default caps="200"/>
+	<start name="timer">
+		<resource name="RAM" quantum="1M"/>
+		<provides> <service name="Timer"/> </provides>
+	</start>
 	<start name="test-libc">
-		<resource name="RAM" quantum="4M"/>
+		<resource name="RAM" quantum="400M"/>
 		<config>
-			<libc stdout="/dev/log">
-				<vfs> <dir name="dev"> <log/> </dir> </vfs>
-			</libc>
+			<vfs> <dir name="dev"> <log/> <inline name="rtc">2019-08-20 15:01</inline> </dir> </vfs>
+			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc"/>
 		</config>
 	</start>
 </config>
 }
 
 build_boot_image {
-	core init test-libc
-	ld.lib.so libc.lib.so libm.lib.so
+	core init timer test-libc
+	ld.lib.so libc.lib.so vfs.lib.so libm.lib.so posix.lib.so
 }
 
-append qemu_args " -nographic -m 64 "
+append qemu_args " -nographic  "
 
-run_genode_until "child .* exited with exit value 0.*\n" 10
-
+run_genode_until "child .* exited with exit value 0.*\n" 30

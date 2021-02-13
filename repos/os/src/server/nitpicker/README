@@ -5,6 +5,17 @@ please refer to the following document:
 
   [http://genode-labs.com/publications/nitpicker-secure-gui-2005.pdf]
 
+The Nitpicker GUI server serves as a broker between input drivers, framebuffer
+drivers, and applications. For each of these component types, it provides a
+dedicated service interface. Input drivers connect to the "Event" service,
+framebuffer drivers to the "Capture" service, and applications to the "Gui"
+service. Hence, its '<start>' node should normally be equipped with the
+following declaration about the provided services.
+
+! <provides>
+!   <service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+! </provides>
+
 
 Nitpicker supports the following configuration options, supplied via Genode's
 config mechanism.
@@ -19,9 +30,9 @@ expressed via '<policy>' nodes as illustrated by the following example:
 
 ! <config>
 !   ...
-!   <policy label="pointer"    domain="pointer"/>
-!   <policy label="status_bar" domain="panel"/>
-!   <policy label=""           domain=""/>
+!   <policy label_prefix="pointer"    domain="pointer"/>
+!   <policy label_prefix="status_bar" domain="panel"/>
+!   <default-policy                   domain=""/>
 !   ...
 ! </config>
 
@@ -122,6 +133,20 @@ If not specified, the focus attribute defaults to 'none'.
 Note that the input focus may also be manipulated via nitpicker's session
 interface, which allows a client to yield the focus to other clients.
 
+By default, nitpicker has a builtin click-to-focus policy where focus changes
+are initiated exclusively by the user by clicking on a view of an unfocused
+client. However, the builtin policy is not always desired. For example, in
+console-like scenarios, the focus should always correspond to the visible
+console regardless of any mouse clicks. Nitpicker supports such scenarios by
+the use of an external focus-policy component (e.g., nit_focus). By setting
+the '<config>' attribute 'focus' to "rom", the focus is obtained from an
+external ROM module named "focus". The focus ROM is expected to have a 'label'
+attribute with the value set to the label of the to-be focused client. When
+using an external focus policy, domains configured as "click" are internally
+handled like "transient" focusable domains. It is up to the external focus
+policy component to make a new focus permanent by providing an updated "focus"
+ROM.
+
 
 Hovering policy
 ---------------
@@ -213,3 +238,17 @@ The 'hover' attribute enables the reporting of the currently hovered session.
 The 'focus' attribute enables the reporting of the currently focused session.
 The 'pointer' attribute enables the reporting of the current absolute pointer
 position.
+The 'keystate' attribute enables the reporting of the currently pressed keys.
+The 'clicked' attribute enables the reporting of the last clicked-on unfocused
+client. This report is useful for a focus-managing component to implement a
+focus-on-click policy.
+
+
+Cascaded usage scenarios
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Nitpicker can be used in a nested fashion by specifying the '<config>'
+attributes 'request_framebuffer="yes"' and 'request_input="yes". If
+specified, nitpicker requests sessions to an "Input" and a "Framebuffer"
+service upon startup and uses those as input/output back end. Those services
+are usually provided by the gui_fb component.

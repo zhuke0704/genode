@@ -21,5 +21,8 @@ SRC_C += $(notdir $(wildcard $(GMP_DIR)/scanf/*.c))
 vpath %.c $(GMP_DIR)
 vpath %.c $(GMP_DIR)/printf
 vpath %.c $(GMP_DIR)/scanf
+vpath %.c $(GMP_DIR)/rand
 
 SHARED_LIB = yes
+
+CC_CXX_WARN_STRICT =

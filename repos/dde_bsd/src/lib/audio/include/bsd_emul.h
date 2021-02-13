@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2014-2015 Genode Labs GmbH
+ * Copyright (C) 2014-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _BSD_EMUL_H_
@@ -28,6 +28,7 @@
 
 void notify_play();
 void notify_record();
+void notify_hp_sense(int const);
 
 
 /*****************
@@ -47,6 +48,7 @@ typedef unsigned int   uint;
 
 typedef signed short       int16_t;
 typedef signed   int       int32_t;
+typedef signed   long long int64_t;
 typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;
 typedef unsigned int       uint32_t;
@@ -70,6 +72,7 @@ typedef signed long long off_t;
 enum {
 	EIO         = 5,
 	ENXIO       = 6,
+	EBADF       = 9,
 	ENOMEM      = 12,
 	EACCES      = 13,
 	EBUSY       = 16,
@@ -100,6 +103,7 @@ enum {
 	M_WAITOK = 0x01,
 	M_NOWAIT = 0x02,
 	M_ZERO   = 0x08,
+	M_TEMP   = 0x10,
 	/* types of memory */
 	M_DEVBUF = 2,
 };
@@ -120,6 +124,8 @@ enum {
 	PCATCH = 0x100,
 };
 
+#define PAGE_SIZE (1 << 12)
+
 #ifdef __cplusplus
 #define NULL 0
 #else
@@ -127,6 +133,8 @@ enum {
 #endif /* __cplusplus */
 
 #define nitems(_a) (sizeof((_a)) / sizeof((_a)[0]))
+
+#define offsetof(s, e) __builtin_offsetof(s, e)
 
 
 /******************
@@ -151,6 +159,13 @@ extern int hz;
  ****************/
 
 struct proc { };
+
+
+/*****************
+ ** sys/ucred.h **
+ *****************/
+
+int suser(struct proc *p);
 
 
 /****************
@@ -281,6 +296,8 @@ void mtx_leave(struct mutex *);
  ** sys/systm.h **
  *****************/
 
+#define INFSLP  __UINT64_MAX__
+
 extern int nchrdev;
 
 int enodev(void);
@@ -296,6 +313,7 @@ void *memset(void *, int, size_t);
 
 void wakeup(const volatile void*);
 int tsleep(const volatile void *, int, const char *, int);
+int tsleep_nsec(const volatile void *, int, const char *, uint64_t);
 int msleep(const volatile void *, struct mutex *, int,  const char*, int);
 
 int uiomove(void *, int, struct uio *);
@@ -549,6 +567,7 @@ enum {
 	BUS_DMA_WAITOK   = 0x0000,
 	BUS_DMA_NOWAIT   = 0x0001,
 	BUS_DMA_COHERENT = 0x0004,
+	BUS_DMA_NOCACHE  = 0x0800,
 };
 
 
@@ -615,6 +634,8 @@ enum {
  ** dev/pci/pcivar.h **
  **********************/
 
+#define PCI_FLAGS_MSI_ENABLED 0x20
+
 /* actually from pci_machdep.h */
 typedef void *pci_chipset_tag_t;
 typedef uint32_t pcitag_t;
@@ -625,6 +646,7 @@ struct pci_attach_args
 {
 	bus_dma_tag_t     pa_dmat;
 	pci_chipset_tag_t pa_pc;
+	int               pa_flags;
 	pcitag_t          pa_tag;
 	pcireg_t          pa_id;
 	pcireg_t          pa_class;
@@ -665,7 +687,11 @@ void pci_conf_write(pci_chipset_tag_t, pcitag_t, int, pcireg_t);
  ** sys/timeout.h **
  *******************/
 
-struct timeout { };
+struct timeout
+{
+	void (*fn)(void *);
+	void *arg;
+};
 
 void timeout_set(struct timeout *, void (*)(void *), void *);
 int timeout_add_msec(struct timeout *, int);
@@ -676,7 +702,30 @@ int timeout_del(struct timeout *);
  ** sys/endian.h **
  ******************/
 
+#define LITTLE_ENDIAN 1234
+#define BYTE_ORDER LITTLE_ENDIAN
+
 #define htole32(x) ((uint32_t)(x))
+
+
+/****************
+ ** sys/time.h **
+ ****************/
+
+struct timeval
+{
+	int64_t tv_sec;
+	long    tv_usec;
+};
+
+void microuptime(struct timeval *);
+
+
+/***************************
+ ** lib/libkern/libkern.h **
+ ***************************/
+
+size_t strlcpy(char *, char const *, size_t);
 
 
 #include <extern_c_end.h>

@@ -5,44 +5,35 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _WIFI__WPA_H_
 #define _WIFI__WPA_H_
 
-/* Genode includes */
-#include <base/sleep.h>
 
-/* entry function */
-extern "C" int wpa_main(int);
-extern "C" void wpa_conf_reload(void);
+namespace Genode {
+	struct Env;
+	struct Blockade;
+}
 
-class Wpa_thread : public Genode::Thread_deprecated<8 * 1024 * sizeof(long)>
+class Wpa_thread
 {
 	private:
 
-		Genode::Lock &_lock;
-		int           _exit;
-		bool          _debug_msg;
+		Genode::Blockade &_blockade;
+		int               _exit;
+
+		static void * _entry_trampoline(void *arg);
+
+		void _entry();
 
 	public:
 
-		Wpa_thread(Genode::Lock &lock, bool debug_msg)
-		:
-			Thread_deprecated("wpa_supplicant"),
-			_lock(lock), _exit(-1), _debug_msg(debug_msg) { }
-
-		void entry()
-		{
-			/* wait until the wifi driver is up and running */
-			_lock.lock();
-			_exit = wpa_main(_debug_msg);
-			Genode::sleep_forever();
-		}
+		Wpa_thread(Genode::Env &, Genode::Blockade &);
 };
 
 #endif /* _WIFI__WPA_H_ */

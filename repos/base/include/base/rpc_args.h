@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__RPC_ARGS_H_
@@ -97,10 +97,14 @@ class Genode::Rpc_in_buffer : public Rpc_in_buffer_base
 		 */
 		Rpc_in_buffer() { }
 
-		void operator = (Rpc_in_buffer<MAX_SIZE> const &from)
+		Rpc_in_buffer(const Rpc_in_buffer &in)
+		: Rpc_in_buffer_base(in.base(), in.size()) { }
+
+		Rpc_in_buffer &operator = (Rpc_in_buffer<MAX_SIZE> const &from)
 		{
 			_base = from.base();
 			_size = from.size();
+			return *this;
 		}
 
 		/**
@@ -108,14 +112,6 @@ class Genode::Rpc_in_buffer : public Rpc_in_buffer_base
 		 */
 		bool valid_string() const {
 			return (_size <= MAX_SIZE) && (_size > 0) && (_base[_size - 1] == '\0'); }
-
-		/**
-		 * Return true if buffer contains a valid null-terminated string
-		 *
-		 * \noapi
-		 * \deprecated use valid_string instead
-		 */
-		bool is_valid_string() const { return valid_string(); }
 
 		/**
 		 * Return buffer content as null-terminated string

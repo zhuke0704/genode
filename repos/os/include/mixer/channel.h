@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__MIXER__CHANNEL_H_
@@ -32,30 +32,27 @@ struct Mixer::Channel
 	typedef enum { TYPE_INVALID, INPUT, OUTPUT } Type;
 	typedef enum { MIN = 0, MAX = 100 } Volume_level;
 
-	Type   type;
-	Number number;
-	Label  label;
-	int    volume;
-	bool   active;
-	bool   muted;
+	Type   type   { TYPE_INVALID };
+	Number number { INVALID };
+	Label  label  { };
+	int    volume { MIN };
+	bool   active { false };
+	bool   muted  { false };
 
 	Channel(Genode::Xml_node const &node)
 	{
-		Genode::String<8> tmp;
-		try { node.attribute("type").value(&tmp); }
-		catch (...) { throw Invalid_channel(); }
+		typedef Genode::String<8> Type;
+		Type const type_name = node.attribute_value("type", Type());
 
-		if      (tmp == "input")  type = INPUT;
-		else if (tmp == "output") type = OUTPUT;
-		else                      throw Invalid_channel();
+		if      (type_name == "input")  type = INPUT;
+		else if (type_name == "output") type = OUTPUT;
+		else                            throw Invalid_channel();
 
-		try {
-			node.attribute("label").value(&label);
-			number = (Channel::Number) node.attribute_value<long>("number", 0);
-			volume = node.attribute_value<long>("volume", 0);
-			active = node.attribute_value<long>("active", 0);
-			muted  = node.attribute_value<long>("muted", 0);
-		} catch (...) { throw Invalid_channel(); }
+		label  = node.attribute_value("label", Label());
+		number = (Channel::Number) node.attribute_value("number", 0L);
+		volume = node.attribute_value("volume", 0L);
+		active = node.attribute_value("active", true);
+		muted  = node.attribute_value("muted",  true);
 	}
 };
 

@@ -39,9 +39,19 @@
 ## Define global configuration variables
 ##
 
+#
+# Whenever using the 'run/%' rule and the run tool spawns this Makefile again
+# when encountering a 'build' step, the build.conf is included a second time,
+# with the content taken from the environment variable. We need to reset the
+# 'REPOSITORIES' variable to prevent extending this variable twice.
+# (see https://github.com/genodelabs/genode/issues/3731)
+#
+REPOSITORIES :=
+
 -include etc/build.conf
 
 BUILD_BASE_DIR := $(CURDIR)
+DEBUG_DIR      := $(CURDIR)/debug
 INSTALL_DIR    := $(CURDIR)/bin
 
 export BASE_DIR         ?= ../base
@@ -54,6 +64,10 @@ export LIB_PROGRESS_LOG ?= $(BUILD_BASE_DIR)/progress.log
 export LIB_DEP_FILE     ?= var/libdeps
 export ECHO             ?= echo -e
 export CONTRIB_DIR
+export BOARD
+
+# Force stable sorting order
+export LC_COLLATE=C
 
 #
 # Convert user-defined directories to absolute directories
@@ -71,11 +85,34 @@ BASE_DIR     := $(realpath $(shell echo $(BASE_DIR)))
 #
 export SHELL := $(shell which bash)
 
+#
+# Fetch SPECS configuration from all source repositories and the build directory
+#
+SPECS :=
+-include $(foreach REP,$(REPOSITORIES),$(wildcard $(REP)/etc/specs.conf))
+-include $(BUILD_BASE_DIR)/etc/specs.conf
+
+#
+# \deprecated  We include the repository-specific 'specs.conf' once again as the
+#              build-dir-local etc/specs.conf (as created by create_builddir)
+#              reassigns the 'SPECS' variable instead of appending it.
+#              We sort the 'SPECS' to remove duplicates. We should remove this
+#              once the old 'create_builddir' arguments are gone.
+#
+-include $(foreach REP,$(REPOSITORIES),$(wildcard $(REP)/etc/specs.conf))
+SPECS := $(sort $(SPECS))
+
 select_from_repositories = $(firstword $(foreach REP,$(REPOSITORIES),$(wildcard $(REP)/$(1))))
 
--include $(call select_from_repositories,etc/specs.conf)
--include $(BUILD_BASE_DIR)/etc/specs.conf
-export SPEC_FILES := $(foreach SPEC,$(SPECS),$(call select_from_repositories,mk/spec/$(SPEC).mk))
+#
+# Determine the spec files to incorporate into the build configuration from the
+# repositories. Always consider the spec files present in BASE_DIR. This is
+# needed when the build system is invoked from the package-build tool where the
+# repos/base is not present in the list of REPOSITORIES.
+#
+export SPEC_FILES := \
+       $(sort $(foreach SPEC,$(SPECS),$(call select_from_repositories,mk/spec/$(SPEC).mk)) \
+              $(wildcard $(foreach SPEC,$(SPECS),$(BASE_DIR)/mk/spec/$(SPEC).mk)))
 include $(SPEC_FILES)
 export SPECS
 
@@ -98,11 +135,18 @@ endif
 # Empty DST_DIRS is interpreted as a tool-chain agnostic target, e.g., clean.
 #
 ifneq ($(DST_DIRS),)
-REQUIRED_GCC_VERSION ?= 4.9.2
+REQUIRED_GCC_VERSION ?= 8.3.0
 GCC_VERSION := $(filter $(REQUIRED_GCC_VERSION) ,$(shell $(CUSTOM_CXX) --version))
 ifneq ($(GCC_VERSION), $(REQUIRED_GCC_VERSION))
 $(error "$(CUSTOM_CXX) version $(REQUIRED_GCC_VERSION) is required")
 endif
+endif
+
+ifneq ($(STATIC_ANALYZE),)
+check_tool = $(if $(shell which $(1)),,$(error Need to have '$(1)' installed.))
+$(call check_tool,scan-build)
+
+MAKE := scan-build --use-c++=$(CUSTOM_CXX) --use-cc=$(CUSTOM_CC) $(MAKE)
 endif
 
 #
@@ -146,6 +190,7 @@ init_libdep_file: $(dir $(LIB_DEP_FILE))
 	  echo "VERBOSE_MK   ?= $(VERBOSE_MK)"; \
 	  echo "VERBOSE_DIR  ?= $(VERBOSE_DIR)"; \
 	  echo "INSTALL_DIR  ?= $(INSTALL_DIR)"; \
+	  echo "DEBUG_DIR    ?= $(DEBUG_DIR)"; \
 	  echo "SHELL        ?= $(SHELL)"; \
 	  echo "MKDIR        ?= mkdir"; \
 	  echo ""; \
@@ -165,7 +210,7 @@ $(dir $(LIB_DEP_FILE)):
 # Find all 'target.mk' files located within any of the specified subdirectories
 # ('DST_DIRS') and any repository. The 'sort' is used to remove duplicates.
 #
-TARGETS_TO_VISIT := $(shell find $(REPOSITORIES:=/src) -false \
+TARGETS_TO_VISIT := $(shell find $(wildcard $(REPOSITORIES:=/src)) -false \
                             $(foreach DST,$(DST_DIRS), \
                                       -or -path "*/src/$(DST)/**target.mk" \
                                           -printf " %P "))
@@ -195,7 +240,7 @@ endif
 # we would need to spawn one additional shell per target, which would take
 # 10-20 percent more time.
 #
-traverse_dependencies: $(dir $(LIB_DEP_FILE)) init_libdep_file init_progress_log
+traverse_target_dependencies: $(dir $(LIB_DEP_FILE)) init_libdep_file init_progress_log
 	$(VERBOSE_MK) \
 	for target in $(TARGETS_TO_VISIT); do \
 	  for rep in $(REPOSITORIES); do \
@@ -209,18 +254,41 @@ traverse_dependencies: $(dir $(LIB_DEP_FILE)) init_libdep_file init_progress_log
 	  done; \
 	done; $$result;
 
+#
+# Generate content of libdep file if manually building a single library
+# specified via the 'LIB' argument.
+#
+traverse_lib_dependencies: $(dir $(LIB_DEP_FILE)) init_libdep_file init_progress_log
+	$(VERBOSE_MK) \
+	$(MAKE) $(VERBOSE_DIR) -f $(BASE_DIR)/mk/dep_lib.mk \
+	        REP_DIR=$$rep LIB=$(LIB) \
+	        BUILD_BASE_DIR=$(BUILD_BASE_DIR) \
+	        SHELL=$(SHELL) \
+	        DARK_COL="$(DARK_COL)" DEFAULT_COL="$(DEFAULT_COL)"; \
+	echo "all: $(LIB).lib" >> $(LIB_DEP_FILE); \
+
 .PHONY: $(LIB_DEP_FILE)
-$(LIB_DEP_FILE): traverse_dependencies
+
+#
+# Depending on whether the top-level target is a list of targets or a
+# single library, we populate the LIB_DEP_FILE differently.
+#
+ifeq ($(LIB),)
+$(LIB_DEP_FILE): traverse_target_dependencies
+else
+$(LIB_DEP_FILE): traverse_lib_dependencies
+endif
+
 
 ##
 ## Second stage: build targets based on the result of the first stage
 ##
 
-$(INSTALL_DIR):
+$(INSTALL_DIR) $(DEBUG_DIR):
 	$(VERBOSE)mkdir -p $@
 
 .PHONY: gen_deps_and_build_targets
-gen_deps_and_build_targets: $(INSTALL_DIR) $(LIB_DEP_FILE)
+gen_deps_and_build_targets: $(INSTALL_DIR) $(DEBUG_DIR) $(LIB_DEP_FILE)
 	@(echo ""; \
 	  echo "ifneq (\$$(MISSING_PORTS),)"; \
 	  echo "check_ports:"; \
@@ -239,7 +307,7 @@ gen_deps_and_build_targets: $(INSTALL_DIR) $(LIB_DEP_FILE)
 	@$(VERBOSE_MK)$(MAKE) $(VERBOSE_DIR) -f $(LIB_DEP_FILE) all
 
 .PHONY: again
-again: $(INSTALL_DIR)
+again: $(INSTALL_DIR) $(DEBUG_DIR)
 	@$(VERBOSE_MK)$(MAKE) $(VERBOSE_DIR) -f $(LIB_DEP_FILE) all
 
 ##
@@ -262,9 +330,11 @@ run/%: $(call select_from_repositories,run/%.run) $(RUN_ENV)
 	$(VERBOSE)$(GENODE_DIR)/tool/run/run --genode-dir $(GENODE_DIR) \
 	                                     --name $* \
 	                                     --specs "$(SPECS)" \
+	                                     --board "$(BOARD)" \
 	                                     --repositories "$(REPOSITORIES)" \
 	                                     --cross-dev-prefix "$(CROSS_DEV_PREFIX)" \
 	                                     --qemu-args "$(QEMU_OPT)" \
+	                                     --make "$(MAKE)" \
 	                                     $(RUN_OPT) \
 	                                     --include $(RUN_SCRIPT)
 
@@ -306,7 +376,10 @@ clean_gen_files:
 clean_install_dir:
 	$(VERBOSE)(test -d $(INSTALL_DIR) && find $(INSTALL_DIR) -type l -not -readable -delete) || true
 
-clean_empty_dirs: clean_targets clean_libcache clean_run clean_gen_files clean_install_dir
+clean_debug_dir:
+	$(VERBOSE)(test -d $(DEBUG_DIR) && find $(DEBUG_DIR) -type l -not -readable -delete) || true
+
+clean_empty_dirs: clean_targets clean_libcache clean_run clean_gen_files clean_install_dir clean_debug_dir
 	$(VERBOSE)$(GNU_FIND) . -depth -type d -empty -delete
 
 clean cleanall: clean_empty_dirs

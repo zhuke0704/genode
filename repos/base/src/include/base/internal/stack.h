@@ -44,10 +44,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__STACK_H_
@@ -55,9 +55,7 @@
 
 /* Genode includes */
 #include <base/thread.h>
-#include <base/native_types.h>        /* for 'Native_utcb' */
 #include <cpu/consts.h>
-#include <ram_session/ram_session.h>  /* for 'Ram_dataspace_capability' type */
 #include <cpu_session/cpu_session.h>  /* for 'Cpu_session::Name' type */
 
 /* base-internal includes */
@@ -117,7 +115,7 @@ class Genode::Stack
 		/**
 		 * Kernel-specific thread meta data
 		 */
-		Native_thread _native_thread;
+		Native_thread _native_thread { };
 
 		/*
 		 * <- end of regular memory area
@@ -129,7 +127,7 @@ class Genode::Stack
 		/**
 		 * Kernel-specific user-level thread control block
 		 */
-		Native_utcb _utcb;
+		Native_utcb _utcb { };
 
 	public:
 

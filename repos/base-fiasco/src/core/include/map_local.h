@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__MAP_LOCAL_H_
@@ -18,12 +18,8 @@
 #include <platform.h>
 #include <util.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/ipc.h>
-#include <l4/sys/syscalls.h>
-#include <l4/sys/kdebug.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 namespace Genode {
 
@@ -40,7 +36,7 @@ namespace Genode {
 	 */
 	inline bool map_local(addr_t from_addr, addr_t to_addr, size_t num_pages)
 	{
-		Fiasco::l4_threadid_t core_pager = platform_specific()->core_pager()->native_thread_id();
+		Fiasco::l4_threadid_t core_pager = platform_specific().core_pager().native_thread_id();
 
 		addr_t offset = 0;
 		size_t page_size = get_page_size();
@@ -63,8 +59,9 @@ namespace Genode {
 			            L4_IPC_NEVER, &ipc_result);
 
 			if (L4_IPC_IS_ERROR(ipc_result)) {
-				PWRN("could not locally remap 0x%lx to 0x%lx, error code is %ld",
-				     from_addr, to_addr, L4_IPC_ERROR(ipc_result));
+				warning("could not locally remap ", Hex(from_addr), " "
+				        "to ", Hex(to_addr), ", "
+				        "error code is ", L4_IPC_ERROR(ipc_result));
 				return false;
 			}
 		}
@@ -77,9 +74,9 @@ namespace Genode {
 	 * \param virt       core-local address
 	 * \param num_pages  number of pages to unmap
 	 */
-	inline void unmap_local(addr_t virt, size_t num_pages)
+	inline void unmap_local(addr_t, size_t)
 	{
-		PERR("unmap_local() called - not implemented yet");
+		error("unmap_local() called - not implemented yet");
 	}
 }
 

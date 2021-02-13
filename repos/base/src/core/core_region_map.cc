@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -22,9 +22,8 @@ using namespace Genode;
 
 
 Region_map::Local_addr
-Core_region_map::attach(Dataspace_capability ds_cap, size_t size,
-                        off_t offset, bool use_local_addr,
-                        Region_map::Local_addr, bool executable)
+Core_region_map::attach(Dataspace_capability ds_cap, size_t, off_t, bool,
+                        Region_map::Local_addr, bool, bool)
 {
 	auto lambda = [] (Dataspace_component *ds) {
 		if (!ds)

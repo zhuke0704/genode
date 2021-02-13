@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _VIEW_H_
@@ -17,82 +17,95 @@
 /* Genode includes */
 #include <util/string.h>
 #include <util/list.h>
-#include <util/dirty_rect.h>
 #include <base/weak_ptr.h>
 #include <base/rpc_server.h>
 
 /* local includes */
-#include "mode.h"
-#include "session.h"
+#include "canvas.h"
+#include "view_owner.h"
+#include "resizeable_texture.h"
 
-class Buffer;
+namespace Nitpicker {
 
-#include <framebuffer_session/framebuffer_session.h>
-extern Framebuffer::Session *tmp_fb;
+	class Buffer;
+	class Focus;
 
+	/*
+	 * For each buffer, there is a list of views that belong to this buffer.
+	 */
+	struct Same_buffer_list_elem : List<Same_buffer_list_elem>::Element { };
+	
+	/*
+	 * The view stack holds a list of all visible view in stacking order.
+	 */
+	struct View_stack_elem : List<View_stack_elem>::Element { };
+	
+	/*
+	 * If a view has a parent, it is a list element of its parent view
+	 */
+	struct View_parent_elem : List<View_parent_elem>::Element { };
 
-typedef Genode::Dirty_rect<Rect, 3> Dirty_rect;
+	/*
+	 * Each session maintains a list of views owned by the session.
+	 */
+	struct Session_view_list_elem : List<Session_view_list_elem>::Element { };
 
-
-/*
- * For each buffer, there is a list of views that belong to this buffer.
- */
-struct Same_buffer_list_elem : Genode::List<Same_buffer_list_elem>::Element { };
-
-/*
- * The view stack holds a list of all visible view in stacking order.
- */
-struct View_stack_elem : Genode::List<View_stack_elem>::Element { };
-
-/*
- * Each session maintains a list of views owned by the session.
- */
-struct Session_view_list_elem : Genode::List<Session_view_list_elem>::Element { };
-
-/*
- * If a view has a parent, it is a list element of its parent view
- */
-struct View_parent_elem : Genode::List<View_parent_elem>::Element { };
-
-
-namespace Nitpicker { class View; }
+	class View;
+}
 
 
-/*
- * We use view capabilities as mere tokens to pass views between sessions.
- * There is no RPC interface associated with a view.
- */
-struct Nitpicker::View { GENODE_RPC_INTERFACE(); };
+namespace Gui {
+
+	/*
+	 * We use view capabilities as mere tokens to pass views between sessions.
+	 * There is no RPC interface associated with a view.
+	 */
+	struct View : Genode::Interface { GENODE_RPC_INTERFACE(); };
+}
 
 
-class View : public Same_buffer_list_elem,
-             public Session_view_list_elem,
-             public View_stack_elem,
-             public View_parent_elem,
-             public Genode::Weak_object<View>,
-             public Genode::Rpc_object<Nitpicker::View>
+class Nitpicker::View : private Same_buffer_list_elem,
+                        private Session_view_list_elem,
+                        private View_stack_elem,
+                        private View_parent_elem,
+                        private Weak_object<View>,
+                        public  Rpc_object<Gui::View>
 {
 	public:
 
-		enum { TITLE_LEN = 32 };   /* max.characters of a title */
+		typedef String<32> Title;
 
 		enum Transparent { NOT_TRANSPARENT = 0, TRANSPARENT = 1 };
 		enum Background  { NOT_BACKGROUND  = 0, BACKGROUND  = 1 };
 
+		using Weak_object<View>::weak_ptr;
+		using Weak_object<View>::weak_ptr_const;
+
 	private:
+
+		friend class View_stack;
+		friend class Gui_session;
+		friend class Locked_ptr<View>;
+
+		/*
+		 * Noncopyable
+		 */
+		View(View const &);
+		View &operator = (View const &);
 
 		Transparent const _transparent;   /* background is partly visible */
 		Background        _background;    /* view is a background view    */
 
-		View      *_parent;         /* parent view                          */
-		Rect       _geometry;       /* position and size relative to parent */
-		Rect       _label_rect;     /* position and size of label           */
-		Point      _buffer_off;     /* offset to the visible buffer area    */
-		Session   &_session;        /* session that created the view        */
-		char       _title[TITLE_LEN];
-		Dirty_rect _dirty_rect;
+		View       *_parent;          /* parent view                          */
+		Rect        _geometry   { };  /* position and size relative to parent */
+		Rect        _label_rect { };  /* position and size of label */
+		Point       _buffer_off { };  /* offset to the visible buffer area    */
+		View_owner &_owner;
+		Title       _title      { "" };
 
-		Genode::List<View_parent_elem> _children;
+		Resizeable_texture<Pixel> const &_texture;
+
+		List<View_parent_elem> _children { };
 
 		/**
 		 * Assign new parent
@@ -117,12 +130,12 @@ class View : public Same_buffer_list_elem,
 
 	public:
 
-		View(Session &session, Transparent transparent,
-		     Background bg, View *parent)
+		View(View_owner &owner, Resizeable_texture<Pixel> const &texture,
+		     Transparent transparent, Background bg, View *parent)
 		:
-			_transparent(transparent), _background(bg),
-			_parent(parent), _session(session)
-		{ title(""); }
+			_transparent(transparent), _background(bg), _parent(parent),
+			_owner(owner), _texture(texture)
+		{ }
 
 		virtual ~View()
 		{
@@ -170,14 +183,7 @@ class View : public Same_buffer_list_elem,
 
 		bool has_parent(View const &parent) const { return &parent == _parent; }
 
-		void apply_origin_policy(View &pointer_origin)
-		{
-			if (session().origin_pointer() && !has_parent(pointer_origin))
-				_assign_parent(&pointer_origin);
-
-			if (!session().origin_pointer() && has_parent(pointer_origin))
-				_assign_parent(0);
-		}
+		void apply_origin_policy(View &pointer_origin);
 
 		Rect geometry() const { return _geometry; }
 
@@ -202,27 +208,22 @@ class View : public Same_buffer_list_elem,
 		/**
 		 * Return thickness of frame that surrounds the view
 		 */
-		virtual int frame_size(Mode const &mode) const
-		{
-			if (!_session.label_visible()) return 0;
-
-			return mode.focused(_session) ? 5 : 3;
-		}
+		virtual int frame_size(Focus const &) const;
 
 		/**
 		 * Draw view-surrounding frame on canvas
 		 */
-		virtual void frame(Canvas_base &canvas, Mode const &mode) const;
+		virtual void frame(Canvas_base &canvas, Focus const &) const;
 
 		/**
 		 * Draw view on canvas
 		 */
-		virtual void draw(Canvas_base &canvas, Mode const &mode) const;
+		virtual void draw(Canvas_base &, Font const &, Focus const &) const;
 
 		/**
 		 * Set view title
 		 */
-		void title(const char *title);
+		void title(Font const &, Title const &);
 
 		/**
 		 * Return successor in view stack
@@ -244,19 +245,27 @@ class View : public Same_buffer_list_elem,
 		/**
 		 * Accessors
 		 */
-		Session &session() const { return _session; }
+		View_owner &owner() const { return _owner; }
 
-		bool belongs_to(Session const &session) const { return &session == &_session; }
-		bool same_session_as(View const &other) const { return &_session == &other._session; }
+		bool owned_by(View_owner const &owner) const
+		{
+			return &owner == &_owner;
+		}
+
+		bool same_owner_as(View const &other) const
+		{
+			return &_owner == &other._owner;
+		}
 
 		bool  top_level()   const { return _parent == 0; }
-		bool  transparent() const { return _transparent || _session.uses_alpha(); }
+		bool  transparent() const;
 		bool  background()  const { return _background; }
 		Rect  label_rect()  const { return _label_rect; }
-		bool  uses_alpha()  const { return _session.uses_alpha(); }
+		bool  uses_alpha()  const;
 		Point buffer_off()  const { return _buffer_off; }
 
-		char const *title() const { return _title; }
+		template <typename FN>
+		void with_title(FN const &fn) const { fn(_title); }
 
 		void buffer_off(Point buffer_off) { _buffer_off = buffer_off; }
 
@@ -265,38 +274,7 @@ class View : public Same_buffer_list_elem,
 		/**
 		 * Return true if input at screen position 'p' refers to the view
 		 */
-		bool input_response_at(Point p, Mode const &mode) const
-		{
-			Rect const view_rect = abs_geometry();
-
-			/* check if point lies outside view geometry */
-			if ((p.x() < view_rect.x1()) || (p.x() > view_rect.x2())
-			 || (p.y() < view_rect.y1()) || (p.y() > view_rect.y2()))
-				return false;
-
-			/* if view uses an alpha channel, check the input mask */
-			if (_session.content_client() && session().uses_alpha())
-				return session().input_mask_at(p - view_rect.p1() - _buffer_off);
-
-			return true;
-		}
-
-		/**
-		 * Mark part of view as dirty
-		 *
-		 * \param rect  dirty rectangle in absolute coordinates
-		 */
-		void mark_as_dirty(Rect rect) { _dirty_rect.mark_as_dirty(rect); }
-
-		/**
-		 * Return dirty-rectangle information
-		 */
-		Dirty_rect dirty_rect() const { return _dirty_rect; }
-
-		/**
-		 * Reset dirty rectangle
-		 */
-		void mark_as_clean() { _dirty_rect = Dirty_rect(); }
+		bool input_response_at(Point p) const;
 };
 
 #endif /* _VIEW_H_ */

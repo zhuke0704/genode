@@ -5,18 +5,18 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/signal.h>
-#include <os/attached_rom_dataspace.h>
+#include <base/log.h>
+#include <libc/component.h>
+#include <base/heap.h>
+#include <base/attached_rom_dataspace.h>
 #include <os/reporter.h>
-#include <os/server.h>
 
 /* decorator includes */
 #include <decorator/window_stack.h>
@@ -34,117 +34,124 @@ namespace Decorator {
 
 struct Decorator::Main : Window_factory_base
 {
-	Server::Entrypoint &ep;
+	Env &_env;
 
-	Window_stack window_stack = { *this };
+	Window_stack _window_stack = { *this };
 
 	/**
-	 * Install handler for responding to window-layout changes
+	 * Handler for responding to window-layout changes
 	 */
-	void handle_window_layout_update(unsigned);
+	void _handle_window_layout_update();
 
-	Signal_rpc_member<Main> window_layout_dispatcher = {
-		ep, *this, &Main::handle_window_layout_update };
+	Signal_handler<Main> _window_layout_handler = {
+		_env.ep(), *this, &Main::_handle_window_layout_update };
 
-	Attached_rom_dataspace window_layout { "window_layout" };
+	Attached_rom_dataspace _window_layout { _env, "window_layout" };
 
 	/**
-	 * Install handler for responding to pointer-position updates
+	 * Handler for responding to pointer-position updates
 	 */
-	void handle_pointer_update(unsigned);
+	void _handle_pointer_update();
 
-	Signal_rpc_member<Main> pointer_dispatcher = {
-		ep, *this, &Main::handle_pointer_update };
+	Signal_handler<Main> _pointer_handler = {
+		_env.ep(), *this, &Main::_handle_pointer_update };
 
-	Lazy_volatile_object<Attached_rom_dataspace> pointer;
+	Constructible<Attached_rom_dataspace> _pointer { };
 
-	Window_base::Hover hover;
+	Window_base::Hover _hover { };
 
-	Reporter hover_reporter = { "hover" };
+	Reporter _hover_reporter = { _env, "hover" };
 
 	/**
-	 * Nitpicker connection used to sync animations
+	 * GUI connection used to sync animations
 	 */
-	Nitpicker::Connection nitpicker;
+	Gui::Connection _gui { _env };
 
-	bool window_layout_update_needed = false;
+	bool _window_layout_update_needed = false;
 
-	Animator animator;
+	Animator _animator { };
 
-	Theme theme { *Genode::env()->heap() };
+	Heap _heap { _env.ram(), _env.rm() };
 
-	Reporter decorator_margins_reporter = { "decorator_margins" };
+	Theme _theme { _env.ram(), _env.rm(), _heap };
+
+	Reporter _decorator_margins_reporter = { _env, "decorator_margins" };
 
 	/**
-	 * Process the update every 'frame_period' nitpicker sync signals. The
-	 * 'frame_cnt' holds the counter of the nitpicker sync signals.
+	 * Process the update every 'frame_period' GUI sync signals. The
+	 * 'frame_cnt' holds the counter of the GUI sync signals.
 	 *
 	 * A lower 'frame_period' value makes the decorations more responsive
 	 * but it also puts more load on the system.
 	 *
-	 * If the nitpicker sync signal fires every 10 milliseconds, a
+	 * If the GUI sync signal fires every 10 milliseconds, a
 	 * 'frame_period' of 2 results in an update rate of 1000/20 = 50 frames per
 	 * second.
 	 */
-	unsigned frame_cnt = 0;
-	unsigned frame_period = 2;
+	unsigned _frame_cnt = 0;
+	unsigned _frame_period = 2;
 
 	/**
-	 * Install handler for responding to nitpicker sync events
+	 * Install handler for responding to GUI sync events
 	 */
-	void handle_nitpicker_sync(unsigned);
+	void _handle_gui_sync();
 
-	Signal_rpc_member<Main> nitpicker_sync_dispatcher = {
-		ep, *this, &Main::handle_nitpicker_sync };
+	Signal_handler<Main> _gui_sync_handler = {
+		_env.ep(), *this, &Main::_handle_gui_sync };
 
-	Config config;
+	void _trigger_sync_handling()
+	{
+		_gui.framebuffer()->sync_sigh(_gui_sync_handler);
+	}
 
-	void handle_config(unsigned);
+	Attached_rom_dataspace _config { _env, "config" };
 
-	Signal_rpc_member<Main> config_dispatcher = {
-		ep, *this, &Main::handle_config};
+	Config _decorator_config { _config.xml() };
+
+	void _handle_config();
+
+	Signal_handler<Main> _config_handler = {
+		_env.ep(), *this, &Main::_handle_config};
 
 	/**
 	 * Constructor
 	 */
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Main(Env &env) : _env(env)
 	{
 		/*
 		 * Eagerly upgrade the session quota in order to be able to create a
 		 * high amount of view handles.
 		 *
 		 * XXX Consider upgrading the session quota on demand by responding
-		 * to Out_of_metadata exceptions raised by the create_view
+		 * to Out_of_ram or Out_of_caps exceptions raised by the create_view
 		 * and view_handle operations. Currently, these exceptions will
 		 * abort the decorator.
 		 */
-		Genode::env()->parent()->upgrade(nitpicker, "ram_quota=256K");
+		_gui.upgrade_ram(256*1024);
 
-		Genode::config()->sigh(config_dispatcher);
-		handle_config(0);
+		_config.sigh(_config_handler);
+		_handle_config();
 
-		window_layout.sigh(window_layout_dispatcher);
+		_window_layout.sigh(_window_layout_handler);
 
 		try {
-			pointer.construct("pointer");
-			pointer->sigh(pointer_dispatcher);
+			_pointer.construct(_env, "pointer");
+			_pointer->sigh(_pointer_handler);
 		} catch (Genode::Rom_connection::Rom_connection_failed) {
-			PINF("pointer information unavailable");
-
-			PDBG("constructed=%d", pointer.constructed());
+			Genode::log("pointer information unavailable");
 		}
 
-		nitpicker.framebuffer()->sync_sigh(nitpicker_sync_dispatcher);
+		_trigger_sync_handling();
 
-		hover_reporter.enabled(true);
+		_hover_reporter.enabled(true);
 
-		decorator_margins_reporter.enabled(true);
+		_decorator_margins_reporter.enabled(true);
 
-		Genode::Reporter::Xml_generator xml(decorator_margins_reporter, [&] ()
+		Genode::Reporter::Xml_generator xml(_decorator_margins_reporter, [&] ()
 		{
 			xml.node("floating", [&] () {
 
-				Theme::Margins const margins = theme.decor_margins();
+				Theme::Margins const margins = _theme.decor_margins();
 
 				xml.attribute("top",    margins.top);
 				xml.attribute("bottom", margins.bottom);
@@ -154,8 +161,8 @@ struct Decorator::Main : Window_factory_base
 		});
 
 		/* import initial state */
-		handle_pointer_update(0);
-		handle_window_layout_update(0);
+		_handle_pointer_update();
+		_handle_window_layout_update();
 	}
 
 	/**
@@ -163,9 +170,9 @@ struct Decorator::Main : Window_factory_base
 	 */
 	Window_base *create(Xml_node window_node) override
 	{
-		return new (env()->heap())
-			Window(attribute(window_node, "id", 0UL), nitpicker, animator,
-			       *env()->ram_session(), theme, config);
+		return new (_heap)
+			Window(_env, window_node.attribute_value("id", 0UL),
+			       _gui, _animator, _theme, _decorator_config);
 	}
 
 	/**
@@ -173,21 +180,21 @@ struct Decorator::Main : Window_factory_base
 	 */
 	void destroy(Window_base *window) override
 	{
-		Genode::destroy(env()->heap(), static_cast<Window *>(window));
+		Genode::destroy(_heap, static_cast<Window *>(window));
 	}
 };
 
 
-void Decorator::Main::handle_config(unsigned)
+void Decorator::Main::_handle_config()
 {
-	Genode::config()->reload();
+	_config.update();
 
 	/* notify all windows to consider the updated policy */
-	window_stack.for_each_window([&] (Window_base &window) {
+	_window_stack.for_each_window([&] (Window_base &window) {
 		static_cast<Window &>(window).adapt_to_changed_config(); });
 
 	/* trigger redraw of the window stack */
-	handle_window_layout_update(0);
+	_handle_window_layout_update();
 }
 
 
@@ -239,94 +246,77 @@ static void update_hover_report(Genode::Xml_node pointer_node,
 }
 
 
-void Decorator::Main::handle_window_layout_update(unsigned)
+void Decorator::Main::_handle_window_layout_update()
 {
-	window_layout.update();
+	_window_layout.update();
 
-	window_layout_update_needed = true;
+	_window_layout_update_needed = true;
+
+	_trigger_sync_handling();
 }
 
 
-void Decorator::Main::handle_nitpicker_sync(unsigned)
+void Decorator::Main::_handle_gui_sync()
 {
-	if (frame_cnt++ < frame_period)
+	if (_frame_cnt++ < _frame_period)
 		return;
 
-	frame_cnt = 0;
+	_frame_cnt = 0;
 
 	bool model_updated = false;
 
-	if (window_layout_update_needed && window_layout.valid()) {
+	auto flush_window_stack_changes = [&] () {
+		_window_stack.update_gui_views(); };
 
-		try {
-			Xml_node xml(window_layout.local_addr<char>(),
-			             window_layout.size());
-			window_stack.update_model(xml);
+	if (_window_layout_update_needed) {
 
-			model_updated = true;
+		_window_stack.update_model(_window_layout.xml(), flush_window_stack_changes);
 
-			/*
-			 * A decorator element might have appeared or disappeared under
-			 * the pointer.
-			 */
-			if (pointer.constructed() && pointer->valid())
-				update_hover_report(Xml_node(pointer->local_addr<char>()),
-				                    window_stack, hover, hover_reporter);
+		model_updated = true;
 
-		} catch (Xml_node::Invalid_syntax) {
+		/*
+		 * A decorator element might have appeared or disappeared under
+		 * the pointer.
+		 */
+		if (_pointer.constructed())
+			update_hover_report(_pointer->xml(), _window_stack, _hover, _hover_reporter);
 
-			/*
-			 * An error occured with processing the XML model. Flush the
-			 * internal representation.
-			 */
-			window_stack.flush();
-		}
-
-		window_layout_update_needed = false;
+		_window_layout_update_needed = false;
 	}
 
-	bool const windows_animated = window_stack.schedule_animated_windows();
+	bool const windows_animated = _window_stack.schedule_animated_windows();
 
 	/*
 	 * To make the perceived animation speed independent from the setting of
-	 * 'frame_period', we update the animation as often as the nitpicker
-	 * sync signal occurs.
+	 * 'frame_period', we update the animation as often as the GUI sync signal
+	 * occurs.
 	 */
-	for (unsigned i = 0; i < frame_period; i++)
-		animator.animate();
+	for (unsigned i = 0; i < _frame_period; i++)
+		_animator.animate();
 
 	if (!model_updated && !windows_animated)
 		return;
 
-	window_stack.update_nitpicker_views();
+	_window_stack.update_gui_views();
+	_gui.execute();
+
+	/*
+	 * Disable sync handling when becoming idle
+	 */
+	if (!_animator.active())
+		_gui.framebuffer()->sync_sigh(Signal_context_capability());
 }
 
 
-void Decorator::Main::handle_pointer_update(unsigned)
+void Decorator::Main::_handle_pointer_update()
 {
-	if (!pointer.constructed())
+	if (!_pointer.constructed())
 		return;
 
-	pointer->update();
+	_pointer->update();
 
-	if (pointer->valid())
-		update_hover_report(Xml_node(pointer->local_addr<char>()),
-		                    window_stack, hover, hover_reporter);
+	update_hover_report(_pointer->xml(), _window_stack, _hover, _hover_reporter);
 }
 
 
-/************
- ** Server **
- ************/
-
-namespace Server {
-
-	char const *name() { return "decorator_ep"; }
-
-	size_t stack_size() { return 8*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Decorator::Main main(ep);
-	}
-}
+void Libc::Component::construct(Libc::Env &env) { static Decorator::Main main(env); }

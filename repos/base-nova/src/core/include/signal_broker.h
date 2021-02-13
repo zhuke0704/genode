@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__SIGNAL_BROKER_H_
@@ -17,9 +17,14 @@
 /* Genode includes */
 #include <base/tslab.h>
 
+/* NOVA includes */
+#include <nova/capability_space.h>
+
 /* core-local includes */
+#include <platform.h>
 #include <signal_source_component.h>
 #include <signal_source/capability.h>
+#include <signal_context_slab.h>
 
 namespace Genode { class Signal_broker; }
 
@@ -30,12 +35,11 @@ class Genode::Signal_broker
 
 		Allocator                            &_md_alloc;
 		Rpc_entrypoint                       &_source_ep;
-		Object_pool<Signal_context_component> _obj_pool;
+		Object_pool<Signal_context_component> _obj_pool { };
 		Rpc_entrypoint                       &_context_ep;
 		Signal_source_component               _source;
 		Signal_source_capability              _source_cap;
-		Tslab<Signal_context_component,
-		      960*sizeof(long)>               _contexts_slab { &_md_alloc };
+		Signal_context_slab                   _context_slab { _md_alloc };
 
 	public:
 
@@ -58,7 +62,7 @@ class Genode::Signal_broker
 			_source_ep.dissolve(&_source);
 
 			/* free all signal contexts */
-			while (Signal_context_component *r = _contexts_slab.first_object())
+			while (Signal_context_component *r = _context_slab.any_signal_context())
 				free_context(reinterpret_cap_cast<Signal_context>(r->cap()));
 		}
 
@@ -80,23 +84,24 @@ class Genode::Signal_broker
 			Native_capability sm = _source.blocking_semaphore();
 
 			if (!sm.valid()) {
-				PWRN("signal receiver sm is not valid");
+				warning("signal receiver sm is not valid");
 				for (;;);
 				return Signal_context_capability();
 			}
 
-			Native_capability si(cap_map()->insert());
+			Native_capability si = Capability_space::import(cap_map().insert());
 			Signal_context_capability cap = reinterpret_cap_cast<Signal_context>(si);
 
-			uint8_t res = Nova::create_si(cap.local_name(), __core_pd_sel, imprint,
-			                              sm.local_name());
+			uint8_t res = Nova::create_si(cap.local_name(),
+			                              platform_specific().core_pd_sel(),
+			                              imprint, sm.local_name());
 			if (res != Nova::NOVA_OK) {
-				PWRN("creating signal failed - error %u", res);
+				warning("creating signal failed - error ", res);
 				return Signal_context_capability();
 			}
 
 			/* the _contexts_slab may throw Allocator::Out_of_memory */
-			_obj_pool.insert(new (&_contexts_slab) Signal_context_component(cap));
+			_obj_pool.insert(new (&_context_slab) Signal_context_component(cap));
 
 			/* return unique capability for the signal context */
 			return cap;
@@ -112,17 +117,17 @@ class Genode::Signal_broker
 			_obj_pool.apply(context_cap, lambda);
 
 			if (!context) {
-				PWRN("%p - specified signal-context capability has wrong type %lx",
-					 this, context_cap.local_name());
+				warning(this, " - specified signal-context capability has wrong type ",
+				        Hex(context_cap.local_name()));
 				return;
 			}
-			destroy(&_contexts_slab, context);
+			destroy(&_context_slab, context);
 
 			Nova::revoke(Nova::Obj_crd(context_cap.local_name(), 0));
-			cap_map()->remove(context_cap.local_name(), 0);
+			cap_map().remove(context_cap.local_name(), 0);
 		}
 
-		void submit(Signal_context_capability cap, unsigned cnt)
+		void submit(Signal_context_capability, unsigned)
 		{
 			/*
 			 * On NOVA, signals are submitted directly to the kernel, not

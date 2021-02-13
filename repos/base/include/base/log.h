@@ -5,22 +5,24 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__LOG_H_
 #define _INCLUDE__BASE__LOG_H_
 
 #include <base/output.h>
-#include <base/lock.h>
+#include <base/mutex.h>
+#include <trace/timestamp.h>
 
 namespace Genode {
 
 	class Log;
 	class Raw;
+	class Trace_output;
 }
 
 
@@ -44,10 +46,12 @@ class Genode::Log
 
 	private:
 
-		Lock    _lock;
-		void    _acquire(Type);
-		void    _release();
+		Mutex _mutex { };
+
 		Output &_output;
+
+		void _acquire(Type);
+		void _release();
 
 	public:
 
@@ -58,9 +62,9 @@ class Genode::Log
 		{
 			/*
 			 * This function is being inlined. Hence, we try to keep it as
-			 * small as possible. For this reason, the lock operations are
+			 * small as possible. For this reason, the mutex operations are
 			 * performed by the '_acquire' and '_release' functions instead of
-			 * using a lock guard.
+			 * using a mutex guard.
 			 */
 			_acquire(type);
 			Output::out_args(_output, args...);
@@ -99,6 +103,36 @@ class Genode::Raw
 };
 
 
+class Genode::Trace_output
+{
+	private:
+
+		Mutex _mutex { };
+
+		Output &_output;
+
+		void _acquire();
+		void _release();
+
+	public:
+
+		Trace_output(Output &output) : _output(output) { }
+
+		template <typename... ARGS>
+		void output(ARGS &&... args)
+		{
+			_acquire();
+			Output::out_args(_output, args...);
+			_release();
+		}
+
+		/**
+		 * Return component-global singleton instance of the 'Trace_output'
+		 */
+		static Trace_output &trace_output();
+};
+
+
 namespace Genode {
 
 	/**
@@ -110,6 +144,10 @@ namespace Genode {
 
 	/**
 	 * Write 'args' as a warning message to the log
+	 *
+	 * The message is automatically prefixed with "Warning: ". Please refer to
+	 * the description of the 'error' function regarding the convention of
+	 * formatting error/warning messages.
 	 */
 	template <typename... ARGS>
 	void warning(ARGS &&... args) { Log::log().output(Log::WARNING, args...); }
@@ -117,6 +155,11 @@ namespace Genode {
 
 	/**
 	 * Write 'args' as an error message to the log
+	 *
+	 * The message is automatically prefixed with "Error: ". Hence, the
+	 * message argument does not need to additionally state that it is an error
+	 * message. By convention, the actual message should be brief, starting
+	 * with a lower-case character.
 	 */
 	template <typename... ARGS>
 	void error(ARGS &&... args) { Log::log().output(Log::ERROR, args...); }
@@ -125,10 +168,20 @@ namespace Genode {
 	/**
 	 * Write 'args' directly via the kernel (i.e., kernel debugger)
 	 *
-	 * This function is intended for temporarly debugging purposes only.
+	 * This function is intended for temporarily debugging purposes only.
 	 */
 	template <typename... ARGS>
 	void raw(ARGS &&... args) { Raw::output(args...); }
+
+
+	/**
+	 * Write 'args' to the trace buffer if tracing is enabled
+	 *
+	 * The message is prefixed with a timestamp value
+	 */
+	template <typename... ARGS>
+	void trace(ARGS && ... args) {
+		Trace_output::trace_output().output(Trace::timestamp(), ": ", args...); }
 }
 
 #endif /* _INCLUDE__BASE__LOG_H_ */

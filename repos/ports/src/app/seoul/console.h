@@ -6,7 +6,7 @@
 
 /*
  * Copyright (C) 2012 Intel Corporation
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is distributed under the terms of the GNU General Public License
  * version 2.
@@ -21,59 +21,93 @@
 #ifndef _CONSOLE_H_
 #define _CONSOLE_H_
 
-/* Genode includes */
-#include <util/string.h>
-#include <framebuffer_session/connection.h>
-#include <input_session/connection.h>
-#include <timer_session/connection.h>
+/* base includes */
+#include <base/env.h>
 #include <dataspace/client.h>
+#include <util/string.h>
+#include <util/bit_array.h>
+
+/* os includes */
+#include <framebuffer_session/connection.h>
+#include <input/event.h>
+#include <gui_session/connection.h>
+#include <timer_session/connection.h>
+
+#include <os/pixel_rgb888.h>
 
 /* local includes */
+#include "keyboard.h"
 #include "synced_motherboard.h"
+#include "guest_memory.h"
 
-/* includes for I/O */
-#include <base/env.h>
-#include <util/list.h>
-#include <input/event.h>
+namespace Seoul {
+	class Console;
+	using Genode::Pixel_rgb888;
+	using Genode::Dataspace_capability;
+}
 
-using Genode::List;
-using Genode::Thread_deprecated;
-
-class Vancouver_console : public Thread_deprecated<8192>, public StaticReceiver<Vancouver_console>
+class Seoul::Console : public StaticReceiver<Seoul::Console>
 {
 	private:
 
-		Genode::Lock                 _startup_lock;
-		Synced_motherboard          &_motherboard;
-		Genode::Lock                 _console_lock;
-		short                       *_pixels;
-		char                        *_guest_fb;
-		unsigned long                _fb_size;
-		Genode::Dataspace_capability _fb_ds;
-		Genode::size_t               _vm_fb_size;
-		VgaRegs                     *_regs;
-		Framebuffer::Mode            _fb_mode;
-		bool                         _left, _middle, _right;
+		Genode::Env                  &_env;
+		Motherboard                  &_unsynchronized_motherboard;
+		Synced_motherboard           &_motherboard;
+		Framebuffer::Session         &_framebuffer;
+		Input::Session_client        &_input;
+		Seoul::Guest_memory          &_memory;
+		Dataspace_capability const    _fb_ds;
+		Framebuffer::Mode    const    _fb_mode;
+		size_t               const    _fb_size;
+		Dataspace_capability const    _fb_vm_ds;
+		Genode::addr_t       const    _fb_vm_mapping;
+		Genode::addr_t       const    _vm_phys_fb;
+		short                        *_pixels;
+		Genode::Surface<Pixel_rgb888> _surface;
+		unsigned                      _timer    { 0 };
+		Keyboard                      _vkeyb    { _motherboard };
+		char                         *_guest_fb { nullptr };
+		VgaRegs                      *_regs     { nullptr };
+		bool                          _left     { false };
+		bool                          _middle   { false };
+		bool                          _right    { false };
 
-		unsigned _input_to_ps2mouse(Input::Event const *);
+		unsigned _input_to_ps2mouse(Input::Event const &);
+		unsigned _input_to_ps2wheel(Input::Event const &);
+
+		Genode::Signal_handler<Console> _signal_input
+			= { _env.ep(), *this, &Console::_handle_input };
+
+		void _handle_input();
+		unsigned _handle_fb();
+
+		void _reactivate();
+
+		/*
+		 * Noncopyable
+		 */
+		Console(Console const &);
+		Console &operator = (Console const &);
 
 	public:
 
+		Genode::addr_t attached_framebuffer() const { return _fb_vm_mapping; }
+		Genode::addr_t framebuffer_size()     const { return _fb_size; }
+		Genode::addr_t vm_phys_framebuffer()  const { return _vm_phys_fb; }
+
 		/* bus callbacks */
-		bool receive(MessageConsole &msg);
-		bool receive(MessageMemRegion &msg);
+		bool receive(MessageConsole &);
+		bool receive(MessageMemRegion &);
+		bool receive(MessageTimeout &);
 
 		void register_host_operations(Motherboard &);
-
-		/* initialisation */
-		void entry();
 
 		/**
 		 * Constructor
 		 */
-		Vancouver_console(Synced_motherboard &,
-		                  Genode::size_t vm_fb_size,
-		                  Genode::Dataspace_capability fb_ds);
+		Console(Genode::Env &env, Genode::Allocator &alloc,
+		        Synced_motherboard &, Motherboard &,
+		        Gui::Connection &, Seoul::Guest_memory &);
 };
 
 #endif /* _CONSOLE_H_ */

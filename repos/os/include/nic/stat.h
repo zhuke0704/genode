@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2013-2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NIC__STAT_H_
@@ -29,13 +29,13 @@ class Nic::Measurement
 
 		Timer::Connection &_timer;
 
-		Net::Ethernet_frame::Mac_address _mac;
+		Net::Mac_address _mac { };
 
 		struct stat
 		{
 			Genode::uint64_t size;
 			unsigned long count;
-		} _stat, _drop;
+		} _stat { 0, 0 }, _drop { 0, 0 };
 
 		Genode::addr_t _timestamp;
 
@@ -51,9 +51,7 @@ class Nic::Measurement
 		Measurement(Timer::Connection &timer)
 		:
 			_timer(timer), _timestamp(0)
-		{
-			_stat.size = _stat.count = _drop.size = _drop.count = 0;
-		}
+		{ }
 
 		void set_mac(void * mac)
 		{

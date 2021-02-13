@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _PLATFORM__PROPERTY_MESSAGE_H_
@@ -16,10 +16,10 @@
 
 /* Genode includes */
 #include <util/misc_math.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 /* board-specific includes */
-#include <drivers/board_base.h>
+#include <drivers/defs/rpi.h>
 
 namespace Platform {
 	using namespace Genode;
@@ -36,7 +36,7 @@ namespace Platform {
  */
 struct Platform::Property_message
 {
-	uint32_t buf_size;
+	uint32_t buf_size = 0;
 
 	enum Code { REQUEST          = 0,
 	            RESPONSE_SUCCESS = 0x80000000 };
@@ -46,7 +46,7 @@ struct Platform::Property_message
 	/*
 	 * Start of the buffer that contains a sequence of tags
 	 */
-	char buffer[];
+	char buffer[0];
 
 	/*
 	 * There must be no member variables after this point
@@ -75,7 +75,7 @@ struct Platform::Property_message
 		 */
 		uint32_t volatile const len;
 
-		char payload[];
+		char payload[0];
 
 		/**
 		 * Utility for returning a response size of a tag type
@@ -117,7 +117,7 @@ struct Platform::Property_message
 			template <typename... ARGS>
 			Placeable(ARGS... args) : T(args...) { }
 
-			inline void *operator new (size_t, void *ptr) { return ptr; }
+			inline void *operator new (__SIZE_TYPE__, void *ptr) { return ptr; }
 		};
 
 		template <typename T, typename... ARGS>
@@ -160,7 +160,7 @@ struct Platform::Property_message
 			construct_request<TAG>(0, request_args...);
 		}
 
-		inline void *operator new (size_t, void *ptr) { return ptr; }
+		inline void *operator new (__SIZE_TYPE__, void *ptr) { return ptr; }
 	};
 
 	void reset()
@@ -199,28 +199,27 @@ struct Platform::Property_message
 
 	static unsigned channel() { return 8; }
 
-	static Board_base::Videocore_cache_policy cache_policy()
+	static Rpi::Videocore_cache_policy cache_policy()
 	{
-		return Board_base::NON_COHERENT; /* for channel 8 only */
+		return Rpi::NON_COHERENT; /* for channel 8 only */
 	}
 
 	void dump(char const *label)
 	{
 		unsigned const *buf = (unsigned *)this;
-		printf("%s message:\n", label);
+		log(label, " message:");
 		for (unsigned i = 0;; i++) {
 			for (unsigned j = 0; j < 8; j++) {
 				unsigned const msg_word_idx = i*8 + j;
-				printf(" %08x", buf[msg_word_idx]);
+				log(" ", Hex(buf[msg_word_idx]));
 				if (msg_word_idx*sizeof(unsigned) < buf_size)
 					continue;
-				printf("\n");
 				return;
 			}
 		}
 	}
 
-	inline void *operator new (size_t, void *ptr) { return ptr; }
+	inline void *operator new (__SIZE_TYPE__, void *ptr) { return ptr; }
 };
 
 #endif /* _PLATFORM__PROPERTY_MESSAGE_H_ */

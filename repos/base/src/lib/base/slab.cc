@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <base/slab.h>
@@ -23,6 +23,8 @@ using namespace Genode;
  */
 class Genode::Slab::Block
 {
+	friend struct Genode::Slab::Entry;
+
 	public:
 
 		Block *next = this;  /* next block in ring     */
@@ -45,7 +47,7 @@ class Genode::Slab::Block
 		 * the Slab allocator).
 		 */
 
-		char _data[];  /* dynamic data (state table and slab entries) */
+		char _data[0];  /* dynamic data (state table and slab entries) */
 
 		/*
 		 * Caution! no member variables allowed below this line!
@@ -70,6 +72,12 @@ class Genode::Slab::Block
 		 * Determine block index of specified slab entry
 		 */
 		int _slab_entry_idx(Entry *e);
+
+		/**
+		 * These functions are called by Slab::Entry.
+		 */
+		void inc_avail(Entry &e);
+		void dec_avail() { _avail--; }
 
 	public:
 
@@ -96,19 +104,13 @@ class Genode::Slab::Block
 		 * Return a used slab block entry
 		 */
 		Entry *any_used_entry();
-
-		/**
-		 * These functions are called by Slab::Entry.
-		 */
-		void inc_avail(Entry &e);
-		void dec_avail() { _avail--; }
 };
 
 
 struct Genode::Slab::Entry
 {
 		Block &block;
-		char   data[];
+		char   data[0];
 
 		/*
 		 * Caution! no member variables allowed below this line!
@@ -123,6 +125,9 @@ struct Genode::Slab::Entry
 		{
 			block.inc_avail(*this);
 		}
+
+		bool used() {
+			return block._state(block._slab_entry_idx(this)) == Block::USED; }
 
 		/**
 		 * Lookup Entry by given address
@@ -220,10 +225,8 @@ Slab::Slab(size_t slab_size, size_t block_size, void *initial_sb,
 	if (!_curr_sb && _backing_store)
 		_curr_sb = _new_slab_block();
 
-	if (!_curr_sb) {
-		PERR("failed to obtain initial slab block");
+	if (!_curr_sb)
 		throw Out_of_memory();
-	}
 
 	/* init first slab block */
 	construct_at<Block>(_curr_sb, *this);
@@ -238,8 +241,12 @@ Slab::~Slab()
 		return;
 
 	/* free backing store */
-	while (_num_blocks > 1)
+	while (_num_blocks > 1) {
+		/* never free the initial block */
+		if (_curr_sb == _initial_sb)
+			_curr_sb = _curr_sb->next;
 		_free_curr_sb();
+	}
 
 	/* release last block */
 	_release_backing_store(_curr_sb);
@@ -259,7 +266,7 @@ Slab::Block *Slab::_new_slab_block()
 void Slab::_release_backing_store(Block *block)
 {
 	if (block->avail() != _entries_per_block)
-		PWRN("freeing non-empty slab block");
+		error("freeing non-empty slab block");
 
 	_total_avail -= block->avail();
 	_num_blocks--;
@@ -314,6 +321,13 @@ void Slab::insert_sb(void *ptr)
 
 bool Slab::alloc(size_t size, void **out_addr)
 {
+	/* too large for us ? */
+	if (size > _slab_size) {
+		error("requested size ", size, " is larger then slab size ",
+		      _slab_size);
+		return false;
+	}
+
 	/*
 	 * If we run out of slab, we need to allocate a new slab block. For the
 	 * special case that this block is allocated using the allocator that by
@@ -326,17 +340,25 @@ bool Slab::alloc(size_t size, void **out_addr)
 
 		/* allocate new block for slab */
 		_nested = true;
-		Block * const sb = _new_slab_block();
-		_nested = false;
 
-		if (!sb) return false;
+		try {
+			Block * const sb = _new_slab_block();
 
-		/*
-		 * The new block has the maximum number of available slots and
-		 * so we can insert it at the beginning of the sorted block
-		 * list.
-		 */
-		_insert_sb(sb);
+			_nested = false;
+
+			if (!sb) return false;
+
+			/*
+			 * The new block has the maximum number of available slots and
+			 * so we can insert it at the beginning of the sorted block
+			 * list.
+			 */
+			_insert_sb(sb);
+		}
+		catch (...) {
+			_nested = false;
+			throw;
+		}
 	}
 
 	/* skip completely occupied slab blocks, detect cycles */
@@ -362,7 +384,19 @@ void Slab::_free(void *addr)
 	if (!e)
 		return;
 
+	if (addr < (void *)((addr_t)&e->block + sizeof(e->block)) ||
+	    addr >= (void *)((addr_t)&e->block + _block_size)) {
+		error("slab block ", Hex_range<addr_t>((addr_t)&e->block, _block_size),
+		      " is corrupt - slab address ", addr);
+		return;
+	}
+
 	Block &block = e->block;
+
+	if (!e->used()) {
+		error("slab address ", addr, " freed which is unused");
+		return;
+	}
 
 	e->~Entry();
 	_total_avail++;

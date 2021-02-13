@@ -1,71 +1,11 @@
-#
-# \brief  Pistachio-specific test-environment supplements
-# \author Norman Feske
-# \date   2010-08-25
-#
-# This file is meant to be used as '--include' argument for 'tool/run'.
-#
+proc binary_name_ld_lib_so { } { return "ld-pistachio.lib.so" }
+proc binary_name_core_o    { } { return "core-pistachio.o"    }
+proc binary_name_timer     { } { return "pit_timer_drv" }
 
+proc kernel_files { } { return { pistachio sigma0-pistachio kickstart-pistachio } }
 
-##
-# Install files needed to boot via PXE
-#
-proc install_pxe_bootloader_to_run_dir { } {
-	exec cp [genode_dir]/tool/boot/pulsar [run_dir]/boot/pulsar
-	exec cp [genode_dir]/tool/boot/bender [run_dir]/boot/bender
-}
-
-
-##
-# Read the location of the Pistachio user directory from 'etc/pistachio.conf'
-#
-proc pistachio_user_dir { } {
-	global _pistachio_user_dir
-
-	if {![info exists _pistachio_user_dir]} {
-		if {[file exists etc/pistachio.conf]} {
-			set _pistachio_user_dir [exec sed -n "/^PISTACHIO_USER_BUILD_DIR/s/^.*=\\s*//p" etc/pistachio.conf]
-		} else {
-			set _pistachio_user_dir "[pwd]/l4"
-		}
-	}
-	return $_pistachio_user_dir
-}
-
-
-##
-# Read the location of the Pistachio kernel directory from 'etc/pistachio.conf'
-# or return a good heuristic
-#
-proc pistachio_kernel { } {
-	global _pistachio_kernel
-
-	if {![info exists _pistachio_kernel]} {
-		if {[file exists etc/pistachio.conf]} {
-			set _pistachio_kernel [exec sed -n "/^PISTACHIO_KERNEL/s/^.*=\\s*//p" etc/pistachio.conf]
-			if {$_pistachio_kernel == ""} {
-				set _pistachio_kernel [file dirname [file dirname [pistachio_user_dir]]]/kernel/build/x86-kernel
-			}
-		} else {
-			set _pistachio_kernel "[pwd]/bin/kernel"
-		}
-	}
-	return $_pistachio_kernel
-}
-
-
-##
-# Return whether the kernel is provided from the outside
-#
-proc kernel_external { } {
-	if {[pistachio_kernel] == "[pwd]/bin/kernel"} { return 0 }
-	return 1
-}
-
-
-proc run_boot_string { } {
-	return "L4Ka::Pistachio -"
-}
+proc run_boot_string   { } { return "\n\r\033\\\[1m\033\\\[33mL4Ka::Pistachio -" }
+proc core_link_address { } { return "0x02000000" }
 
 
 ##
@@ -73,43 +13,65 @@ proc run_boot_string { } {
 #
 proc run_boot_dir {binaries} {
 
-	exec mkdir -p [run_dir]/pistachio
+	#
+	# Build kernel and dynamic linker on demand, if not yet present in
+	# '[run_dir]/genode/'
+	#
+	set kernel_arg ""
+	set ld_arg     ""
+	if {![file exists [run_dir]/genode/pistachio]} { set kernel_arg "kernel/pistachio" }
+	if {![file exists [run_dir]/genode/ld.lib.so]} { set ld_arg     "lib/ld/pistachio" }
+	set targets "$kernel_arg $ld_arg"
+
+	if {[llength $targets]} { build $targets }
+
+	if {$kernel_arg != ""} {
+		file copy -force bin/pistachio           [run_dir]/genode/pistachio
+		file copy -force bin/sigma0-pistachio    [run_dir]/genode/sigma0-pistachio
+		file copy -force bin/kickstart-pistachio [run_dir]/genode/kickstart-pistachio
+	}
+
+	build_core_image $binaries
 
 	#
-	# Collect contents of the ISO image
+	# Move kernel files to distinct location within the boot directory so that
+	# we can remove [run_dir]/genode after the core image has been built.
 	#
-	copy_and_strip_genode_binaries_to_run_dir $binaries
+	exec mkdir -p [run_dir]/boot
+	file copy -force [run_dir]/genode/pistachio           [run_dir]/boot/kernel
+	file copy -force [run_dir]/genode/sigma0-pistachio    [run_dir]/boot/sigma0
+	file copy -force [run_dir]/genode/kickstart-pistachio [run_dir]/boot/kickstart
+	remove_genode_dir
 
-	if {![kernel_external] && ![file exists [pistachio_kernel]]} { build { kernel } }
-
-	exec cp [pistachio_kernel] [run_dir]/pistachio/kernel
-	exec cp [pistachio_user_dir]/serv/sigma0/sigma0 [run_dir]/pistachio
-	exec cp [pistachio_user_dir]/util/kickstart/kickstart [run_dir]/pistachio
+	exec mv [run_dir]/image.elf [run_dir]/boot/image.elf
 
 	if {[have_include "image/iso"] || [have_include "image/disk"]} {
-		#
-		# Install isolinux/GRUB files and bender
-		#
-		install_iso_bootloader_to_run_dir
+
+		if {[have_include "image/disk"]} {
+			exec mkdir -p [run_dir]/boot/grub
+			exec cp [genode_dir]/tool/boot/bender [run_dir]/boot/bender
+		}
+
+		if {[have_include "image/iso"]} {
+			install_iso_bootloader_to_run_dir
+		}
 
 		#
-		# Generate grub config file
+		# Generate GRUB config file
 		#
 		# The core binary is part of the 'binaries' list but it must
 		# appear right after 'sigma0' as boot module. Hence the special case.
 		#
-		set fh [open "[run_dir]/boot/grub/menu.lst" "WRONLY CREAT TRUNC"]
-		puts $fh "timeout 0"
-		puts $fh "default 0"
-		puts $fh "\ntitle Genode on L4ka::Pistachio"
-		puts $fh " kernel /pistachio/kickstart"
-		puts $fh " module /pistachio/kernel"
-		puts $fh " module /pistachio/sigma0"
-		puts $fh " module /genode/core"
-		puts $fh " module /genode/config"
-		foreach binary $binaries {
-			if {$binary != "core"} {
-				puts $fh " module /genode/$binary" } }
+		set fh [open "[run_dir]/boot/grub/grub.cfg" "WRONLY CREAT TRUNC"]
+		puts $fh "set timeout=0"
+		puts $fh "menuentry 'Genode on L4ka::Pistachio' {"
+		puts $fh " insmod multiboot"
+		puts $fh " multiboot /boot/bender"
+		puts $fh " module /boot/kickstart"
+		puts $fh " module /boot/kernel"
+		puts $fh " module /boot/sigma0"
+		puts $fh " module /boot/image.elf"
+		puts $fh "}"
 		close $fh
 	}
 
@@ -129,17 +91,27 @@ proc run_boot_dir {binaries} {
 		#
 		set fh [open "[run_dir]/config-52-54-00-12-34-56" "WRONLY CREAT TRUNC"]
 		puts $fh " exec /boot/bender"
-		puts $fh " load /pistachio/kickstart"
-		puts $fh " load /pistachio/kernel"
-		puts $fh " load /pistachio/sigma0"
-		puts $fh " load /genode/core"
-		puts $fh " load /genode/config"
-		puts $fh " load /genode/config"
-		foreach binary $binaries {
-			if {$binary != "core"} {
-				puts $fh " load /genode/$binary" } }
+		puts $fh " load /boot/kickstart"
+		puts $fh " load /boot/kernel"
+		puts $fh " load /boot/sigma0"
+		puts $fh " load /boot/image.elf"
 		close $fh
 
 		generate_tftp_config
 	}
+}
+
+
+##
+# Base source archive within depot
+#
+proc base_src { } {
+
+	if {[have_spec x86_32]} { return base-pistachio }
+
+	global specs
+
+	puts stderr "Test requires base-pistachio kernel archive, which is missing for this build configuration"
+	puts stderr "  SPECS=\"$specs\""
+	exit 0
 }

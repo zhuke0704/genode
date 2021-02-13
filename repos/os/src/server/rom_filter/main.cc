@@ -5,31 +5,33 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
 #include <util/arg_string.h>
 #include <util/xml_generator.h>
+#include <util/retry.h>
 #include <base/heap.h>
-#include <base/env.h>
+#include <base/component.h>
+#include <base/attached_ram_dataspace.h>
 #include <root/component.h>
 
 /* local includes */
 #include "input_rom_registry.h"
 
 namespace Rom_filter {
-	using Server::Entrypoint;
+	using Genode::Entrypoint;
 	using Genode::Rpc_object;
 	using Genode::Sliced_heap;
-	using Genode::env;
-	using Genode::Lazy_volatile_object;
+	using Genode::Constructible;
 	using Genode::Xml_generator;
 	using Genode::size_t;
+	using Genode::Interface;
 
 	class  Output_buffer;
 	class  Session_component;
@@ -43,7 +45,7 @@ namespace Rom_filter {
 /**
  * Interface used by the sessions to obtain the XML output data
  */
-struct Rom_filter::Output_buffer
+struct Rom_filter::Output_buffer : Interface
 {
 	virtual size_t content_size() const = 0;
 	virtual size_t export_content(char *dst, size_t dst_len) const = 0;
@@ -51,28 +53,35 @@ struct Rom_filter::Output_buffer
 
 
 class Rom_filter::Session_component : public Rpc_object<Genode::Rom_session>,
-                                      public Session_list::Element
+                                      private Session_list::Element
 {
 	private:
 
-		Signal_context_capability _sigh;
+		friend class Genode::List<Session_component>;
+
+		Genode::Env &_env;
+
+		Signal_context_capability _sigh { };
 
 		Output_buffer const &_output_buffer;
 
 		Session_list &_sessions;
 
-		Lazy_volatile_object<Genode::Attached_ram_dataspace> _ram_ds;
+		Constructible<Genode::Attached_ram_dataspace> _ram_ds { };
 
 	public:
 
-		Session_component(Session_list &sessions, Output_buffer const &output_buffer)
+		Session_component(Genode::Env &env, Session_list &sessions,
+		                  Output_buffer const &output_buffer)
 		:
-			_output_buffer(output_buffer), _sessions(sessions)
+			_env(env), _output_buffer(output_buffer), _sessions(sessions)
 		{
 			_sessions.insert(this);
 		}
 
 		~Session_component() { _sessions.remove(this); }
+
+		using Session_list::Element::next;
 
 		void notify_client()
 		{
@@ -90,7 +99,7 @@ class Rom_filter::Session_component : public Rpc_object<Genode::Rom_session>,
 			if (!_ram_ds.constructed()
 			 || _output_buffer.content_size() > _ram_ds->size()) {
 
-				_ram_ds.construct(env()->ram_session(), _output_buffer.content_size());
+				_ram_ds.construct(_env.ram(), _env.rm(), _output_buffer.content_size());
 			}
 
 			char             *dst = _ram_ds->local_addr<char>();
@@ -118,26 +127,28 @@ class Rom_filter::Root : public Genode::Root_component<Session_component>
 {
 	private:
 
+		Genode::Env   &_env;
 		Output_buffer &_output_buffer;
-		Session_list   _sessions;
+		Session_list   _sessions { };
 
 	protected:
 
-		Session_component *_create_session(const char *args)
+		Session_component *_create_session(const char *) override
 		{
 			/*
 			 * We ignore the name of the ROM module requested
 			 */
-			return new (md_alloc()) Session_component(_sessions, _output_buffer);
+			return new (md_alloc()) Session_component(_env, _sessions, _output_buffer);
 		}
 
 	public:
 
-		Root(Entrypoint &ep, Output_buffer &output_buffer,
+		Root(Genode::Env       &env,
+		     Output_buffer     &output_buffer,
 		     Genode::Allocator &md_alloc)
 		:
-			Genode::Root_component<Session_component>(&ep.rpc_ep(), &md_alloc),
-			_output_buffer(output_buffer)
+			Genode::Root_component<Session_component>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _output_buffer(output_buffer)
 		{ }
 
 		void notify_clients()
@@ -151,43 +162,51 @@ class Rom_filter::Root : public Genode::Root_component<Session_component>
 struct Rom_filter::Main : Input_rom_registry::Input_rom_changed_fn,
                           Output_buffer
 {
-	Entrypoint &_ep;
+	Genode::Env &_env;
 
-	Sliced_heap _sliced_heap = { env()->ram_session(), env()->rm_session() };
+	Sliced_heap _sliced_heap { _env.ram(), _env.rm() };
 
-	Input_rom_registry _input_rom_registry { *env()->heap(), _ep, *this };
+	Genode::Heap _heap { _env.ram(), _env.rm() };
 
-	Genode::Lazy_volatile_object<Genode::Attached_ram_dataspace> _xml_ds;
+	Input_rom_registry _input_rom_registry { _env, _heap, *this };
+
+	Genode::Constructible<Genode::Attached_ram_dataspace> _xml_ds { };
 
 	size_t _xml_output_len = 0;
 
 	void _evaluate_node(Xml_node node, Xml_generator &xml);
 	void _evaluate();
 
-	Root _root = { _ep, *this, _sliced_heap };
+	Root _root = { _env, *this, _sliced_heap };
 
-	Genode::Signal_rpc_member<Main> _config_dispatcher =
-		{ _ep, *this, &Main::_handle_config };
+	Genode::Attached_rom_dataspace _config { _env, "config" };
 
-	void _handle_config(unsigned)
+	bool _verbose = false;
+
+	Genode::Signal_handler<Main> _config_handler =
+		{ _env.ep(), *this, &Main::_handle_config };
+
+	void _handle_config()
 	{
-		Genode::config()->reload();
+		_config.update();
+
+		_verbose = _config.xml().attribute_value("verbose", false);
 
 		/*
 		 * Create buffer for generated XML data
 		 */
 		Genode::Number_of_bytes xml_ds_size = 4096;
 
-		xml_ds_size = Genode::config()->xml_node().attribute_value("buffer", xml_ds_size);
+		xml_ds_size = _config.xml().attribute_value("buffer", xml_ds_size);
 
 		if (!_xml_ds.constructed() || xml_ds_size != _xml_ds->size())
-			_xml_ds.construct(env()->ram_session(), xml_ds_size);
+			_xml_ds.construct(_env.ram(), _env.rm(), xml_ds_size);
 
 		/*
 		 * Obtain inputs
 		 */
 		try {
-			_input_rom_registry.update_config(Genode::config()->xml_node());
+			_input_rom_registry.update_config(_config.xml());
 		} catch (Xml_node::Nonexistent_sub_node) { }
 
 		/*
@@ -209,28 +228,23 @@ struct Rom_filter::Main : Input_rom_registry::Input_rom_changed_fn,
 	/**
 	 * Output_buffer interface
 	 */
-	size_t content_size() const override
-	{
-		return _xml_output_len;
-	}
+	size_t content_size() const override { return _xml_output_len; }
 
 	/**
 	 * Output_buffer interface
 	 */
-	size_t export_content(char *dst, size_t dst_len) const
+	size_t export_content(char *dst, size_t dst_len) const override
 	{
 		size_t const len = Genode::min(dst_len, _xml_output_len);
 		Genode::memcpy(dst, _xml_ds->local_addr<char>(), len);
 		return len;
 	}
 
-	Main(Entrypoint &ep) : _ep(ep)
+	Main(Genode::Env &env) : _env(env)
 	{
-		env()->parent()->announce(_ep.manage(_root));
-
-		Genode::config()->sigh(_config_dispatcher);
-
-		_handle_config(0);
+		_env.parent().announce(_env.ep().manage(_root));
+		_config.sigh(_config_handler);
+		_handle_config();
 	}
 };
 
@@ -257,16 +271,15 @@ void Rom_filter::Main::_evaluate_node(Xml_node node, Xml_generator &xml)
 					has_value_node.attribute_value("value", Input_value());
 
 				try {
-					Xml_node config = Genode::config()->xml_node();
-
 					Input_value const input_value =
-						_input_rom_registry.query_value(config, input_name);
+						_input_rom_registry.query_value(_config.xml(), input_name);
 
 					if (input_value == expected_input_value)
 						condition_satisfied = true;
 				}
 				catch (Input_rom_registry::Nonexistent_input_value) {
-					PWRN("could not obtain input value for input %s", input_name.string());
+					if (_verbose)
+						Genode::warning("could not obtain input value for input ", input_name);
 				}
 			}
 
@@ -277,29 +290,69 @@ void Rom_filter::Main::_evaluate_node(Xml_node node, Xml_generator &xml)
 				if (node.has_sub_node("else"))
 					_evaluate_node(node.sub_node("else"), xml);
 			}
-		}
+		} else
 
-		if (node.has_type("inline")) {
-			char const *src     = node.content_base();
-			size_t      src_len = node.content_size();
+		if (node.has_type("attribute")) {
 
-			/*
-			 * The 'Xml_generator::append' method puts the content at a fresh
-			 * line, and also adds a newline before the closing tag. We strip
-			 * eventual newlines from the '<inline>' node content to avoid
-			 * double newlines in the output.
-			 */
+			typedef Genode::String<128> String;
 
-			/* remove leading newline */
-			if (src_len > 0 && src[0] == '\n') {
-				src++;
-				src_len--;
+			/* assign input value to attribute value */
+			if (node.has_attribute("input")) {
+
+				Input_name const input_name =
+					node.attribute_value("input", Input_name());
+				try {
+					Input_value const input_value =
+						_input_rom_registry.query_value(_config.xml(), input_name);
+
+					xml.attribute(node.attribute_value("name", String()).string(),
+					              input_value);
+				}
+				catch (Input_rom_registry::Nonexistent_input_value) {
+					if (_verbose)
+						Genode::warning("could not obtain input value for input ", input_name);
+				}
 			}
 
-			/* remove trailing whilespace including newlines */
-			for (; src_len > 0 && Genode::is_whitespace(src[src_len - 1]); src_len--);
+			/* assign fixed attribute value */
+			else {
+				xml.attribute(node.attribute_value("name",  String()).string(),
+				              node.attribute_value("value", String()).string());
+			}
+		} else
 
-			xml.append(src, src_len);
+		if (node.has_type("inline")) {
+
+			node.with_raw_content([&] (char const *src, size_t len) {
+
+				/*
+				 * The 'Xml_generator::append' method puts the content at a
+				 * fresh line, and also adds a newline before the closing tag.
+				 * We strip eventual newlines from the '<inline>' node content
+				 * to avoid double newlines in the output.
+				 */
+
+				/* remove leading newline */
+				if (len > 0 && src[0] == '\n') {
+					src++;
+					len--;
+				}
+
+				/* remove trailing whilespace including newlines */
+				for (; len > 0 && Genode::is_whitespace(src[len - 1]); len--);
+
+				xml.append(src, len);
+			});
+		} else
+
+		if (node.has_type("input")) {
+
+			Input_name const input_name =
+				node.attribute_value("name", Input_name());
+
+			try {
+				_input_rom_registry.gen_xml(input_name, xml); }
+			catch (...) { }
 		}
 	};
 
@@ -310,22 +363,31 @@ void Rom_filter::Main::_evaluate_node(Xml_node node, Xml_generator &xml)
 void Rom_filter::Main::_evaluate()
 {
 	try {
-		Xml_node output = Genode::config()->xml_node().sub_node("output");
+		Xml_node output = _config.xml().sub_node("output");
 
 		if (!output.has_attribute("node")) {
-			PERR("missing 'node' attribute in '<output>' node");
+			Genode::error("missing 'node' attribute in '<output>' node");
 			return;
 		}
 
 		Node_type_name const node_type =
 			output.attribute_value("node", Node_type_name(""));
 
-		/* generate output */
-		Xml_generator xml(_xml_ds->local_addr<char>(),
-		                  _xml_ds->size(), node_type.string(),
-		                  [&] () { _evaluate_node(output, xml); });
-
-		_xml_output_len = xml.used();
+		/*
+		 * Generate output, expand dataspace on demand
+		 */
+		enum { UPGRADE = 4096, NUM_ATTEMPTS = ~0L };
+		Genode::retry<Xml_generator::Buffer_exceeded>(
+			[&] () {
+				Xml_generator xml(_xml_ds->local_addr<char>(),
+				                  _xml_ds->size(), node_type.string(),
+				                  [&] () { _evaluate_node(output, xml); });
+				_xml_output_len = xml.used();
+			},
+			[&] () {
+				_xml_ds.construct(_env.ram(), _env.rm(), _xml_ds->size() + UPGRADE);
+			},
+			NUM_ATTEMPTS);
 
 	} catch (Xml_node::Nonexistent_sub_node) { }
 
@@ -333,14 +395,5 @@ void Rom_filter::Main::_evaluate()
 }
 
 
-namespace Server {
+void Component::construct(Genode::Env &env) { static Rom_filter::Main main(env); }
 
-	char const *name() { return "conditional_rom_ep"; }
-
-	size_t stack_size() { return 4*1024*sizeof(long); }
-
-	void construct(Entrypoint &ep)
-	{
-		static Rom_filter::Main main(ep);
-	}
-}

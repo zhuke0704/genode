@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__PRINT_LINES_H_
@@ -66,28 +66,33 @@ void Genode::print_lines(char const *string, size_t len, FUNC const &func)
 		if (Genode::strcmp(first_line, string, num_indent_chars) == 0)
 			string += num_indent_chars;
 
-		size_t const line_len =
-			({
-				size_t i = 0;
-				for (; string[i] && i < len && string[i] != '\n'; i++);
+		size_t line_len  = 0;
+		size_t skip_char = 1;
 
-				/* the newline character belongs to the line */
-				if (string[i] == '\n')
-					i++;
-
-				i;
-			});
+		for (; line_len < len; line_len++) {
+			if (string[line_len] == '\0' || string[line_len] == '\n') {
+				line_len++;
+				break;
+			}
+			if (line_len == MAX_LINE_LEN) {
+				skip_char = 0;
+				break;
+			}
+		}
 
 		if (!line_len)
 			break;
 
-		/*
-		 * Copy line from (untrusted) caller to local line buffer
-		 */
-		char line_buf[MAX_LINE_LEN];
-		Genode::strncpy(line_buf, string, Genode::min(line_len + 1, sizeof(line_buf)));
+		/* buffer for sub-string of the input string plus null-termination */
+		char line_buf[MAX_LINE_LEN + 1];
+
+		 /* one more byte for the null termination */
+		copy_cstring(line_buf, string, line_len - skip_char + 1);
+
+		/* process null-terminated string in buffer */
 		func(line_buf);
 
+		/* move forward to the next sub-string to process */
 		string += line_len;
 		len    -= line_len;
 	}

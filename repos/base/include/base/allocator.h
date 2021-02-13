@@ -5,17 +5,19 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__ALLOCATOR_H_
 #define _INCLUDE__BASE__ALLOCATOR_H_
 
+#include <util/interface.h>
 #include <base/stdint.h>
 #include <base/exception.h>
+#include <base/quota_guard.h>
 
 namespace Genode {
 
@@ -30,7 +32,7 @@ namespace Genode {
 /**
  * Deallocator interface
  */
-struct Genode::Deallocator
+struct Genode::Deallocator : Interface
 {
 	/**
 	 * Free block a previously allocated block
@@ -59,7 +61,7 @@ struct Genode::Allocator : Deallocator
 	/**
 	 * Exception type
 	 */
-	class Out_of_memory : public Exception { };
+	typedef Out_of_ram Out_of_memory;
 
 	/**
 	 * Destructor
@@ -72,6 +74,10 @@ struct Genode::Allocator : Deallocator
 	 * \param size      block size to allocate
 	 * \param out_addr  resulting pointer to the new block,
 	 *                  undefined in the error case
+	 *
+	 * \throw           Out_of_ram
+	 * \throw           Out_of_caps
+	 *
 	 * \return          true on success
 	 */
 	virtual bool alloc(size_t size, void **out_addr) = 0;
@@ -83,6 +89,9 @@ struct Genode::Allocator : Deallocator
 	 * a non-void type. By providing this method, we prevent the
 	 * compiler from warning us about "dereferencing type-punned
 	 * pointer will break strict-aliasing rules".
+	 *
+	 * \throw Out_of_ram
+	 * \throw Out_of_caps
 	 */
 	template <typename T> bool alloc(size_t size, T **out_addr)
 	{
@@ -105,9 +114,12 @@ struct Genode::Allocator : Deallocator
 	/**
 	 * Allocate block and signal error as an exception
 	 *
-	 * \param   size block size to allocate
-	 * \return  pointer to the new block
-	 * \throw   Out_of_memory
+	 * \param size  block size to allocate
+	 *
+	 * \throw       Out_of_ram
+	 * \throw       Out_of_caps
+	 *
+	 * \return      pointer to the new block
 	 */
 	void *alloc(size_t size)
 	{
@@ -152,12 +164,6 @@ struct Genode::Range_allocator : Allocator
 
 		bool ok()    const { return value == OK; }
 		bool error() const { return !ok(); }
-
-		/*
-		 * \deprecated  use 'ok' and 'error' instead
-		 */
-		bool is_ok()    const { return ok(); }
-		bool is_error() const { return error(); }
 	};
 
 	/**
@@ -191,7 +197,7 @@ struct Genode::Range_allocator : Allocator
 	 * overload resolution would not find 'Allocator::free(void *)'.
 	 */
 	virtual void free(void *addr) = 0;
-	virtual void free(void *addr, size_t size) = 0;
+	virtual void free(void *addr, size_t size) override = 0;
 
 	/**
 	 * Return the sum of available memory
@@ -213,11 +219,11 @@ struct Genode::Range_allocator : Allocator
 };
 
 
-void *operator new    (Genode::size_t, Genode::Allocator *);
-void *operator new [] (Genode::size_t, Genode::Allocator *);
+void *operator new    (__SIZE_TYPE__, Genode::Allocator *);
+void *operator new [] (__SIZE_TYPE__, Genode::Allocator *);
 
-void *operator new    (Genode::size_t, Genode::Allocator &);
-void *operator new [] (Genode::size_t, Genode::Allocator &);
+void *operator new    (__SIZE_TYPE__, Genode::Allocator &);
+void *operator new [] (__SIZE_TYPE__, Genode::Allocator &);
 
 
 /**
@@ -247,6 +253,19 @@ void *operator new [] (Genode::size_t, Genode::Allocator &);
  */
 void operator delete (void *, Genode::Deallocator *);
 void operator delete (void *, Genode::Deallocator &);
+
+
+/**
+ * The compiler looks for a delete operator signature matching the one of the
+ * new operator. If none is found, it omits (silently!) the generation of
+ * implicitly delete calls, which are needed when an exception is thrown within
+ * the constructor of the object.
+ */
+inline void operator delete (void *ptr, Genode::Allocator *a) {
+	operator delete (ptr, static_cast<Genode::Deallocator *>(a)); }
+
+inline void operator delete (void *ptr, Genode::Allocator &a) {
+	operator delete (ptr, *static_cast<Genode::Deallocator *>(&a)); }
 
 
 /**

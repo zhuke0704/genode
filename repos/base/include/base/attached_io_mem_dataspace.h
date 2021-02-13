@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__ATTACHED_IO_MEM_DATASPACE_H_
@@ -31,10 +31,15 @@ class Genode::Attached_io_mem_dataspace
 {
 	private:
 
-		Region_map                  &_env_rm;
-		Io_mem_connection            _mmio;
-		Io_mem_dataspace_capability  _ds;
-		void                        *_local_addr;
+		Region_map                 &_env_rm;
+		Io_mem_connection           _mmio;
+		Io_mem_dataspace_capability _ds;
+		Region_map::Local_addr      _local_addr;
+
+		static void *_with_sub_page_offset(void *local, addr_t io_base)
+		{
+			return (void *)((addr_t)local | (io_base & (addr_t)0xfff));
+		}
 
 	public:
 
@@ -45,10 +50,13 @@ class Genode::Attached_io_mem_dataspace
 		 * \param size            size of resource
 		 * \param write_combined  enable write combining for the resource
 		 *
-		 * \throw Parent::Service_denied
-		 * \throw Parent::Quota_exceeded
-		 * \throw Parent::Unavailable
-		 * \throw Rm_session::Attach_failed
+		 * \throw Service_denied
+		 * \throw Insufficient_ram_quota
+		 * \throw Insufficient_cap_quota
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
+		 * \throw Region_map::Region_conflict
+		 * \throw Region_map::Invalid_dataspace
 		 */
 		Attached_io_mem_dataspace(Env &env, Genode::addr_t base, Genode::size_t size,
 		                          bool write_combined = false)
@@ -56,30 +64,8 @@ class Genode::Attached_io_mem_dataspace
 			_env_rm(env.rm()),
 			_mmio(env, base, size, write_combined),
 			_ds(_mmio.dataspace()),
-			_local_addr(env.rm().attach(_ds))
-		{
-			/* apply sub-page offset to virtual address */
-			_local_addr = (void *)((addr_t)_local_addr | (base & (addr_t)0xfff));
-		}
-
-		/**
-		 * Constructor
-		 *
-		 * \noapi
-		 * \deprecated  Use the constructor with 'Env &' as first
-		 *              argument instead
-		 */
-		Attached_io_mem_dataspace(Genode::addr_t base, Genode::size_t size,
-		                          bool write_combined = false)
-		:
-			_env_rm(*env()->rm_session()),
-			_mmio(base, size, write_combined),
-			_ds(_mmio.dataspace()),
-			_local_addr(_env_rm.attach(_ds))
-		{
-			/* apply sub-page offset to virtual address */
-			_local_addr = (void *)((addr_t)_local_addr | (base & (addr_t)0xfff));
-		}
+			_local_addr(_with_sub_page_offset(env.rm().attach(_ds), base))
+		{ }
 
 		/**
 		 * Destructor

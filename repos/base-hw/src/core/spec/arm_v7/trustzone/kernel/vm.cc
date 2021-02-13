@@ -6,70 +6,70 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
+#include <kernel/cpu.h>
 #include <kernel/vm.h>
-
-extern void *         _mt_nonsecure_entry_pic;
-extern Genode::addr_t _tz_client_context;
-extern Genode::addr_t _mt_master_context_begin;
-extern Genode::addr_t _tz_master_context;
+#include <cpu/vm_state_trustzone.h>
 
 using namespace Kernel;
 
 
-Kernel::Vm::Vm(void                   * const state,
-               Kernel::Signal_context * const context,
-               void                   * const table)
-:  Cpu_job(Cpu_priority::MIN, 0),
-  _state((Genode::Vm_state * const)state),
-  _context(context), _table(0)
+Kernel::Vm::Vm(unsigned,
+               Genode::Vm_state       & state,
+               Kernel::Signal_context & context,
+               Identity               & id)
+: Kernel::Object { *this },
+  Cpu_job(Cpu_priority::MIN, 0),
+  _state(state),
+  _context(context),
+  _id(id),
+  _vcpu_context(cpu_pool().primary_cpu())
 {
-	affinity(cpu_pool()->primary_cpu());
-
-	Genode::memcpy(&_tz_master_context, &_mt_master_context_begin,
-	               sizeof(Cpu_context));
+	affinity(cpu_pool().primary_cpu());
 }
 
 
-Kernel::Vm::~Vm() {}
-
-
-void Vm::exception(unsigned const cpu)
+void Vm::exception(Cpu & cpu)
 {
-	switch(_state->cpu_exception) {
-	case Genode::Cpu_state::INTERRUPT_REQUEST:
+	switch(_state.cpu_exception) {
+	case Genode::Cpu_state::INTERRUPT_REQUEST: [[fallthrough]]
 	case Genode::Cpu_state::FAST_INTERRUPT_REQUEST:
-		_interrupt(cpu);
+		_interrupt(cpu.id());
 		return;
 	case Genode::Cpu_state::DATA_ABORT:
-		_state->dfar = Cpu::Dfar::read();
+		_state.dfar = Cpu::Dfar::read();
+		[[fallthrough]];
 	default:
 		pause();
-		_context->submit(1);
+		_context.submit(1);
 	}
 }
 
 
 bool secure_irq(unsigned const i);
 
-void Vm::proceed(unsigned const cpu)
+
+extern "C" void monitor_mode_enter_normal_world(Genode::Vm_state&, void*);
+extern void * kernel_stack;
+
+
+void Vm::proceed(Cpu & cpu)
 {
-	unsigned const irq = _state->irq_injection;
+	unsigned const irq = _state.irq_injection;
 	if (irq) {
-		if (secure_irq(irq)) {
-			PWRN("Refuse to inject secure IRQ into VM");
+		if (cpu.pic().secure(irq)) {
+			Genode::raw("Refuse to inject secure IRQ into VM");
 		} else {
-			pic()->trigger(irq);
-			_state->irq_injection = 0;
+			cpu.pic().trigger(irq);
+			_state.irq_injection = 0;
 		}
 	}
-	mtc()->switch_to(reinterpret_cast<Cpu::Context*>(_state), cpu,
-	                 (addr_t)&_mt_nonsecure_entry_pic,
-	                 (addr_t)&_tz_client_context);
+
+	monitor_mode_enter_normal_world(_state, (void*) cpu.stack_start());
 }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__RPC_H_
@@ -43,12 +43,12 @@
 		typedef ::Genode::Trait::Call_return<ret_type>::Type Ret_type; \
 		\
 		template <typename SERVER, typename RET> \
-		static void serve(SERVER &server, Server_args &args, RET &ret) { \
-			::Genode::Meta::call_member<RET, SERVER, Server_args> \
-				(ret, server, args, &SERVER::func_name); } \
+		static RET serve(SERVER &server, Server_args &args) { \
+			return ::Genode::Meta::call_member<RET, SERVER, Server_args> \
+				(server, args, &SERVER::func_name); } \
 		\
 		static const char* name() { return #func_name; } \
-	};
+	}
 
 /**
  * Shortcut for 'GENODE_RPC_THROW' for an RPC that throws no exceptions

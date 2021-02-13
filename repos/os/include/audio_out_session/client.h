@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__AUDIO_OUT_SESSION__CLIENT_H_
@@ -16,6 +16,7 @@
 
 #include <base/env.h>
 #include <base/rpc_client.h>
+#include <base/attached_dataspace.h>
 #include <audio_out_session/audio_out_session.h>
 
 namespace Audio_out {
@@ -26,11 +27,12 @@ namespace Audio_out {
 
 struct Audio_out::Signal
 {
-	Genode::Signal_receiver           recv;
-	Genode::Signal_context            context;
+	Genode::Signal_receiver           recv    { };
+	Genode::Signal_context            context { };
 	Genode::Signal_context_capability cap;
 
 	Signal() : cap(recv.manage(&context)) { }
+	~Signal() { recv.dissolve(&context); }
 
 	void wait() { recv.wait_for_signal(); }
 };
@@ -40,8 +42,10 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 {
 	private:
 
-		Signal _progress;
-		Signal _alloc;
+		Genode::Attached_dataspace _shared_ds;
+
+		Signal _progress { };
+		Signal _alloc    { };
 
 		Genode::Signal_transmitter _data_avail;
 
@@ -50,18 +54,20 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 		/**
 		 * Constructor
 		 *
+		 * \param rm               region map for attaching shared buffer
 		 * \param session          session capability
 		 * \param alloc_signal     true, install 'alloc_signal' receiver
 		 * \param progress_signal  true, install 'progress_signal' receiver
 		 */
-		Session_client(Genode::Capability<Session> session, bool alloc_signal,
-		               bool progress_signal)
+		Session_client(Genode::Region_map &rm,
+		               Genode::Capability<Session> session,
+		               bool alloc_signal, bool progress_signal)
 		:
 		  Genode::Rpc_client<Session>(session),
+		  _shared_ds(rm, call<Rpc_dataspace>()),
 		  _data_avail(call<Rpc_data_avail_sigh>())
 		{
-			/* ask server for stream data space and attach it */
-			_stream = static_cast<Stream *>(Genode::env()->rm_session()->attach(call<Rpc_dataspace>()));
+			_stream = _shared_ds.local_addr<Stream>();
 
 			if (progress_signal)
 				progress_sigh(_progress.cap);
@@ -75,13 +81,13 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 		 ** Signals **
 		 *************/
 
-		void progress_sigh(Genode::Signal_context_capability sigh) {
+		void progress_sigh(Genode::Signal_context_capability sigh) override {
 			call<Rpc_progress_sigh>(sigh); }
 
-		void alloc_sigh(Genode::Signal_context_capability sigh) {
+		void alloc_sigh(Genode::Signal_context_capability sigh) override {
 			call<Rpc_alloc_sigh>(sigh); }
 
-		Genode::Signal_context_capability data_avail_sigh() {
+		Genode::Signal_context_capability data_avail_sigh() override {
 			return Genode::Signal_context_capability(); }
 
 
@@ -89,7 +95,7 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 		 ** Session interface **
 		 ***********************/
 
-		void start()
+		void start() override
 		{
 			call<Rpc_start>();
 
@@ -97,7 +103,7 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 			stream()->reset();
 		}
 
-		void stop() { call<Rpc_stop>();  }
+		void stop() override { call<Rpc_stop>();  }
 
 
 		/**********************************
@@ -110,8 +116,8 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 		void wait_for_progress()
 		{
 			if (!_progress.cap.valid()) {
-				PWRN("Progress signal is not installed, will not block "
-				     "(enable in 'Audio_out::Connection')");
+				Genode::warning("Progress signal is not installed, will not block "
+				                "(enable in 'Audio_out::Connection')");
 				return;
 			}
 
@@ -127,8 +133,8 @@ class Audio_out::Session_client : public Genode::Rpc_client<Session>
 		void wait_for_alloc()
 		{ 
 			if (!_alloc.cap.valid()) {
-				PWRN("Alloc signal is not installed, will not block "
-				     "(enable in 'Audio_out::Connection')");
+				Genode::warning("Alloc signal is not installed, will not block "
+				                "(enable in 'Audio_out::Connection')");
 				return;
 			}
 

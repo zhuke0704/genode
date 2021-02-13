@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__STACK_ALLOCATOR_H_
@@ -44,9 +44,9 @@ class Genode::Stack_allocator
 				/* the first index is used by main thread */
 				_reserve(0, 1);
 			}
-		} _alloc;
+		} _alloc { };
 
-		Lock _threads_lock;
+		Mutex _threads_mutex { };
 
 	public:
 

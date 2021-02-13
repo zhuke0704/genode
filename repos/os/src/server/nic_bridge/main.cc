@@ -5,20 +5,19 @@
  */
 
 /*
- * Copyright (C) 2010-2016 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode */
+#include <base/attached_rom_dataspace.h>
+#include <base/component.h>
 #include <base/env.h>
-#include <cap_session/connection.h>
+#include <base/log.h>
 #include <nic_session/connection.h>
 #include <nic/packet_allocator.h>
-#include <nic/xml_node.h>
-#include <os/config.h>
-#include <os/server.h>
 
 /* local includes */
 #include <component.h>
@@ -26,54 +25,32 @@
 
 struct Main
 {
-	Server::Entrypoint &ep;
+	Genode::Env                    &env;
+	Genode::Entrypoint             &ep        { env.ep() };
+	Genode::Heap                    heap      { env.ram(), env.rm() };
+	Genode::Attached_rom_dataspace  config    { env, "config" };
+	Net::Vlan                       vlan      { };
+	Genode::Session_label     const nic_label { "uplink" };
+	bool                      const verbose   { config.xml().attribute_value("verbose", false) };
+	Net::Nic                        nic       { env, heap, vlan, verbose,
+	                                            nic_label };
+	Net::Root                       root      { env, nic, heap, verbose,
+	                                            config.xml() };
 
-	Net::Vlan vlan;
-	Net::Nic  nic  = { ep, vlan };
-	Net::Root root = { ep, nic, Genode::env()->heap() };
-
-	void handle_config()
-	{
-		/* read MAC address prefix from config file */
-		try {
-			Nic::Mac_address mac;
-			Genode::config()->xml_node().attribute("mac").value(&mac);
-			Genode::memcpy(&Net::Mac_allocator::mac_addr_base, &mac,
-			               sizeof(Net::Mac_allocator::mac_addr_base));
-		} catch(...) {}
-	}
-
-	void read_mac()
-	{
-		Net::Ethernet_frame::Mac_address mac(nic.mac());
-		Genode::printf("--- NIC bridge started "
-		               "(mac=%02x:%02x:%02x:%02x:%02x:%02x) ---\n",
-		               mac.addr[0], mac.addr[1], mac.addr[2],
-		               mac.addr[3], mac.addr[4], mac.addr[5]);
-	}
-
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Main(Genode::Env &e) : env(e)
 	{
 		try {
-			handle_config();
-			read_mac();
-			Genode::env()->parent()->announce(ep.manage(root));
-		} catch (Genode::Parent::Service_denied) {
-			PERR("Could not connect to uplink NIC");
+			/* show MAC address to use */
+			Net::Mac_address mac(nic.mac());
+			Genode::log("--- NIC bridge started (mac=", mac, ") ---");
+
+			/* announce at parent */
+			env.parent().announce(ep.manage(root));
+		} catch (Genode::Service_denied) {
+			Genode::error("Could not connect to uplink NIC");
 		}
 	}
 };
 
 
-/************
- ** Server **
- ************/
-
-namespace Server {
-
-	char const *name() { return "nic_bridge_ep"; }
-
-	size_t stack_size() { return 2048*sizeof(Genode::addr_t); }
-
-	void construct(Entrypoint &ep) { static Main nic_bridge(ep); }
-}
+void Component::construct(Genode::Env &env) { static Main nic_bridge(env); }

@@ -2,11 +2,12 @@
  * \brief  Manager of all VM requested console functionality
  * \author Markus Partheymueller
  * \author Norman Feske
+ * \author Alexander Boettcher
  * \date   2012-07-31
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  * Copyright (C) 2012 Intel Corporation
  *
  * This file is distributed under the terms of the GNU General Public License
@@ -19,30 +20,32 @@
  * conditions of the GNU General Public License version 2.
  */
 
-/* Genode includes */
-#include <base/snprintf.h>
+/* base includes */
 #include <util/register.h>
 
 /* nitpicker graphics backend */
-#include <os/pixel_rgb565.h>
-#include <nitpicker_gfx/text_painter.h>
+#include <nitpicker_gfx/tff_font.h>
 
 #include <nul/motherboard.h>
+#include <host/screen.h>
 
 /* local includes */
 #include "console.h"
-#include "keyboard.h"
 
-using Genode::env;
-using Genode::Dataspace_client;
-using Genode::Surface;
-using Genode::Pixel_rgb565;
-typedef Text_painter::Font Font;
+extern char _binary_mono_tff_start[];
 
-extern char _binary_mono_tff_start;
-Font default_font(&_binary_mono_tff_start);
+static Tff_font::Static_glyph_buffer<4096> glyph_buffer { };
+static Tff_font default_font(_binary_mono_tff_start, glyph_buffer);
 
-bool fb_active = true;
+static struct {
+	Genode::uint64_t checksum1   = 0;
+	Genode::uint64_t checksum2   = 0;
+	unsigned         unchanged   = 0;
+	bool             cmp_even    = 1;
+	bool             active      = false;
+	bool             vga_revoked = false;
+	bool             vga_update  = false; /* update indirectly by vbios */
+} fb_state;
 
 
 /**
@@ -61,19 +64,25 @@ struct Ps2_mouse_packet : Genode::Register<32>
 };
 
 
-static bool mouse_event(Input::Event const *ev)
+static bool mouse_event(Input::Event const &ev)
 {
-	using Input::Event;
-	if (ev->type() == Event::PRESS || ev->type() == Event::RELEASE) {
-		if (ev->code() == Input::BTN_LEFT)   return true;
-		if (ev->code() == Input::BTN_MIDDLE) return true;
-		if (ev->code() == Input::BTN_RIGHT)  return true;
-	}
+	using namespace Input;
 
-	if (ev->type() == Event::MOTION)
-		return true;
+	bool result = false;
 
-	return false;
+	auto mouse_button = [] (Keycode key) {
+		return key == BTN_LEFT || key == BTN_MIDDLE || key == BTN_RIGHT; };
+
+	ev.handle_press([&] (Keycode key, Genode::Codepoint) {
+		result |= mouse_button(key); });
+
+	ev.handle_release([&] (Keycode key) {
+		result |= mouse_button(key); });
+
+	result |= ev.absolute_motion() || ev.relative_motion();
+	result |= ev.wheel();
+
+	return result;
 }
 
 
@@ -82,29 +91,29 @@ static bool mouse_event(Input::Event const *ev)
  *
  * This function updates _left, _middle, and _right as a side effect.
  */
-unsigned Vancouver_console::_input_to_ps2mouse(Input::Event const *ev)
+unsigned Seoul::Console::_input_to_ps2mouse(Input::Event const &ev)
 {
 	/* track state of mouse buttons */
-	using Input::Event;
-	if (ev->type() == Event::PRESS || ev->type() == Event::RELEASE) {
-		bool const pressed = ev->type() == Event::PRESS;
-		if (ev->code() == Input::BTN_LEFT)   _left   = pressed;
-		if (ev->code() == Input::BTN_MIDDLE) _middle = pressed;
-		if (ev->code() == Input::BTN_RIGHT)  _right  = pressed;
-	}
+	auto apply_button = [] (Input::Event const &ev, Input::Keycode key, bool &state) {
+		if (ev.key_press  (key)) state = true;
+		if (ev.key_release(key)) state = false;
+	};
 
-	int rx;
-	int ry;
+	apply_button(ev, Input::BTN_LEFT,   _left);
+	apply_button(ev, Input::BTN_MIDDLE, _middle);
+	apply_button(ev, Input::BTN_RIGHT,  _right);
 
-	if (ev->absolute_motion()) {
-		static Input::Event last_event;
-		rx = ev->ax() - last_event.ax();
-		ry = ev->ay() - last_event.ay();
-		last_event = *ev;
-	} else {
-		rx = ev->rx();
-		ry = ev->ry();
-	}
+	int rx = 0;
+	int ry = 0;
+
+	ev.handle_absolute_motion([&] (int x, int y) {
+		static int ox = 0, oy = 0;
+		rx = x - ox; ry = y - oy;
+		ox = x; oy = y;
+	});
+
+	ev.handle_relative_motion([&] (int x, int y) { rx = x; ry = y; });
+
 
 	/* clamp relative motion vector to bounds */
 	int const boundary = 200;
@@ -125,24 +134,36 @@ unsigned Vancouver_console::_input_to_ps2mouse(Input::Event const *ev)
 	return packet;
 }
 
+enum {
+	PHYS_FRAME_VGA       = 0xa0,
+	PHYS_FRAME_VGA_COLOR = 0xb8,
+	FRAME_COUNT_COLOR    = 0x8
+};
+
+unsigned Seoul::Console::_input_to_ps2wheel(Input::Event const &ev)
+{
+	int rz = 0;
+	ev.handle_wheel([&](int x, int y) { rz = y; });
+
+	return (unsigned)rz;
+}
+
 
 /* bus callbacks */
 
-bool Vancouver_console::receive(MessageConsole &msg)
+bool Seoul::Console::receive(MessageConsole &msg)
 {
-	if (msg.type == MessageConsole::TYPE_ALLOC_VIEW) {
+	switch (msg.type) {
+	case MessageConsole::TYPE_ALLOC_VIEW :
 		_guest_fb = msg.ptr;
-
-		if (msg.size < _fb_size)
-			_fb_size = msg.size;
-
 		_regs = msg.regs;
 
 		msg.view = 0;
-	} else if (msg.type == MessageConsole::TYPE_SWITCH_VIEW) {
+		return true;
+	case MessageConsole::TYPE_SWITCH_VIEW:
 		/* XXX: For now, we only have one view. */
-	} else if (msg.type == MessageConsole::TYPE_GET_MODEINFO) {
-
+		return true;
+	case MessageConsole::TYPE_GET_MODEINFO:
 		enum {
 			MEMORY_MODEL_TEXT = 0,
 			MEMORY_MODEL_DIRECT_COLOR = 6,
@@ -161,8 +182,8 @@ bool Vancouver_console::receive(MessageConsole &msg)
 			msg.info->bytes_scanline = 80*2;
 			msg.info->bpp = 4;
 			msg.info->memory_model = MEMORY_MODEL_TEXT;
-			msg.info->phys_base = 0xb8000;
-			msg.info->_phys_size = 0x8000;
+			msg.info->phys_base = PHYS_FRAME_VGA_COLOR << 12;
+			msg.info->_phys_size = FRAME_COUNT_COLOR << 12;
 			return true;
 
 		} else if (msg.index == 1) {
@@ -171,215 +192,243 @@ bool Vancouver_console::receive(MessageConsole &msg)
 			 * It's important to set the _vesa_mode field, otherwise the
 			 * device model is going to ignore this mode.
 			 */
-			msg.info->_vesa_mode = 0x114;
+			unsigned const bpp = _fb_mode.bytes_per_pixel();
+			msg.info->_vesa_mode = 0x138;
 			msg.info->attr = 0x39f;
-			msg.info->resolution[0] = _fb_mode.width();
-			msg.info->resolution[1] = _fb_mode.height();
-			msg.info->bytes_per_scanline = _fb_mode.width()*2;
-			msg.info->bytes_scanline = _fb_mode.width()*2;
-			msg.info->bpp = 16;
+			msg.info->resolution[0]      = _fb_mode.area.w();
+			msg.info->resolution[1]      = _fb_mode.area.h();
+			msg.info->bytes_per_scanline = _fb_mode.area.w()*bpp;
+			msg.info->bytes_scanline     = _fb_mode.area.w()*bpp;
+			msg.info->bpp = 32;
 			msg.info->memory_model = MEMORY_MODEL_DIRECT_COLOR;
-			msg.info->vbe1[0] = 0x5; /* red mask size */
-			msg.info->vbe1[1] = 0xb; /* red field position */
-			msg.info->vbe1[2] = 0x6; /* green mask size */
-			msg.info->vbe1[3] = 0x5; /* green field position */
-			msg.info->vbe1[4] = 0x5; /* blue mask size */
-			msg.info->vbe1[5] = 0x0; /* blue field position */
-			msg.info->vbe1[6] = 0x0; /* reserved mask size */
-			msg.info->vbe1[7] = 0x0; /* reserved field position */
+			msg.info->vbe1[0] =  0x8; /* red mask size */
+			msg.info->vbe1[1] = 0x10; /* red field position */
+			msg.info->vbe1[2] =  0x8; /* green mask size */
+			msg.info->vbe1[3] =  0x8; /* green field position */
+			msg.info->vbe1[4] =  0x8; /* blue mask size */
+			msg.info->vbe1[5] =  0x0; /* blue field position */
+			msg.info->vbe1[6] =  0x0; /* reserved mask size */
+			msg.info->vbe1[7] =  0x0; /* reserved field position */
 			msg.info->colormode = 0x0; /* direct color mode info */
 			msg.info->phys_base = 0xe0000000;
-			msg.info->_phys_size = _fb_mode.width()*_fb_mode.height()*2;
+			msg.info->_phys_size = _fb_mode.area.count()*bpp;
 			return true;
-		} else return false;
+		}
+		return false;
+	case MessageConsole::TYPE_KILL: /* all CPUs go idle */
+		_handle_fb(); /* refresh before going to sleep */
+		fb_state.active = false;
+		return true;
+	case MessageConsole::TYPE_RESET: /* first of all sleeping CPUs woke up */
+		_reactivate();
+		return true;
+	default:
+		return true;
 	}
-	return true;
 }
 
-
-bool Vancouver_console::receive(MessageMemRegion &msg)
+void Screen::vga_updated()
 {
-	if (msg.page >= 0xb8 && msg.page <= 0xbf) {
+	fb_state.vga_update = true;
+}
 
-		/* we had a fault in the text framebuffer */
-		if (!fb_active) fb_active = true;
-		Logging::printf("Reactivating text buffer loop.\n");
+void Seoul::Console::_reactivate()
+{
+	fb_state.active = true;
+
+	MessageTimer msg(_timer, _unsynchronized_motherboard.clock()->abstime(1, 1000));
+	_unsynchronized_motherboard.bus_timer.send(msg);
+}
+
+bool Seoul::Console::receive(MessageMemRegion &msg)
+{
+	/* we had a fault in the text framebuffer */
+	bool reactivate = (msg.page >= PHYS_FRAME_VGA &&
+	                   msg.page < PHYS_FRAME_VGA_COLOR + FRAME_COUNT_COLOR);
+
+	/* vga memory got changed indirectly by vbios */
+	if (fb_state.vga_update) {
+		fb_state.vga_update = false;
+		if (!fb_state.active)
+			reactivate = true;
+	}
+
+	if (reactivate) {
+		fb_state.vga_revoked = false;
+
+		//Logging::printf("Reactivating text buffer loop.\n");
+
+		_reactivate();
 	}
 	return false;
 }
 
 
-void Vancouver_console::entry()
+unsigned Seoul::Console::_handle_fb()
 {
-	/*
-	 * Init sessions to the required external services
-	 */
-	enum { CONFIG_ALPHA = false };
+	if (!_guest_fb || !_regs)
+		return 0;
 
-	static Input::Connection  input;
-	static Timer::Connection  timer;
-	Framebuffer::Connection  *framebuffer = 0;
+	enum { TEXT_MODE = 0 };
 
-	try {
-		framebuffer = new (env()->heap()) Framebuffer::Connection();
-	} catch (...) {
-		PERR("Headless mode - no framebuffer session available");
-		_startup_lock.unlock();
-		return;
-	}
+	/* transfer text buffer content into chunky canvas */
+	if (_regs->mode == TEXT_MODE) {
 
-	Genode::Dataspace_capability ev_ds_cap = input.dataspace();
+		if (fb_state.vga_revoked || !fb_state.active) return 0;
 
-	Input::Event *ev_buf = static_cast<Input::Event *>
-	                       (env()->rm_session()->attach(ev_ds_cap));
+		memset(_pixels, 0, _fb_size);
 
-	_fb_size = Dataspace_client(framebuffer->dataspace()).size();
-	_fb_mode = framebuffer->mode();
+		if (fb_state.cmp_even) fb_state.checksum1 = 0;
+		else fb_state.checksum2 = 0;
 
-	_pixels = env()->rm_session()->attach(framebuffer->dataspace());
+		for (int j=0; j<25; j++) {
+			for (int i=0; i<80; i++) {
+				Text_painter::Position const where(i*8, j*15);
+				char character = *((char *) (_guest_fb +(_regs->offset << 1) +j*80*2+i*2));
+				char colorvalue = *((char *) (_guest_fb+(_regs->offset << 1)+j*80*2+i*2+1));
+				char buffer[2]; buffer[0] = character; buffer[1] = 0;
+				char fg = colorvalue & 0xf;
+				if (fg == 0x8) fg = 0x7;
+				unsigned lum = ((fg & 0x8) >> 3)*127;
+				Genode::Color color(((fg & 0x4) >> 2)*127+lum, /* R+luminosity */
+				                    ((fg & 0x2) >> 1)*127+lum, /* G+luminosity */
+				                     (fg & 0x1)*127+lum        /* B+luminosity */);
 
-	Surface<Pixel_rgb565> surface((Pixel_rgb565 *) _pixels,
-	                              Genode::Surface_base::Area(_fb_mode.width(),
-	                              _fb_mode.height()));
+				Text_painter::paint(_surface, where, default_font, color, buffer);
 
-	/*
-	 * Handle input events
-	 */
-	unsigned long count = 0;
-	bool revoked = false;
-	Vancouver_keyboard vkeyb(_motherboard);
-
-	Genode::uint64_t checksum1 = 0;
-	Genode::uint64_t checksum2 = 0;
-	unsigned unchanged = 0;
-	bool cmp_even = 1;
-
-	_startup_lock.unlock();
-
-	while (1) {
-		while (!input.pending()) {
-
-			/* transfer text buffer content into chunky canvas */
-			if (_regs && ++count % 10 == 0 && _regs->mode == 0
-			 && _guest_fb && !revoked && fb_active) {
-
-				memset(_pixels, 0, _fb_size);
-				if (cmp_even) checksum1 = 0;
-				else checksum2 = 0;
-				for (int j=0; j<25; j++) {
-					for (int i=0; i<80; i++) {
-						Genode::Surface_base::Point where(i*8, j*15);
-						char character = *((char *) (_guest_fb +(_regs->offset << 1) +j*80*2+i*2));
-						char colorvalue = *((char *) (_guest_fb+(_regs->offset << 1)+j*80*2+i*2+1));
-						char buffer[2]; buffer[0] = character; buffer[1] = 0;
-						char fg = colorvalue & 0xf;
-						if (fg == 0x8) fg = 0x7;
-						unsigned lum = ((fg & 0x8) >> 3)*127;
-						Genode::Color color(((fg & 0x4) >> 2)*127+lum, /* R+luminosity */
-						                    ((fg & 0x2) >> 1)*127+lum, /* G+luminosity */
-						                     (fg & 0x1)*127+lum        /* B+luminosity */);
-
-						Text_painter::paint(surface, where, default_font, color, buffer);
-
-						/* Checksum for comparing */
-						if (cmp_even) checksum1 += character;
-						else checksum2 += character;
-					}
-				}
-				/* compare checksums to detect idle buffer */
-				if (checksum1 == checksum2) {
-					unchanged++;
-
-					/* if we copy the same data 10 times, unmap the text buffer from guest */
-					if (unchanged == 10) {
-
-						Genode::Lock::Guard guard(_console_lock);
-
-						env()->rm_session()->detach((void *)_guest_fb);
-						env()->rm_session()->attach_at(_fb_ds, (Genode::addr_t)_guest_fb);
-						unchanged = 0;
-						fb_active = false;
-
-						Logging::printf("Deactivated text buffer loop.\n");
-					}
-				} else {
-					unchanged = 0;
-					framebuffer->refresh(0, 0, _fb_mode.width(), _fb_mode.height());
-				}
-
-				cmp_even = !cmp_even;
-			} else if (_regs && _guest_fb && _regs->mode != 0) {
-
-				if (!revoked) {
-
-					Genode::Lock::Guard guard(_console_lock);
-
-					env()->rm_session()->detach((void *)_guest_fb);
-					env()->rm_session()->attach_at(framebuffer->dataspace(),
-					                               (Genode::addr_t)_guest_fb);
-
-					/* if the VGA model expects a larger FB, pad to that size. */
-					if (_fb_size < _vm_fb_size) {
-						Genode::Ram_dataspace_capability _backup =
-						  Genode::env()->ram_session()->alloc(_vm_fb_size-_fb_size);
-
-						env()->rm_session()->attach_at(_backup,
-						                               (Genode::addr_t) (_guest_fb+_fb_size));
-					}
-
-					revoked = true;
-				}
-				framebuffer->refresh(0, 0, _fb_mode.width(), _fb_mode.height());
-			}
-
-			timer.msleep(10);
-		}
-
-		for (int i = 0, num_ev = input.flush(); i < num_ev; i++) {
-			if (!fb_active) fb_active = true;
-
-			Input::Event *ev = &ev_buf[i];
-
-			/* update mouse model (PS2) */
-			if (mouse_event(ev)) {
-				MessageInput msg(0x10001, _input_to_ps2mouse(ev));
-				_motherboard()->bus_input.send(msg);
-			}
-
-			if (ev->type() == Input::Event::PRESS)   {
-				if (ev->code() <= 0xee) {
-					vkeyb.handle_keycode_press(ev->code());
-				}
-			}
-			if (ev->type() == Input::Event::RELEASE) {
-				if (ev->code() <= 0xee) { /* keyboard event */
-					vkeyb.handle_keycode_release(ev->code());
-				}
+				/* Checksum for comparing */
+				if (fb_state.cmp_even) fb_state.checksum1 += character;
+				else fb_state.checksum2 += character;
 			}
 		}
+
+		fb_state.cmp_even = !fb_state.cmp_even;
+
+		/* compare checksums to detect changed buffer */
+		if (fb_state.checksum1 != fb_state.checksum2) {
+			fb_state.unchanged = 0;
+			_framebuffer.refresh(0, 0, _fb_mode.area.w(), _fb_mode.area.h());
+			return 100;
+		}
+
+		if (++fb_state.unchanged < 10)
+			return fb_state.unchanged * 30;
+
+		/* if we copy the same data 10 times, unmap the text buffer from guest */
+		_memory.detach(PHYS_FRAME_VGA_COLOR << 12,
+		               FRAME_COUNT_COLOR << 12);
+
+		fb_state.vga_revoked = true;
+		fb_state.unchanged = 0;
+
+		_framebuffer.refresh(0, 0, _fb_mode.area.w(), _fb_mode.area.h());
+		//Logging::printf("Deactivated text buffer loop.\n");
+
+		return 0;
 	}
+
+	if (!fb_state.vga_revoked) {
+		_memory.detach(PHYS_FRAME_VGA_COLOR << 12,
+		               FRAME_COUNT_COLOR << 12);
+
+		fb_state.vga_revoked = true;
+	}
+
+	if (!fb_state.active) {
+		fb_state.unchanged = 0;
+		return 0;
+	}
+
+	_framebuffer.refresh(0, 0, _fb_mode.area.w(), _fb_mode.area.h());
+
+	fb_state.unchanged++;
+
+	return (fb_state.unchanged > 4) ? 4 * 10 : fb_state.unchanged * 10;
 }
 
 
-void Vancouver_console::register_host_operations(Motherboard &motherboard)
+void Seoul::Console::_handle_input()
 {
-	motherboard.bus_console.  add(this, receive_static<MessageConsole>);
+	_input.for_each_event([&] (Input::Event const &ev) {
+
+		if (!fb_state.active) {
+			fb_state.active = true;
+
+			MessageTimer msg(_timer, _motherboard()->clock()->abstime(1, 1000));
+			_motherboard()->bus_timer.send(msg);
+		}
+
+		/* update mouse model (PS2) */
+		if (mouse_event(ev)) {
+			MessageInput msg(0x10001, _input_to_ps2mouse(ev), _input_to_ps2wheel(ev));
+			_motherboard()->bus_input.send(msg);
+		}
+
+		ev.handle_press([&] (Input::Keycode key, Genode::Codepoint) {
+			if (key <= 0xee)
+				_vkeyb.handle_keycode_press(key); });
+
+		ev.handle_release([&] (Input::Keycode key) {
+			if (key <= 0xee)
+				_vkeyb.handle_keycode_release(key); });
+	});
+}
+
+
+void Seoul::Console::register_host_operations(Motherboard &motherboard)
+{
+	motherboard.bus_console  .add(this, receive_static<MessageConsole>);
 	motherboard.bus_memregion.add(this, receive_static<MessageMemRegion>);
+	motherboard.bus_timeout  .add(this, receive_static<MessageTimeout>);
+
+	MessageTimer msg;
+	if (!motherboard.bus_timer.send(msg))
+		Logging::panic("%s can't get a timer", __PRETTY_FUNCTION__);
+
+	_timer = msg.nr;
 }
 
 
-Vancouver_console::Vancouver_console(Synced_motherboard &mb,
-                                     Genode::size_t vm_fb_size,
-                                     Genode::Dataspace_capability fb_ds)
-:
-	Thread_deprecated("vmm_console"),
-	_startup_lock(Genode::Lock::LOCKED),
-	_motherboard(mb), _pixels(0), _guest_fb(0), _fb_size(0),
-	_fb_ds(fb_ds), _vm_fb_size(vm_fb_size), _regs(0),
-	_left(false), _middle(false), _right(false)
-{
-	start();
+bool Seoul::Console::receive(MessageTimeout &msg) {
+	if (msg.nr != _timer)
+		return false;
 
-	/* shake hands with console thread */
-	_startup_lock.lock();
+	unsigned next_timeout_ms = _handle_fb();
+
+	if (next_timeout_ms) {
+		MessageTimer msg_t(_timer, _unsynchronized_motherboard.clock()->abstime(next_timeout_ms, 1000));
+		_unsynchronized_motherboard.bus_timer.send(msg_t);
+	}
+
+	return true;
+}
+
+
+Seoul::Console::Console(Genode::Env &env, Genode::Allocator &alloc,
+                        Synced_motherboard &mb,
+                        Motherboard &unsynchronized_motherboard,
+                        Gui::Connection &gui,
+                        Seoul::Guest_memory &guest_memory)
+:
+	_env(env),
+	_unsynchronized_motherboard(unsynchronized_motherboard),
+	_motherboard(mb),
+	_framebuffer(*gui.framebuffer()),
+	_input(*gui.input()),
+	_memory(guest_memory),
+	_fb_ds(_framebuffer.dataspace()),
+	_fb_mode(_framebuffer.mode()),
+	_fb_size(Genode::Dataspace_client(_fb_ds).size()),
+	_fb_vm_ds(env.ram().alloc(_fb_size)),
+	_fb_vm_mapping(_env.rm().attach(_fb_vm_ds)),
+	_vm_phys_fb(guest_memory.alloc_io_memory(_fb_size)),
+	_pixels(_env.rm().attach(_fb_ds)),
+	_surface(reinterpret_cast<Genode::Pixel_rgb888 *>(_pixels), _fb_mode.area)
+{
+	guest_memory.add_region(alloc, PHYS_FRAME_VGA << 12,
+	                        _fb_vm_mapping, _fb_vm_ds, _fb_size);
+	guest_memory.add_region(alloc, _vm_phys_fb,
+	                        Genode::addr_t(_pixels), _fb_ds, _fb_size);
+
+	_input.sigh(_signal_input);
 }

@@ -4,8 +4,7 @@
 
 # generic components
 set build_components {
-	core init
-	drivers/timer
+	core init timer
 	drivers/audio
 	server/mixer
 	server/dynamic_rom
@@ -28,7 +27,6 @@ set config  {
 	<config>
 		<parent-provides>
 			<service name="ROM"/>
-			<service name="RAM"/>
 			<service name="IRQ"/>
 			<service name="IO_MEM"/>
 			<service name="IO_PORT"/>
@@ -51,6 +49,7 @@ append config {
 		</start>
 
 		<start name="audio_drv">
+			<binary name="} [audio_drv_binary] {"/>
 			<resource name="RAM" quantum="8M"/>
 			<provides><service name="Audio_out"/></provides>
 			<config/>
@@ -63,9 +62,7 @@ append config {
 				<service name="Report"/>
 			</provides>
 			<config verbose="yes">
-				<rom>
-					<policy label="to_whom_it_may_concern" report="mixer -> channel_list"/>
-				</rom>
+				<policy label_prefix="to_whom_it_may_concern" report="mixer -> channel_list"/>
 			</config>
 		</start>
 
@@ -123,11 +120,11 @@ append config {
 		<start name="mixer">
 			<resource name="RAM" quantum="1M"/>
 			<provides><service name="Audio_out"/></provides>
-			<configfile name="mixer.config"/>
 			<route>
 				<service name="Audio_out"> <child name="audio_drv"/> </service>
 				<service name="Report"> <child name="report_rom"/> </service>
-				<service name="ROM" label="mixer.config"> <child name="dynamic_rom"/> </service>
+				<service name="ROM" label="config">
+					<child name="dynamic_rom" label="mixer.config"/> </service>
 				<any-service> <parent/> <any-child/> </any-service>
 			</route>
 		</start>
@@ -173,10 +170,10 @@ if {[expr ![file exists bin/client1.f32] || ![file exists bin/client2.f32]]} {
 #
 
 # generic modules
-set boot_modules {
-	core init timer
+append boot_modules {
+	core ld.lib.so init timer
 	report_rom dynamic_rom
-	audio_drv test-audio_out
+	} [audio_drv_binary] { test-audio_out
 	mixer client1.f32 client2.f32
 }
 
@@ -184,5 +181,5 @@ set boot_modules {
 append_platform_drv_boot_modules
 
 build_boot_image $boot_modules
-append qemu_args "-m 256 -soundhw es1370 -nographic"
+append qemu_args "-soundhw es1370 -nographic"
 run_genode_until forever

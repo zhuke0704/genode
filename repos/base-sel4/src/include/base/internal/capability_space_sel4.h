@@ -5,18 +5,19 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__CAPABILITY_SPACE_SEL4_H_
 #define _INCLUDE__BASE__INTERNAL__CAPABILITY_SPACE_SEL4_H_
 
 /* base includes */
+#include <base/mutex.h>
 #include <util/avl_tree.h>
-#include <base/lock.h>
+#include <util/construct_at.h>
 
 /* base-internal includes */
 #include <base/internal/capability_space.h>
@@ -37,6 +38,8 @@ namespace Genode {
 			explicit Cap_sel(addr_t value) : _value(value) { }
 
 			addr_t value() const { return _value; }
+
+			void print(Output &out) const { Genode::print(out, "sel=", _value); }
 	};
 }
 
@@ -56,6 +59,8 @@ namespace Genode { namespace Capability_space {
 
 		Ipc_cap_data(Rpc_obj_key rpc_obj_key, unsigned sel)
 		: rpc_obj_key(rpc_obj_key), sel(sel) { }
+
+		void print(Output &out) const { Genode::print(out, sel, ",", rpc_obj_key); }
 	};
 
 	/**
@@ -91,14 +96,17 @@ namespace Genode { namespace Capability_space {
 namespace Genode
 {
 	enum {
+		INITIAL_SEL_LOCK   = 0,
 		INITIAL_SEL_PARENT = 1,
 		INITIAL_SEL_CNODE  = 2,
 		INITIAL_SEL_END
 	};
 
 	enum {
-		CSPACE_SIZE_LOG2          = 8,
-		NUM_CORE_MANAGED_SEL_LOG2 = 7,
+		CSPACE_SIZE_LOG2_1ST      = 6,
+		CSPACE_SIZE_LOG2_2ND      = (CONFIG_WORD_SIZE == 32) ? 8 : 7,
+		CSPACE_SIZE_LOG2          = CSPACE_SIZE_LOG2_1ST + CSPACE_SIZE_LOG2_2ND,
+		NUM_CORE_MANAGED_SEL_LOG2 = 8,
 	};
 };
 
@@ -111,7 +119,7 @@ namespace Genode
  * First, core must keep track of all capabilities of the system. Hence, its
  * capability space must be dimensioned larger.
  *
- * Second, core has to maintain the information about the CAP session that
+ * Second, core has to maintain the information about the PD session that
  * was used to allocate the capability to prevent misbehaving clients from
  * freeing capabilities allocated from another component. This information
  * is part of the core-specific 'Native_capability::Data' structure.
@@ -146,23 +154,24 @@ class Genode::Capability_space_sel4
 
 			bool higher(Tree_managed_data *data)
 			{
-				return data->rpc_obj_key().value() > rpc_obj_key().value();
+				return data->rpc_obj_key().value() > this->rpc_obj_key().value();
 			}
 
 			Tree_managed_data *find_by_key(Rpc_obj_key key)
 			{
-				if (key.value() == rpc_obj_key().value()) return this;
+				if (key.value() == this->rpc_obj_key().value())
+					return this;
 
 				Tree_managed_data *data =
-					this->child(key.value() > rpc_obj_key().value());
+					this->child(key.value() > this->rpc_obj_key().value());
 
 				return data ? data->find_by_key(key) : nullptr;
 			}
 		};
 
 		Tree_managed_data           _caps_data[NUM_CAPS];
-		Avl_tree<Tree_managed_data> _tree;
-		Lock                mutable _lock;
+		Avl_tree<Tree_managed_data> _tree { };
+		Mutex               mutable _mutex { };
 
 		/**
 		 * Calculate index into _caps_data for capability data object
@@ -186,7 +195,7 @@ class Genode::Capability_space_sel4
 			if (_caps_data[_index(data)].rpc_obj_key().valid())
 				_tree.remove(static_cast<Tree_managed_data *>(&data));
 
-			_caps_data[_index(data)] = Tree_managed_data();
+			construct_at<Tree_managed_data>(&_caps_data[_index(data)]);
 		}
 
 	public:
@@ -204,14 +213,14 @@ class Genode::Capability_space_sel4
 		template <typename... ARGS>
 		Native_capability::Data &create_capability(Cap_sel cap_sel, ARGS... args)
 		{
-			Lock::Guard guard(_lock);
-
 			addr_t const sel = cap_sel.value();
 
-			ASSERT(!_caps_data[sel].rpc_obj_key().valid());
 			ASSERT(sel < NUM_CAPS);
+			ASSERT(!_caps_data[sel].rpc_obj_key().valid());
 
-			_caps_data[sel] = Tree_managed_data(args...);
+			Mutex::Guard guard(_mutex);
+
+			construct_at<Tree_managed_data>(&_caps_data[sel], args...);
 
 			if (_caps_data[sel].rpc_obj_key().valid())
 				_tree.insert(&_caps_data[sel]);
@@ -231,7 +240,7 @@ class Genode::Capability_space_sel4
 
 		void dec_ref(Data &data)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			if (!_is_core_managed(data) && !data.dec_ref())
 				_remove(data);
@@ -239,7 +248,7 @@ class Genode::Capability_space_sel4
 
 		void inc_ref(Data &data)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			if (!_is_core_managed(data)) {
 				data.inc_ref();
@@ -251,6 +260,11 @@ class Genode::Capability_space_sel4
 			return data.rpc_obj_key();
 		}
 
+		void print(Output &out, Data const &data) const
+		{
+			ipc_cap_data(data).print(out);
+		}
+
 		Capability_space::Ipc_cap_data ipc_cap_data(Data const &data) const
 		{
 			return { rpc_obj_key(data), sel(data) };
@@ -258,7 +272,7 @@ class Genode::Capability_space_sel4
 
 		Data *lookup(Rpc_obj_key key) const
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			if (!_tree.first())
 				return nullptr;

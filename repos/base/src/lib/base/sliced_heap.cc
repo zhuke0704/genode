@@ -5,22 +5,22 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <util/construct_at.h>
 #include <base/heap.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 using namespace Genode;
 
 
-Sliced_heap::Sliced_heap(Ram_session &ram_session, Region_map &region_map)
+Sliced_heap::Sliced_heap(Ram_allocator &ram_alloc, Region_map &region_map)
 :
-	_ram_session(ram_session), _region_map(region_map), _consumed(0)
+	_ram_alloc(ram_alloc), _region_map(region_map)
 { }
 
 
@@ -47,19 +47,25 @@ bool Sliced_heap::alloc(size_t size, void **out_addr)
 	Block *block = nullptr;
 
 	try {
-		ds_cap = _ram_session.alloc(size);
+		ds_cap = _ram_alloc.alloc(size);
 		block  = _region_map.attach(ds_cap);
-	} catch (Region_map::Attach_failed) {
-		PERR("Could not attach dataspace to local address space");
-		_ram_session.free(ds_cap);
+	}
+	catch (Region_map::Region_conflict) {
+		error("sliced_heap: region conflict while attaching dataspace");
+		_ram_alloc.free(ds_cap);
 		return false;
-	} catch (Ram_session::Alloc_failed) {
-		PERR("Could not allocate dataspace with size %zu", size);
+	}
+	catch (Region_map::Invalid_dataspace) {
+		error("sliced_heap: attempt to attach invalid dataspace");
+		_ram_alloc.free(ds_cap);
+		return false;
+	}
+	catch (Out_of_ram) {
 		return false;
 	}
 
 	/* serialize access to block list */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard guard(_mutex);
 
 	construct_at<Block>(block, ds_cap, size);
 
@@ -73,13 +79,13 @@ bool Sliced_heap::alloc(size_t size, void **out_addr)
 }
 
 
-void Sliced_heap::free(void *addr, size_t size)
+void Sliced_heap::free(void *addr, size_t)
 {
 	Ram_dataspace_capability ds_cap;
 	void *local_addr = nullptr;
 	{
 		/* serialize access to block list */
-		Lock::Guard lock_guard(_lock);
+		Mutex::Guard guard(_mutex);
 
 		/*
 		 * The 'addr' argument points to the payload. We use pointer
@@ -101,7 +107,7 @@ void Sliced_heap::free(void *addr, size_t size)
 	}
 
 	_region_map.detach(local_addr);
-	_ram_session.free(ds_cap);
+	_ram_alloc.free(ds_cap);
 }
 
 

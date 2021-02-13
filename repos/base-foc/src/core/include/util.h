@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__UTIL_H_
@@ -19,42 +19,28 @@
 
 /* Genode includes */
 #include <base/stdint.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <rm_session/rm_session.h>
 #include <util/touch.h>
 
 /* base-internal includes */
 #include <base/internal/page_size.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
-#include <l4/sys/kdebug.h>
-#include <l4/sys/ktrace.h>
-}
+/* Fiasco.OC includes */
+#include <foc/syscall.h>
 
 namespace Genode {
 
-	inline void log_event(const char *s)
-	{
-		Fiasco::fiasco_tbuf_log(s);
-	}
-
-	inline void log_event(const char *s, unsigned v1, unsigned v2, unsigned v3)
-	{
-		Fiasco::fiasco_tbuf_log_3val(s, v1, v2, v3);
-	}
-
 	inline void panic(const char *s)
 	{
-		using namespace Fiasco;
-		outstring(s);
-		enter_kdebug("> panic <");
+		raw(s);
+		raw("> panic <");
+		while (1) ;
 	}
 
 	inline void touch_ro(const void *addr, unsigned size)
 	{
-		using namespace Fiasco;
+		using namespace Foc;
 		unsigned char const volatile *bptr;
 		unsigned char const *eptr;
 
@@ -66,7 +52,8 @@ namespace Genode {
 
 	inline void touch_rw(const void *addr, unsigned size)
 	{
-		using namespace Fiasco;
+		using namespace Foc;
+
 		unsigned char volatile *bptr;
 		unsigned char const *eptr;
 
@@ -76,37 +63,13 @@ namespace Genode {
 			touch_read_write(bptr);
 	}
 
-	inline addr_t trunc_page(addr_t addr)
-	{
-		using namespace Fiasco;
-		return l4_trunc_page(addr);
-	}
+	inline addr_t trunc_page(addr_t addr) { return Foc::l4_trunc_page(addr); }
+	inline addr_t round_page(addr_t addr) { return Foc::l4_round_page(addr); }
 
-	inline addr_t round_page(addr_t addr)
-	{
-		using namespace Fiasco;
-		return l4_round_page(addr);
-	}
-
-	inline addr_t round_superpage(addr_t addr)
-	{
-		using namespace Fiasco;
-		return (addr + L4_SUPERPAGESIZE-1) & L4_SUPERPAGEMASK;
-	}
-
-	constexpr size_t get_super_page_size() { return L4_SUPERPAGESIZE; }
+	constexpr size_t get_super_page_size()      { return L4_SUPERPAGESIZE;      }
 	constexpr size_t get_super_page_size_log2() { return L4_LOG2_SUPERPAGESIZE; }
 
-	inline void print_page_fault(const char *msg, addr_t pf_addr, addr_t pf_ip,
-	                             Region_map::State::Fault_type pf_type,
-	                             unsigned long badge)
-	{
-		printf("%s (%s pf_addr=%p pf_ip=%p from %lx)\n", msg,
-		       pf_type == Region_map::State::WRITE_FAULT ? "WRITE" : "READ",
-		       (void *)pf_addr, (void *)pf_ip, badge);
-	}
-
-	inline addr_t map_src_addr(addr_t core_local_addr, addr_t phys_addr) {
+	inline addr_t map_src_addr(addr_t core_local_addr, addr_t) {
 		return core_local_addr; }
 
 	inline size_t constrain_map_size_log2(size_t size_log2) { return size_log2; }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__TRACE__LOGGER_H_
@@ -32,18 +32,23 @@ struct Genode::Trace::Logger
 {
 	private:
 
-		Thread_capability  thread_cap;
-		Cpu_session       *cpu;
-		Control           *control;
-		bool               enabled;
-		unsigned           policy_version;
-		Policy_module     *policy_module;
-		Buffer            *buffer;
-		size_t             max_event_size;
-
-		bool               pending_init;
+		Thread_capability  thread_cap     { };
+		Cpu_session       *cpu            { nullptr };
+		Control           *control        { nullptr };
+		bool               enabled        { false };
+		unsigned           policy_version { 0 };
+		Policy_module     *policy_module  { 0 };
+		Buffer            *buffer         { nullptr };
+		size_t             max_event_size { 0 };
+		bool               pending_init   { false };
 
 		bool _evaluate_control();
+
+		/*
+		 * Noncopyable
+		 */
+		Logger(Logger const &);
+		Logger &operator = (Logger const &);
 
 	public:
 
@@ -63,9 +68,17 @@ struct Genode::Trace::Logger
 		void log(char const *, size_t);
 
 		/**
+		 * Log binary data to trace buffer using log_output policy
+		 *
+		 * \return true if log is really put to buffer
+		 */
+		bool log_captured(char const *, size_t);
+
+		/**
 		 * Log event to trace buffer
 		 */
 		template <typename EVENT>
+		__attribute__((optimize("-fno-delete-null-pointer-checks")))
 		void log(EVENT const *event)
 		{
 			if (!this || !_evaluate_control()) return;

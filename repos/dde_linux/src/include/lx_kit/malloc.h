@@ -7,10 +7,10 @@
  */
 
 /*
- * Copyright (C) 2014-2016 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__MALLOC_H_
@@ -25,12 +25,16 @@
 namespace Lx {
 
 	class Malloc;
+
+	void malloc_init(Genode::Env &env, Genode::Allocator &md_alloc);
 }
 
 
-class Lx::Malloc
+class Lx::Malloc : public Genode::Allocator
 {
 	public:
+
+		typedef Genode::size_t size_t;
 
 		enum { MAX_SIZE_LOG2 = 16 /* 64 KiB */ };
 
@@ -56,11 +60,23 @@ class Lx::Malloc
 		 */
 		virtual bool inside(addr_t const addr) const = 0;
 
+		/**
+		 * Genode alllocator interface
+		 */
+		bool need_size_for_free() const override { return false; }
+
+		size_t overhead(size_t size) const override { return 0; }
+
+		bool alloc(size_t size, void **out_addr) override
+		{
+			*out_addr = alloc(size);
+			return *out_addr ? true : false;
+		}
+
+		void free(void *addr, size_t size) override { free(addr); }
+
 		static Malloc &mem();
 		static Malloc &dma();
 };
-
-
-void *operator new (Genode::size_t, Lx::Malloc &);
 
 #endif /* _LX_KIT__MALLOC_H_ */

@@ -1,3 +1,5 @@
 TARGET = test-libc_pipe
-LIBS   = libc libc_pipe pthread
+LIBS   = posix
 SRC_CC = main.cc
+
+CC_CXX_WARN_STRICT =

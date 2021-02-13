@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /******************
@@ -52,6 +52,6 @@ struct kobj_uevent_env;
 
 int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...);
 void  kobject_put(struct kobject *);
-char *kobject_name(const struct kobject *kobj);
+const char *kobject_name(const struct kobject *kobj);
 char *kobject_get_path(struct kobject *kobj, gfp_t gfp_mask);
 struct kobject * kobject_create_and_add(const char *, struct kobject *);

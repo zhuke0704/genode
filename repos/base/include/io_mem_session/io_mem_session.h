@@ -1,14 +1,14 @@
 /*
- * \brief  I/O-memory session interface
+ * \brief  Memory-mapped I/O session interface
  * \author Christian Helmuth
  * \date   2006-08-01
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__IO_MEM_SESSION__IO_MEM_SESSION_H_
@@ -31,7 +31,17 @@ struct Genode::Io_mem_dataspace : Dataspace { };
 
 struct Genode::Io_mem_session : Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "IO_MEM"; }
+
+	/*
+	 * An I/O-memory session consumes a dataspace capability for the
+	 * session-object allocation, its session capability, and a dataspace
+	 * capability for the handed-out memory-mapped I/O dataspace.
+	 */
+	enum { CAP_QUOTA = 3, RAM_QUOTA = 6 * 1024 };
 
 	virtual ~Io_mem_session() { }
 

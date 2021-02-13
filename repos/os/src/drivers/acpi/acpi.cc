@@ -11,19 +11,20 @@
  */
 
  /*
-  * Copyright (C) 2009-2015 Genode Labs GmbH
+  * Copyright (C) 2009-2017 Genode Labs GmbH
   *
   * This file is part of the Genode OS framework, which is distributed
-  * under the terms of the GNU General Public License version 2.
+  * under the terms of the GNU Affero General Public License version 3.
   */
 
 /* base includes */
-#include <io_mem_session/connection.h>
+#include <base/attached_io_mem_dataspace.h>
+#include <base/attached_rom_dataspace.h>
+#include <util/misc_math.h>
 #include <util/mmio.h>
 
 /* os includes */
 #include <os/reporter.h>
-#include <os/attached_rom_dataspace.h>
 
 #include "acpi.h"
 #include "memory.h"
@@ -87,6 +88,17 @@ struct Generic
 	uint8_t  creator[4];
 	uint32_t creator_rev;
 
+	void print(Genode::Output &out) const
+	{
+		Genode::String<7> s_oem((const char *)oemid);
+		Genode::String<9> s_oemtabid((const char *)oemtabid);
+		Genode::String<5> s_creator((const char *)creator);
+
+		Genode::print(out, "OEM '", s_oem, "', table id '", s_oemtabid, "', "
+		              "revision ", oemrev, ", creator '", s_creator, "' (",
+		              creator_rev, ")");
+	}
+
 	uint8_t const *data() { return reinterpret_cast<uint8_t *>(this); }
 
 	/* MADT ACPI structure */
@@ -128,19 +140,19 @@ struct Dmar_struct_header : Generic
 	void apply(FUNC const &func = [] () { } )
 	{
 		addr_t addr = dmar_entry_start();
-		do {
+		while (addr < dmar_entry_end()) {
 			Dmar_common dmar(addr);
 
 			func(dmar);
 
-			addr = dmar.base + dmar.read<Dmar_common::Length>();
-		} while (addr < dmar_entry_end());
+			addr = dmar.base() + dmar.read<Dmar_common::Length>();
+		}
 	}
 
-	struct Dmar_struct_header * clone()
+	struct Dmar_struct_header * clone(Genode::Allocator &alloc)
 	{
 		size_t const size = dmar_entry_end() - reinterpret_cast<addr_t>(this);
-		char * clone = new (env()->heap()) char[size];
+		char * clone = new (&alloc) char[size];
 		memcpy(clone, this, size);
 
 		return reinterpret_cast<Dmar_struct_header *>(clone);
@@ -151,20 +163,57 @@ struct Dmar_struct_header : Generic
 /* Intel VT-d IO Spec - 8.3.1. */
 struct Device_scope : Genode::Mmio
 {
+	enum { MAX_PATHS = 4 };
+
 	Device_scope(addr_t a) : Genode::Mmio(a) { }
 
 	struct Type   : Register<0x0, 8> { enum { PCI_END_POINT = 0x1 }; };
 	struct Length : Register<0x1, 8> { };
 	struct Bus    : Register<0x5, 8> { };
 
-	struct Path   : Register_array<0x6, 8, 1, 16> {
+	struct Path   : Register_array<0x6, 8, MAX_PATHS, 16> {
 		struct Dev  : Bitfield<0,8> { };
 		struct Func : Bitfield<8,8> { };
 	};
 
-	unsigned count() const { return (read<Length>() - 6) / 2; }
+	unsigned count() const {
+		unsigned const length = read<Length>();
+		if (length < 6)
+			return 0;
+
+		unsigned paths = (read<Length>() - 6) / 2;
+		if (paths > MAX_PATHS) {
+			Genode::error("Device_scope: more paths (", paths, ") than"
+			              " supported (", (int)MAX_PATHS,")");
+			return MAX_PATHS;
+		}
+		return paths;
+	}
 };
 
+/* DMA Remapping Hardware Definition - Intel VT-d IO Spec - 8.3. */
+struct Dmar_drhd : Genode::Mmio
+{
+	struct Length  : Register<0x2, 16> { };
+	struct Flags   : Register<0x4,  8> { };
+	struct Segment : Register<0x6, 16> { };
+	struct Phys    : Register<0x8, 64> { };
+
+	Dmar_drhd(addr_t a) : Genode::Mmio(a) { }
+
+	template <typename FUNC>
+	void apply(FUNC const &func = [] () { } )
+	{
+		addr_t addr = base() + 16;
+		while (addr < base() + read<Length>()) {
+			Device_scope scope(addr);
+
+			func(scope);
+
+			addr = scope.base() + scope.read<Device_scope::Length>();
+		}
+	}
+};
 
 /* DMA Remapping Reporting structure - Intel VT-d IO Spec - 8.3. */
 struct Dmar_rmrr : Genode::Mmio
@@ -178,45 +227,91 @@ struct Dmar_rmrr : Genode::Mmio
 	template <typename FUNC>
 	void apply(FUNC const &func = [] () { } )
 	{
-		addr_t addr = base + 24;
-		do {
+		addr_t addr = base() + 24;
+		while (addr < base() + read<Length>()) {
 			Device_scope scope(addr);
 
 			func(scope);
 
-			addr = scope.base + scope.read<Device_scope::Length>();
-		} while (addr < base + read<Length>());
+			addr = scope.base() + scope.read<Device_scope::Length>();
+		}
 	}
 };
 
+/* I/O Virtualization Definition Blocks for AMD IO-MMU */
+struct Ivdb : Genode::Mmio
+{
+	struct Type   : Register<0x00, 8>  { };
+	struct Length : Register<0x02, 16> { };
+
+	Ivdb(addr_t const addr) : Genode::Mmio(addr) { }
+};
+
+
+struct Ivdb_entry : public List<Ivdb_entry>::Element
+{
+	unsigned const type;
+
+	Ivdb_entry(unsigned t) : type (t) { }
+
+	template <typename FUNC>
+	static void for_each(FUNC const &func)
+	{
+		for (Ivdb_entry *entry = list()->first(); entry; entry = entry->next()) {
+			func(*entry);
+		}
+	}
+
+	static List<Ivdb_entry> *list()
+	{
+		static List<Ivdb_entry> _list;
+		return &_list;
+	}
+};
+
+
+/* I/O Virtualization Reporting Structure (IVRS) for AMD IO-MMU */
+struct Ivrs : Genode::Mmio
+{
+	struct Length : Register<0x04, 32> { };
+	struct Ivinfo : Register<0x24, 32> {
+		struct Dmar : Bitfield<1, 1> { };
+	};
+
+	static constexpr unsigned min_size() { return 0x30; }
+
+	Ivrs(addr_t const table) : Genode::Mmio(table) { }
+
+	void parse(Allocator &alloc)
+	{
+		addr_t addr = base() + 0x30;
+		while (addr < base() + read<Ivrs::Length>()) {
+			bool dmar = Ivinfo::Dmar::get(read<Ivinfo::Dmar>());
+			if (dmar)
+				Genode::warning("Predefined regions should be added to IOMMU");
+
+			Ivdb ivdb(addr);
+
+			uint32_t const type = ivdb.read<Ivdb::Type>();
+			uint32_t const size = ivdb.read<Ivdb::Length>();
+
+			Ivdb_entry::list()->insert(new (&alloc) Ivdb_entry(type));
+
+			addr += size;
+		}
+	}
+};
 
 /* Fixed ACPI description table (FADT) */
 struct Fadt : Genode::Mmio
 {
-	static uint32_t features;
-	static uint32_t reset_type;
-	static uint64_t reset_addr;
-	static uint8_t  reset_value;
+	Fadt(addr_t a) : Genode::Mmio(a) { }
 
-	Fadt(addr_t a) : Genode::Mmio(a)
-	{
-		features    = read<Fadt::Feature_flags>();
-		reset_type  = read<Fadt::Reset_reg_type>();
-		reset_addr  = read<Fadt::Reset_reg_addr>();
-		reset_value = read<Fadt::Reset_value>();
-	}
+	struct Dsdt : Register<0x28, 32> { };
 
-	struct Dsdt           : Register<0x28, 32> { };
-	struct Feature_flags  : Register<0x70, 32> { };
-	struct Reset_reg_type : Register<0x74, 32> { };
-	struct Reset_reg_addr : Register<0x78, 64> { };
-	struct Reset_value    : Register<0x80, 8>  { };
+	static uint32_t size() { return Dsdt::OFFSET + Dsdt::ACCESS_WIDTH / 8; }
 };
 
-uint32_t Fadt::features    = 0;
-uint32_t Fadt::reset_type  = 0;
-uint64_t Fadt::reset_addr  = 0;
-uint8_t  Fadt::reset_value = 0;
 
 class Dmar_entry : public List<Dmar_entry>::Element
 {
@@ -290,12 +385,6 @@ class Pci_config_space : public List<Pci_config_space>::Element
 };
 
 
-static Acpi::Memory & acpi_memory()
-{
-	static Acpi::Memory _memory;
-	return _memory;
-}
-
 
 /**
  * ACPI table wrapper that for mapping tables to this address space
@@ -343,6 +432,10 @@ class Table_wrapper
 			return sum;
 		}
 
+		bool valid() { return !checksum((uint8_t *)_table, _table->size); }
+
+		bool is_ivrs() const { return _cmp("IVRS");}
+
 		/**
 		 * Is this the FACP table
 		 */
@@ -371,7 +464,7 @@ class Table_wrapper
 		/**
 		 * Parse override structures
 		 */
-		void parse_madt()
+		void parse_madt(Genode::Allocator &alloc)
 		{
 			Apic_struct *apic = _table->apic_struct();
 			for (; apic < _table->end(); apic = apic->next()) {
@@ -380,19 +473,22 @@ class Table_wrapper
 
 				Apic_override *o = static_cast<Apic_override *>(apic);
 				
-				PINF("MADT IRQ %u -> GSI %u flags: %x", o->irq, o->gsi, o->flags);
+				Genode::log("MADT IRQ ", o->irq, " -> GSI ", (unsigned)o->gsi, " "
+				            "flags: ", (unsigned)o->flags);
 				
-				Irq_override::list()->insert(new (env()->heap())
+				Irq_override::list()->insert(new (&alloc)
 					Irq_override(o->irq, o->gsi, o->flags));
 			}
 		}
 
-		void parse_mcfg()  const
+		void parse_mcfg(Genode::Allocator &alloc)  const
 		{
 			Mcfg_struct *mcfg = _table->mcfg_struct();
 			for (; mcfg < _table->mcfg_end(); mcfg = mcfg->next()) {
-				PINF("MCFG BASE 0x%llx seg %02x bus %02x-%02x", mcfg->base,
-				     mcfg->pci_seg, mcfg->pci_bus_start, mcfg->pci_bus_end);
+				Genode::log("MCFG BASE ", Genode::Hex(mcfg->base),    " "
+				            "seg ", Genode::Hex(mcfg->pci_seg),       " "
+				            "bus ", Genode::Hex(mcfg->pci_bus_start), "-",
+				                    Genode::Hex(mcfg->pci_bus_end));
 
 				/* bus_count * up to 32 devices * 8 function per device * 4k */
 				uint32_t bus_count  = mcfg->pci_bus_end - mcfg->pci_bus_start + 1;
@@ -400,46 +496,40 @@ class Table_wrapper
 				uint32_t bus_start  = mcfg->pci_bus_start * 32 * 8;
 
 				Pci_config_space::list()->insert(
-					new (env()->heap()) Pci_config_space(bus_start, func_count, mcfg->base));
+					new (&alloc) Pci_config_space(bus_start, func_count, mcfg->base));
 			}
 		}
 
-		void parse_dmar() const
+		void parse_dmar(Genode::Allocator &alloc) const
 		{
 			Dmar_struct_header *head = _table->dmar_header();
-			PLOG("%u bit DMA physical addressable%s\n", head->width + 1,
-			     head->flags & Dmar_struct_header::INTR_REMAP_MASK ?
-			     " , IRQ remapping supported" : "");
+			Genode::log(head->width + 1, " bit DMA physical addressable",
+			            head->flags & Dmar_struct_header::INTR_REMAP_MASK ?
+			                              " , IRQ remapping supported" : "");
 
 			head->apply([&] (Dmar_common const &dmar) {
-				PLOG("DMA remapping structure type=%u", dmar.read<Dmar_common::Type>());
+			 Genode::log("DMA remapping structure type=", dmar.read<Dmar_common::Type>());
 			});
 
-			Dmar_entry::list()->insert(new (env()->heap()) Dmar_entry(head->clone()));
+			Dmar_entry::list()->insert(new (&alloc) Dmar_entry(head->clone(alloc)));
 		}
 
-		Table_wrapper(addr_t base) : _base(base), _table(0)
+		Table_wrapper(Acpi::Memory &memory, addr_t base)
+		: _base(base), _table(0)
 		{
-			/* if table is on page boundary, map two pages, otherwise one page */
-			size_t const map_size = 0x1000UL - _offset() < 8 ? 0x1000UL : 1UL;
-
 			/* make table header accessible */
-			_table = reinterpret_cast<Generic *>(acpi_memory().phys_to_virt(base, map_size));
+			_table = reinterpret_cast<Generic *>(memory.map_region(base, 8));
 
-			/* table size is known now - make it complete accessible */
-			if (_offset() + _table->size > 0x1000UL)
-				acpi_memory().phys_to_virt(base, _table->size);
+			/* table size is known now - make it completely accessible (in place) */
+			memory.map_region(base, _table->size);
 
 			memset(_name, 0, 5);
 			memcpy(_name, _table->signature, 4);
 
 			if (verbose)
-				PDBG("Table mapped '%s' at %p (from %lx) size %x", _name, _table, _base, _table->size);
-
-			if (checksum((uint8_t *)_table, _table->size)) {
-				PERR("Checksum mismatch for %s", _name);
-				throw -1;
-			}
+				Genode::log("table mapped '", Genode::Cstring(_name), "' at ", _table, " "
+				            "(from ", Genode::Hex(_base), ") "
+				            "size ",  Genode::Hex(_table->size));
 		}
 };
 
@@ -472,29 +562,49 @@ class Pci_routing : public List<Pci_routing>::Element
 		uint32_t gsi()    const { return _gsi; }
 		uint32_t device() const { return _adr >> 16; }
 
+		void print(Genode::Output &out) const
+		{
+			Genode::print(out, "adr: ", Genode::Hex(_adr), " "
+			                   "pin: ", Genode::Hex(_pin), " "
+			                   "gsi: ", Genode::Hex(_gsi));
+		}
+
 		/* debug */
-		void dump() { if (verbose) PDBG("Pci: adr %x pin %x gsi: %u", _adr, _pin, _gsi); }
+		void dump()
+		{
+			if (verbose)
+				Genode::log("Pci: ", *this);
+		}
 };
 
+/* set during ACPI Table walk to valid value */
+enum { INVALID_ROOT_BRIDGE = 0x10000U };
+static unsigned root_bridge_bdf = INVALID_ROOT_BRIDGE;
 
 /**
  * A table element (method, device, scope or name)
  */
-class Element : public List<Element>::Element
+class Element : private List<Element>::Element
 {
 	private:
 
-		uint8_t            _type;     /* the type of this element */
-		uint32_t           _size;     /* size in bytes */
-		uint32_t           _size_len; /* length of size in bytes */
-		char              *_name;     /* name of element */
-		uint32_t           _name_len; /* length of name in bytes */
-		uint32_t           _bdf;      /* bus device function */
-		uint8_t const     *_data;     /* pointer to the data section */
-		uint32_t           _para_len; /* parameters to be skipped */
-		bool               _valid;    /* true if this is a valid element */
-		bool               _routed;   /* has the PCI information been read */
-		List<Pci_routing> *_pci;      /* list of PCI routing elements for this element */
+		friend class List<Element>;
+
+		Element &operator = (Element const &);
+
+		uint8_t        _type     = 0;       /* the type of this element */
+		uint32_t       _size     = 0;       /* size in bytes */
+		uint32_t       _size_len = 0;       /* length of size in bytes */
+		char           _name[64];           /* name of element */
+		uint32_t       _name_len = 0;       /* length of name in bytes */
+		uint32_t       _bdf      = 0;       /* bus device function */
+		uint8_t const *_data     = nullptr; /* pointer to the data section */
+		uint32_t       _para_len = 0;       /* parameters to be skipped */
+		bool           _valid    = false;   /* true if this is a valid element */
+		bool           _routed   = false;   /* has the PCI information been read */
+
+		/* list of PCI routing elements for this element */
+		List<Pci_routing> _pci { };
 
 		/* packages we are looking for */
 		enum { DEVICE = 0x5b, SUB_DEVICE = 0x82, DEVICE_NAME = 0x8, SCOPE = 0x10, METHOD = 0x14, PACKAGE_OP = 0x12 };
@@ -655,8 +765,7 @@ class Element : public List<Element>::Element
 
 			/* is absolute name */
 			if (*name == ROOT_PREFIX || !parent) {
-				_name = (char *)env()->heap()->alloc(_name_len);
-				memcpy(_name, name + prefix_len, _name_len);
+				memcpy(_name, name + prefix_len, min(sizeof(_name), _name_len));
 			}
 			else {
 				/* skip parts */
@@ -665,7 +774,11 @@ class Element : public List<Element>::Element
 
 				/* skip parent prefix */
 				for (uint32_t p = 0; name[p] == PARENT_PREFIX; p++, parent_len -= NAME_LEN) ;
-				_name = (char *)env()->heap()->alloc(_name_len + parent_len);
+
+				if (_name_len + parent_len > sizeof(_name)) {
+					Genode::error("name is not large enough");
+					throw -1;
+				}
 
 				memcpy(_name, parent->_name, parent_len);
 				memcpy(_name + parent_len, name + prefix_len, _name_len);
@@ -747,7 +860,7 @@ class Element : public List<Element>::Element
 		 * Try to locate _PRT table and its GSI values for device
 		 * (data has to be located within the device data)
 		 */
-		void _direct_prt(Element *dev)
+		void _direct_prt(Genode::Allocator &alloc, Element *dev)
 		{
 			uint32_t len = 0;
 
@@ -771,11 +884,11 @@ class Element : public List<Element>::Element
 				}
 
 				if (i == 4) {
-					Pci_routing * r = new (env()->heap()) Pci_routing(val[0], val[1], val[3]);
+					Pci_routing * r = new (&alloc) Pci_routing(val[0], val[1], val[3]);
 
 					/* set _ADR, _PIN, _GSI */
-					dev->pci_list()->insert(r);
-					dev->pci_list()->first()->dump();
+					dev->pci_list().insert(r);
+					dev->pci_list().first()->dump();
 				}
 
 				len = len ? (e.data() - (_data + offset)) + e.size() : 1;
@@ -785,7 +898,7 @@ class Element : public List<Element>::Element
 		/**
 		 * Search for _PRT outside of device
 		 */
-		void _indirect_prt(Element *dev)
+		void _indirect_prt(Genode::Allocator &alloc, Element *dev)
 		{
 			uint32_t name_len;
 			uint32_t found = 0;
@@ -800,12 +913,12 @@ class Element : public List<Element>::Element
 					name[name_len] = 0;
 
 					if (verbose)
-						PDBG("Indirect %s", name);
+						Genode::log("indirect ", Genode::Cstring(name));
 
 					for (uint32_t skip = 0; skip <= dev->_name_len / NAME_LEN; skip++) {
 						Element *e = dev->_compare(name, skip * NAME_LEN);
 						if (e)
-							e->_direct_prt(dev);
+							e->_direct_prt(alloc, dev);
 					}
 				}
 				else
@@ -815,9 +928,11 @@ class Element : public List<Element>::Element
 
 		Element(uint8_t const *data = 0, bool package_op4 = false)
 		:
-			_type(0), _size(0), _size_len(0), _name(0), _name_len(0), _bdf(0),
-			_data(data), _para_len(0), _valid(false), _routed(false), _pci(0)
+			_type(0), _size(0), _size_len(0),  _name_len(0), _bdf(0),
+			_data(data), _para_len(0), _valid(false), _routed(false)
 		{
+			_name[0] = '\0';
+
 			if (!data)
 				return;
 
@@ -846,6 +961,8 @@ class Element : public List<Element>::Element
 				if (data[0] != SUB_DEVICE)
 					return;
 
+				[[fallthrough]];
+
 			case SCOPE:
 			case METHOD:
 
@@ -863,6 +980,8 @@ class Element : public List<Element>::Element
 							return;
 				}
 
+				[[fallthrough]];
+
 			case DEVICE_NAME:
 				/* ACPI 19.2.5.1 - NameOp NameString DataRefObject */
 
@@ -873,10 +992,10 @@ class Element : public List<Element>::Element
 
 				/* ACPI 19.2.3 DataRefObject */
 				switch (data[_name_len + 1]) {
-					case QWORD_PREFIX: _para_len += 4;
-					case DWORD_PREFIX: _para_len += 2;
-					case  WORD_PREFIX: _para_len += 1;
-					case  BYTE_PREFIX: _para_len += 1;
+					case QWORD_PREFIX: _para_len += 4; [[fallthrough]];
+					case DWORD_PREFIX: _para_len += 2; [[fallthrough]];
+					case  WORD_PREFIX: _para_len += 1; [[fallthrough]];
+					case  BYTE_PREFIX: _para_len += 1; [[fallthrough]];
 					default: _para_len += 1;
 				}
 
@@ -900,18 +1019,14 @@ class Element : public List<Element>::Element
 			_type     = other._type;
 			_size     = other._size;
 			_size_len = other._size_len;
+			memcpy(_name, other._name, sizeof(_name));
 			_name_len = other._name_len;
 			_bdf      = other._bdf;
 			_data     = other._data;
+			_para_len = other._para_len;
 			_valid    = other._valid;
 			_routed   = other._routed;
 			_pci      = other._pci;
-			_para_len = other._para_len;
-
-			if (other._name) {
-				_name = (char *)env()->heap()->alloc(other._name_len);
-				memcpy(_name, other._name, _name_len);
-			}
 		}
 
 		bool is_device_name() { return _type == DEVICE_NAME; }
@@ -927,17 +1042,16 @@ class Element : public List<Element>::Element
 			char n[_name_len + 1];
 			memcpy(n, _name, _name_len);
 			n[_name_len] = 0;
-			PDBG("Found package %x size %u name_len %u name: %s",
-			     _data[0], _size, _name_len, n);
+			Genode::log("Found package ", Genode::Hex(_data[0]), " "
+			            "size: ", _size, " name_len: ", _name_len, " "
+			            "name: ", Genode::Cstring(n));
 		}
 
 	public:
 
-		virtual ~Element()
-		{
-			if (_name)
-				env()->heap()->free(_name, _name_len);
-		}
+		using List<Element>::Element::next;
+
+		virtual ~Element() { }
 
 		/**
 		 * Accessors
@@ -969,7 +1083,7 @@ class Element : public List<Element>::Element
 			return &_list;
 		}
 
-		static void clean_list()
+		static void clean_list(Genode::Allocator &alloc)
 		{
 			unsigned long freed_up = 0;
 
@@ -985,28 +1099,23 @@ class Element : public List<Element>::Element
 
 				Element * next = element->next();
 				Element::list()->remove(element);
-				destroy(env()->heap(), element);
+				destroy(&alloc, element);
 				element = next;
 			}
 
 			if (verbose)
-				PDBG("Freeing up memory of elements - %lu bytes", freed_up);
+				Genode::log("Freeing up memory of elements - ", freed_up, " bytes");
 		}
 
 		/**
 		 * Return list of PCI information for this element
 		 */
-		List<Pci_routing> *pci_list()
-		{
-			if (!_pci)
-				_pci = new (env()->heap()) List<Pci_routing>();
-			return _pci;
-		}
+		List<Pci_routing> & pci_list() { return _pci; }
 
 		/**
 		 * Parse elements of table
 		 */
-		static void parse(Generic *table)
+		static void parse(Genode::Allocator &alloc, Generic *table)
 		{
 			uint8_t const *data = table->data();
 			for (; data < table->data() + table->size; data++) {
@@ -1018,7 +1127,7 @@ class Element : public List<Element>::Element
 				if (data + e.size() > table->data() + table->size)
 					break;
 
-				Element *i = new (env()->heap()) Element(e);
+				Element *i = new (&alloc) Element(e);
 				list()->insert(i);
 
 				/* skip header */
@@ -1031,13 +1140,13 @@ class Element : public List<Element>::Element
 					data += e._para_len;
 			}
 
-			parse_bdf();
+			parse_bdf(alloc);
 		}
 
 		/**
 		 * Parse BDF and GSI information
 		 */
-		static void parse_bdf()
+		static void parse_bdf(Genode::Allocator &alloc)
 		{
 			for (Element *e = list()->first(); e; e = e->next()) {
 
@@ -1061,38 +1170,22 @@ class Element : public List<Element>::Element
 				if (prt) prt->dump();
 
 				if (prt) {
-					if (verbose)
-						PDBG("Scanning device %x", e->_bdf);
+					uint32_t const hid= e->_value("_HID");
+					uint32_t const cid= e->_value("_CID");
+					if (hid == 0x80ad041 || cid == 0x80ad041 || // "PNP0A08" PCI Express root bridge
+					    hid == 0x30ad041 || cid == 0x30ad041) { // "PNP0A03" PCI root bridge
+						root_bridge_bdf = e->_bdf;
+					}
 
-					prt->_direct_prt(e);
-					prt->_indirect_prt(e);
+					if (verbose)
+						Genode::log("Scanning device ", Genode::Hex(e->_bdf));
+
+					prt->_direct_prt(alloc, e);
+					prt->_indirect_prt(alloc, e);
 				}
 
 				e->_routed = true;
 			}
-		}
-
-		/**
-		 * Search for GSI of given device, bridge, and pin
-		 */
-		static uint32_t search_gsi(uint32_t device_bdf, uint32_t bridge_bdf, uint32_t pin)
-		{
-			Element *e = list()->first();
-
-			for (; e; e = e->next()) {
-				if (!e->is_device() || e->_bdf != bridge_bdf)
-					continue;
-
-				Pci_routing *r = e->pci_list()->first();
-				for (; r; r = r->next()) {
-					if (r->match_bdf(device_bdf) && r->pin() == pin) {
-						if (verbose) PDBG("Found GSI: %u device : %x pin %u",
-						                   r->gsi(), device_bdf, pin);
-						return r->gsi();
-					}
-				}
-			}
-			throw -1;
 		}
 };
 
@@ -1104,32 +1197,23 @@ class Acpi_table
 {
 	private:
 
+		Genode::Env       &_env;
+		Genode::Allocator &_alloc;
+		Acpi::Memory       _memory;
+
 		/* BIOS range to scan for RSDP */
 		enum { BIOS_BASE = 0xe0000, BIOS_SIZE = 0x20000 };
 
-		/**
-		 * Map table and return address and session cap
-		 */
-		uint8_t *_map_io(addr_t base, size_t size, Io_mem_session_capability &cap)
-		{
-			Io_mem_connection io_mem(base, size);
-			io_mem.on_destruction(Io_mem_connection::KEEP_OPEN);
-			Io_mem_dataspace_capability io_ds = io_mem.dataspace();
-			if (!io_ds.valid())
-				throw -1;
-
-			uint8_t *ret = env()->rm_session()->attach(io_ds, size);
-			cap = io_mem.cap();
-			return ret;
-		}
+		Genode::Constructible<Genode::Attached_io_mem_dataspace> _mmio { };
 
 		/**
 		 * Search for RSDP pointer signature in area
 		 */
-		uint8_t *_search_rsdp(uint8_t *area)
+		uint8_t *_search_rsdp(uint8_t *area, size_t const area_size)
 		{
-			for (addr_t addr = 0; area && addr < BIOS_SIZE; addr += 16)
-				if (!memcmp(area + addr, "RSD PTR ", 8) && !Table_wrapper::checksum(area + addr, 20))
+			for (addr_t addr = 0; area && addr < area_size; addr += 16)
+				if (!memcmp(area + addr, "RSD PTR ", 8) &&
+				    !Table_wrapper::checksum(area + addr, 20))
 					return area + addr;
 
 			throw -2;
@@ -1137,41 +1221,59 @@ class Acpi_table
 
 		/**
 		 * Return 'Root System Descriptor Pointer' (ACPI spec 5.2.5.1)
+		 *
+		 * As a side effect, the function initializes the '_mmio' member.
 		 */
-		uint8_t *_rsdp(Io_mem_session_capability &cap)
+		uint8_t *_rsdp()
 		{
-			uint8_t *area = 0;
-
 			/* try BIOS area (0xe0000 - 0xfffffh)*/
 			try {
-				area = _search_rsdp(_map_io(BIOS_BASE, BIOS_SIZE, cap));
-				return area;
-			} catch (...) { env()->parent()->close(cap); }
+				_mmio.construct(_env, BIOS_BASE, BIOS_SIZE);
+				return _search_rsdp(_mmio->local_addr<uint8_t>(), BIOS_SIZE);
+			}
+			catch (...) { }
 
 			/* search EBDA (BIOS addr + 0x40e) */
 			try {
-				area = _map_io(0x0, 0x1000, cap);
-				if (area) {
-					unsigned short base = (*reinterpret_cast<unsigned short *>(area + 0x40e)) << 4;
-					env()->parent()->close(cap);
-					area = _map_io(base, 1024, cap);
-					area = _search_rsdp(area);
-				}
-				return area;
-			} catch (...) { env()->parent()->close(cap); }
+				/* read RSDP base address from EBDA */
+				size_t const size = 0x1000;
 
-			return 0;
+				_mmio.construct(_env, 0x0, size);
+				uint8_t const * const ebda = _mmio->local_addr<uint8_t const>();
+				unsigned short const rsdp_phys =
+					(*reinterpret_cast<unsigned short const *>(ebda + 0x40e)) << 4;
+
+				_mmio.construct(_env, rsdp_phys, size);
+				return _search_rsdp(_mmio->local_addr<uint8_t>(), size);
+			}
+			catch (...) { }
+
+			return nullptr;
 		}
 
 		template <typename T>
-		void _parse_tables(T * entries, uint32_t count)
+		void _parse_tables(Genode::Allocator &alloc, T * entries, uint32_t count)
 		{
 			/* search for SSDT and DSDT tables */
 			for (uint32_t i = 0; i < count; i++) {
 				uint32_t dsdt = 0;
 				{
-					Table_wrapper table(entries[i]);
-					if (table.is_facp()) {
+					Table_wrapper table(_memory, entries[i]);
+
+					if (!table.valid()) {
+						Genode::error("ignoring table '", table.name(),
+						              "' - checksum error");
+						continue;
+					}
+
+					if (table.is_ivrs() && Ivrs::min_size() <= table->size) {
+						log("Found IVRS");
+
+						Ivrs ivrs(reinterpret_cast<Genode::addr_t>(table->signature));
+						ivrs.parse(alloc);
+					}
+
+					if (table.is_facp() && Fadt::size() <= table->size) {
 						Fadt fadt(reinterpret_cast<Genode::addr_t>(table->signature));
 						dsdt = fadt.read<Fadt::Dsdt>();
 					}
@@ -1179,36 +1281,43 @@ class Acpi_table
 					if (table.is_searched()) {
 
 						if (verbose)
-							PDBG("Found %s", table.name());
+							Genode::log("Found ", table.name());
 
-						Element::parse(table.table());
+						Element::parse(alloc, table.table());
 					}
 
 					if (table.is_madt()) {
-						PDBG("Found MADT");
+						Genode::log("Found MADT");
 
-						table.parse_madt();
+						table.parse_madt(alloc);
 					}
 					if (table.is_mcfg()) {
-						PDBG("Found MCFG");
+						Genode::log("Found MCFG");
 
-						table.parse_mcfg();
+						table.parse_mcfg(alloc);
 					}
 					if (table.is_dmar()) {
-						PDBG("Found DMAR");
+						Genode::log("Found DMAR");
 
-						table.parse_dmar();
+						table.parse_dmar(alloc);
 					}
 				}
 
-				if (dsdt) {
-					Table_wrapper table(dsdt);
-					if (table.is_searched()) {
-						if (verbose)
-							PDBG("Found dsdt %s", table.name());
+				if (!dsdt)
+					continue;
 
-						Element::parse(table.table());
-					}
+				Table_wrapper table(_memory, dsdt);
+
+				if (!table.valid()) {
+					Genode::error("ignoring table '", table.name(),
+					              "' - checksum error");
+					continue;
+				}
+				if (table.is_searched()) {
+					if (verbose)
+						Genode::log("Found dsdt ", table.name());
+
+					Element::parse(alloc, table.table());
 				}
 			}
 
@@ -1216,75 +1325,80 @@ class Acpi_table
 
 	public:
 
-		Acpi_table()
+		Acpi_table(Genode::Env &env, Genode::Allocator &alloc)
+		: _env(env), _alloc(alloc), _memory(_env, _alloc)
 		{
-			Io_mem_session_capability io_mem;
+			addr_t rsdt = 0, xsdt = 0;
+			uint8_t acpi_revision = 0;
 
-			uint8_t * ptr_rsdp = _rsdp(io_mem);
+			/* try platform_info ROM provided by core */
+			try {
+				Genode::Attached_rom_dataspace info(_env, "platform_info");
+				Genode::Xml_node xml(info.local_addr<char>(), info.size());
+				Xml_node acpi_node = xml.sub_node("acpi");
+				acpi_revision = acpi_node.attribute_value("revision", 0U);
+				rsdt = acpi_node.attribute_value("rsdt", 0UL);
+				xsdt = acpi_node.attribute_value("xsdt", 0UL);
+			} catch (...) { }
 
-			struct rsdp {
-				char     signature[8];
-			    uint8_t  checksum;
-				char     oemid[6];
-				uint8_t  revision;
-				/* table pointer at 16 byte offset in RSDP structure (5.2.5.3) */
-				uint32_t rsdt;
-				/* With ACPI 2.0 */
-				uint32_t len;
-				uint64_t xsdt;
-				uint8_t  checksum_extended;
-			    uint8_t  reserved[3];
-			} __attribute__((packed));
-			struct rsdp * rsdp = reinterpret_cast<struct rsdp *>(ptr_rsdp);
+			/* try legacy way if not found in platform_info */
+			if (!rsdt && !xsdt) {
+				uint8_t * ptr_rsdp = _rsdp();
 
-			if (!rsdp) {
-				if (verbose)
-					PDBG("No rsdp structure found");
-				return;
+				struct rsdp {
+					char     signature[8];
+					uint8_t  checksum;
+					char     oemid[6];
+					uint8_t  revision;
+					/* table pointer at 16 byte offset in RSDP structure (5.2.5.3) */
+					uint32_t rsdt;
+					/* With ACPI 2.0 */
+					uint32_t len;
+					uint64_t xsdt;
+					uint8_t  checksum_extended;
+					uint8_t  reserved[3];
+				} __attribute__((packed));
+				struct rsdp * rsdp = reinterpret_cast<struct rsdp *>(ptr_rsdp);
+
+				if (!rsdp) {
+					Genode::error("No valid ACPI RSDP structure found");
+					return;
+				}
+
+				rsdt = rsdp->rsdt;
+				xsdt = rsdp->xsdt;
+				acpi_revision = rsdp->revision;
+				/* drop rsdp io_mem mapping since rsdt/xsdt may overlap */
+				_mmio.destruct();
 			}
-
-			if (verbose) {
-				uint8_t oem[7];
-				memcpy(oem, rsdp->oemid, 6);
-				oem[6] = 0;
-				PDBG("ACPI revision %u of OEM '%s', rsdt:0x%x xsdt:0x%llx",
-				     rsdp->revision, oem, rsdp->rsdt, rsdp->xsdt);
-			}
-
-			addr_t const rsdt = rsdp->rsdt;
-			addr_t const xsdt = rsdp->xsdt;
-			uint8_t const acpi_revision = rsdp->revision;
-			/* drop rsdp io_mem mapping since rsdt/xsdt may overlap */
-			env()->parent()->close(io_mem);
 
 			if (acpi_revision != 0 && xsdt && sizeof(addr_t) != sizeof(uint32_t)) {
 				/* running 64bit and xsdt is valid */
-				Table_wrapper table(xsdt);
+				Table_wrapper table(_memory, xsdt);
+				if (!table.valid()) throw -1;
+
 				uint64_t * entries = reinterpret_cast<uint64_t *>(table.table() + 1);
-				_parse_tables(entries, table.entry_count(entries));
+				_parse_tables(alloc, entries, table.entry_count(entries));
+
+				Genode::log("XSDT ", *table.table());
 			} else {
 				/* running (32bit) or (64bit and xsdt isn't valid) */
-				Table_wrapper table(rsdt);
+				Table_wrapper table(_memory, rsdt);
+				if (!table.valid()) throw -1;
+
 				uint32_t * entries = reinterpret_cast<uint32_t *>(table.table() + 1);
-				_parse_tables(entries, table.entry_count(entries));
+				_parse_tables(alloc, entries, table.entry_count(entries));
+
+				Genode::log("RSDT ", *table.table());
 			}
 
 			/* free up memory of elements not of any use */
-			Element::clean_list();
+			Element::clean_list(alloc);
 
 			/* free up io memory */
-			acpi_memory().free_io_memory();
+			_memory.free_io_memory();
 		}
 };
-
-
-/**
- * Parse acpi table
- */
-static void init_acpi_table()
-{
-	static Acpi_table table;
-}
 
 
 static void attribute_hex(Xml_generator &xml, char const *name,
@@ -1296,23 +1410,21 @@ static void attribute_hex(Xml_generator &xml, char const *name,
 }
 
 
-void Acpi::generate_report()
+void Acpi::generate_report(Genode::Env &env, Genode::Allocator &alloc)
 {
-	init_acpi_table();
+	/* parse table */
+	Acpi_table acpi_table(env, alloc);
 
 	enum { REPORT_SIZE = 4 * 4096 };
-	static Reporter acpi("acpi", "acpi", REPORT_SIZE);
+	static Reporter acpi(env, "acpi", "acpi", REPORT_SIZE);
 	acpi.enabled(true);
 
 	Genode::Reporter::Xml_generator xml(acpi, [&] () {
-		if (!(!Fadt::features && !Fadt::reset_type &&
-		      !Fadt::reset_addr && !Fadt::reset_value))
-			xml.node("fadt", [&] () {
-				attribute_hex(xml, "features"   , Fadt::features);
-				attribute_hex(xml, "reset_type" , Fadt::reset_type);
-				attribute_hex(xml, "reset_addr" , Fadt::reset_addr);
-				attribute_hex(xml, "reset_value", Fadt::reset_value);
+		if (root_bridge_bdf != INVALID_ROOT_BRIDGE) {
+			xml.node("root_bridge", [&] () {
+				attribute_hex(xml, "bdf", root_bridge_bdf);
 			});
+		}
 
 		for (Pci_config_space *e = Pci_config_space::list()->first(); e;
 		     e = e->next())
@@ -1336,8 +1448,12 @@ void Acpi::generate_report()
 		/* lambda definition for scope evaluation in rmrr */
 		auto func_scope = [&] (Device_scope const &scope)
 		{
+			if (!scope.count())
+				return;
+
 			xml.node("scope", [&] () {
 				xml.attribute("bus_start", scope.read<Device_scope::Bus>());
+				xml.attribute("type", scope.read<Device_scope::Type>());
 				for (unsigned j = 0 ; j < scope.count(); j++) {
 					xml.node("path", [&] () {
 						attribute_hex(xml, "dev",
@@ -1353,10 +1469,21 @@ void Acpi::generate_report()
 		     entry; entry = entry->next()) {
 
 			entry->apply([&] (Dmar_common const &dmar) {
+				if (dmar.read<Dmar_common::Type>() == Dmar_common::Type::DRHD) {
+					Dmar_drhd drhd(dmar.base());
+
+					xml.node("drhd", [&] () {
+						attribute_hex(xml, "phys", drhd.read<Dmar_drhd::Phys>());
+						attribute_hex(xml, "flags", drhd.read<Dmar_drhd::Flags>());
+						attribute_hex(xml, "segment", drhd.read<Dmar_drhd::Segment>());
+						drhd.apply(func_scope);
+					});
+				}
+
 				if (dmar.read<Dmar_common::Type>() != Dmar_common::Type::RMRR)
 					return;
 
-				Dmar_rmrr rmrr(dmar.base);
+				Dmar_rmrr rmrr(dmar.base());
 
 				xml.node("rmrr", [&] () {
 					attribute_hex(xml, "start", rmrr.read<Dmar_rmrr::Base>());
@@ -1366,6 +1493,13 @@ void Acpi::generate_report()
 				});
 			});
 		}
+
+		Ivdb_entry::for_each([&](auto entry) {
+			xml.node("ivdb", [&] () {
+				xml.attribute("type", entry.type);
+			});
+		});
+
 		{
 			Element *e = Element::list()->first();
 
@@ -1373,7 +1507,7 @@ void Acpi::generate_report()
 				if (!e->is_device())
 					continue;
 
-				Pci_routing *r = e->pci_list()->first();
+				Pci_routing *r = e->pci_list().first();
 				for (; r; r = r->next()) {
 					xml.node("routing", [&] () {
 						attribute_hex(xml, "gsi", r->gsi());

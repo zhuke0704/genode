@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__LOADER_SESSION__CONNECTION_H_
@@ -26,23 +26,12 @@ struct Loader::Connection : Genode::Connection<Session>, Session_client
 	/**
 	 * Constructor
 	 */
-	Connection(Genode::Env &env, size_t ram_quota)
+	Connection(Genode::Env &env, Ram_quota ram_quota, Cap_quota cap_quota)
 	:
 		Genode::Connection<Session>(env, session(env.parent(),
-		                                         "ram_quota=%zd", ram_quota)),
-		Session_client(cap())
-	{ }
-
-	/**
-	 * Constructor
-	 *
-	 * \noapi
-	 * \deprecated  Use the constructor with 'Env &' as first
-	 *              argument instead
-	 */
-	Connection(size_t ram_quota)
-	:
-		Genode::Connection<Session>(session("ram_quota=%zd", ram_quota)),
+		                                         "ram_quota=%ld, cap_quota=%ld",
+		                                         ram_quota.value,
+		                                         CAP_QUOTA + cap_quota.value)),
 		Session_client(cap())
 	{ }
 };

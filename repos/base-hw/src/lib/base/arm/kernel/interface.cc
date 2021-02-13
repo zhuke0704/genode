@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -55,6 +55,18 @@ using namespace Kernel;
 /******************
  ** Kernel calls **
  ******************/
+
+Call_ret_64 Kernel::call64(Call_arg arg_0)
+{
+	register Call_arg arg_0_reg asm("r0") = arg_0;
+	register Call_arg arg_1_reg asm("r1");
+
+	/* in this particular case, both r0 and r1 are used as output */
+	asm volatile(CALL_1_SWI, "+r"(arg_1_reg));
+
+	return ((Call_ret_64)arg_0_reg) << 32 | (Call_ret_64)arg_1_reg;
+}
+
 
 Call_ret Kernel::call(Call_arg arg_0)
 {

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include <scout/tick.h>
@@ -35,6 +35,12 @@ class Arrow_event_handler : public Event_handler, public Tick
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Arrow_event_handler(Arrow_event_handler const &);
+		Arrow_event_handler &operator = (Arrow_event_handler const &);
+
 		/**
 		 * Constants
 		 */
@@ -44,32 +50,28 @@ class Arrow_event_handler : public Event_handler, public Tick
 		Fade_icon<PT, 32, 32> *_icon;
 		unsigned char         *_rgba;
 		int                    _direction;
-		int                    _curr_speed;
-		int                    _dst_speed;
-		int                    _view_pos;
-		int                    _accel;
+		int                    _curr_speed = 0;
+		int                    _dst_speed  = 0;
+		int                    _view_pos   = 0;
+		int                    _accel      = 1;
 
 	public:
 
 		/**
 		 * Constructor
 		 */
-		Arrow_event_handler(Scrollbar<PT> *sb,
+		Arrow_event_handler(Scrollbar<PT>         *sb,
 		                    Fade_icon<PT, 32, 32> *icon,
-		                    int direction,
-		                    unsigned char *rgba)
-		{
-			_sb        = sb;
-			_icon      = icon;
-			_direction = direction;
-			_accel     = 1;
-			_rgba      = rgba;
-		}
+		                    int                    direction,
+		                    unsigned char         *rgba)
+		:
+			_sb(sb), _icon(icon), _rgba(rgba), _direction(direction)
+		{ }
 
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &ev)
+		void handle_event(Event const &ev) override
 		{
 			static int key_cnt;
 
@@ -104,7 +106,7 @@ class Arrow_event_handler : public Event_handler, public Tick
 		/**
 		 * Tick interface
 		 */
-		int on_tick()
+		int on_tick() override
 		{
 			/* accelerate */
 			if (_curr_speed < _dst_speed)
@@ -145,6 +147,12 @@ class Slider_event_handler : public Event_handler
 {
 	private:
 
+		/*
+		 * Noncopyable
+		 */
+		Slider_event_handler(Slider_event_handler const &);
+		Slider_event_handler &operator = (Slider_event_handler const &);
+
 		Scrollbar<PT>         *_sb;
 		Fade_icon<PT, 32, 32> *_icon;
 		unsigned char         *_rgba;
@@ -154,19 +162,17 @@ class Slider_event_handler : public Event_handler
 		/**
 		 * Constructor
 		 */
-		Slider_event_handler(Scrollbar<PT> *sb,
-		                    Fade_icon<PT, 32, 32> *icon,
-		                    unsigned char *rgba)
-		{
-			_sb        = sb;
-			_icon      = icon;
-			_rgba      = rgba;
-		}
+		Slider_event_handler(Scrollbar<PT>         *sb,
+		                     Fade_icon<PT, 32, 32> *icon,
+		                     unsigned char         *rgba)
+		:
+			_sb(sb), _icon(icon), _rgba(rgba)
+		{ }
 
 		/**
 		 * Event handler interface
 		 */
-		void handle(Event &ev)
+		void handle_event(Event const &ev) override
 		{
 			static int key_cnt;
 			static int curr_my, orig_my;
@@ -223,12 +229,6 @@ Scrollbar<PT>::Scrollbar()
 	append(&_slider);
 
 	_min_size = Area(sb_elem_w, sb_elem_h*3);
-
-	_real_size  = 100;
-	_view_size  = 100;
-	_view_pos   = 0;
-	_listener   = 0;
-	_visibility = 0;
 
 	/* define event handlers for scrollbar elements */
 	_uparrow.event_handler(new Arrow_event_handler<PT>(this, &_uparrow, -1, UPARROW_RGBA));
@@ -327,4 +327,4 @@ Element *Scrollbar<PT>::find(Point position)
 }
 
 
-template class Scrollbar<Genode::Pixel_rgb565>;
+template class Scout::Scrollbar<Genode::Pixel_rgb888>;

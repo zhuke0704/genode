@@ -5,20 +5,24 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <util/arg_string.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/snprintf.h>
 
 /* core-local includes */
 #include <pd_session_component.h>
 #include <dataspace_component.h>
+
+/* base-internal includes */
+#include <base/internal/parent_socket_handle.h>
+#include <base/internal/capability_space_tpl.h>
 
 /* Linux includes */
 #include <core_linux_syscalls.h>
@@ -35,15 +39,15 @@ using namespace Genode;
  */
 struct Execve_args
 {
-	char         const *filename;
-	char       * const *argv;
-	char       * const *envp;
-	int          const parent_sd;
+	char   const *filename;
+	char * const *argv;
+	char * const *envp;
+	Lx_sd  const parent_sd;
 
 	Execve_args(char   const *filename,
 	            char * const *argv,
 	            char * const *envp,
-	            int           parent_sd)
+	            Lx_sd         parent_sd)
 	:
 		filename(filename), argv(argv), envp(envp), parent_sd(parent_sd)
 	{ }
@@ -55,7 +59,7 @@ struct Execve_args
  */
 static int _exec_child(Execve_args *arg)
 {
-	lx_dup2(arg->parent_sd, PARENT_SOCKET_HANDLE);
+	lx_dup2(arg->parent_sd.value, PARENT_SOCKET_HANDLE);
 
 	return lx_execve(arg->filename, arg->argv, arg->envp);
 }
@@ -108,13 +112,14 @@ void Native_pd_component::_start(Dataspace_component &ds)
 
 		int tmp_binary_fd = lx_open(filename, O_CREAT | O_EXCL | O_WRONLY, S_IRWXU);
 		if (tmp_binary_fd < 0) {
-			PERR("Could not create file '%s'", filename);
+			error("Could not create file '", filename, "'");
 			return; /* XXX reflect error to client */
 		}
 
 		char buf[4096];
 		int num_bytes = 0;
-		while ((num_bytes = lx_read(ds.fd().dst().socket, buf, sizeof(buf))) != 0)
+		int const fd_socket = Capability_space::ipc_cap_data(ds.fd()).dst.socket.value;
+		while ((num_bytes = lx_read(fd_socket, buf, sizeof(buf))) != 0)
 			lx_write(tmp_binary_fd, buf, num_bytes);
 
 		lx_close(tmp_binary_fd);
@@ -138,7 +143,7 @@ void Native_pd_component::_start(Dataspace_component &ds)
 	/* prefix name of Linux program (helps killing some zombies) */
 	char const *prefix = "[Genode] ";
 	char pname_buf[sizeof(_pd_session._label) + sizeof(prefix)];
-	snprintf(pname_buf, sizeof(pname_buf), "%s%s", prefix, _pd_session._label.string);
+	snprintf(pname_buf, sizeof(pname_buf), "%s%s", prefix, _pd_session._label.string());
 	char *argv_buf[2];
 	argv_buf[0] = pname_buf;
 	argv_buf[1] = 0;
@@ -164,7 +169,7 @@ void Native_pd_component::_start(Dataspace_component &ds)
 	 * pointer, all arguments are embedded within the 'execve_args' struct.
 	 */
 	Execve_args arg(filename, argv_buf, env,
-	                _pd_session._parent.dst().socket);
+	                Capability_space::ipc_cap_data(_pd_session._parent).dst.socket);
 
 	_pid = lx_create_process((int (*)(void *))_exec_child,
 	                         stack + STACK_SIZE - sizeof(umword_t), &arg);
@@ -174,12 +179,11 @@ void Native_pd_component::_start(Dataspace_component &ds)
 }
 
 
-Native_pd_component::Native_pd_component(Pd_session_component &pd_session,
-                                         const char *args)
+Native_pd_component::Native_pd_component(Pd_session_component &pd, const char *)
 :
-	_pd_session(pd_session)
+	_pd_session(pd)
 {
-	_pd_session._thread_ep.manage(this);
+	_pd_session._ep.manage(this);
 }
 
 
@@ -188,18 +192,18 @@ Native_pd_component::~Native_pd_component()
 	if (_pid)
 		lx_kill(_pid, 9);
 
-	_pd_session._thread_ep.dissolve(this);
+	_pd_session._ep.dissolve(this);
 }
 
 
 void Native_pd_component::start(Capability<Dataspace> binary)
 {
 	/* lookup binary dataspace */
-	_pd_session._thread_ep.apply(binary, [&] (Dataspace_component *ds) {
+	_pd_session._ep.apply(binary, [&] (Dataspace_component *ds) {
 
 		if (ds)
 			_start(*ds);
 		else
-			PERR("failed to lookup binary to start");
+			error("failed to lookup binary to start");
 	});
 };

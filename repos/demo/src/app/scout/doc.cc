@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #include "elements.h"
@@ -149,7 +149,7 @@ Document *create_document()
 	b0->append_plaintext("that can be started by clicking on the application's name. Before starting an", &plain_style);
 	b0->append_plaintext("application, the user can define the amount of memory quota to donate to the", &plain_style);
 	b0->append_plaintext("new application by adjusting the red bar using the mouse.", &plain_style);
-	Launcher *l0 = new Launcher("launchpad", 1, 22*1024*1024);
+	Launcher *l0 = new Launcher("launchpad", 1, 100000, 36*1024*1024);
 	b0->append_launchertext("Start the launchpad by clicking on this link...", &link_style, l0);
 	chapter->append(b0);
 

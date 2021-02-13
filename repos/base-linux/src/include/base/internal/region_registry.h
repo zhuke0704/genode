@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__REGION_REGISTRY_
 #define _INCLUDE__BASE__INTERNAL__REGION_REGISTRY_
 
 #include <dataspace/capability.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 namespace Genode {
 	class Region;
@@ -27,10 +27,10 @@ class Genode::Region
 {
 	private:
 
-		addr_t               _start;
-		off_t                _offset;
-		Dataspace_capability _ds;
-		size_t               _size;
+		addr_t               _start  { 0 };
+		off_t                _offset { 0 };
+		Dataspace_capability _ds     {   };
+		size_t               _size   { 0 };
 
 		/**
 		 * Return offset of first byte after the region
@@ -39,7 +39,7 @@ class Genode::Region
 
 	public:
 
-		Region() : _start(0), _offset(0), _size(0) { }
+		Region() { }
 
 		Region(addr_t start, off_t offset, Dataspace_capability ds, size_t size)
 		: _start(start), _offset(offset), _ds(ds), _size(size) { }
@@ -97,8 +97,7 @@ class Genode::Region_registry
 				if (!_map[i].used()) break;
 
 			if (i == MAX_REGIONS) {
-				PERR("maximum number of %d regions reached",
-				     MAX_REGIONS);
+				error("maximum number of ", (unsigned)MAX_REGIONS, " regions reached");
 				return -1;
 			}
 

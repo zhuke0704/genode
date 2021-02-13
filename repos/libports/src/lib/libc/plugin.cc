@@ -5,22 +5,44 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* libc plugin interface */
 #include <libc-plugin/fd_alloc.h>
 #include <libc-plugin/plugin_registry.h>
 #include <libc-plugin/plugin.h>
 
-using namespace Genode;
+/* local includes */
+#include <internal/init.h>
+#include <internal/resume.h>
+
 using namespace Libc;
+
+
+static Resume *_resume_ptr;
+
+
+void Libc::init_plugin(Resume &resume)
+{
+	_resume_ptr = &resume;
+}
+
+
+void Plugin::resume_all()
+{
+	struct Missing_call_of_init_plugin : Exception { };
+	if (!_resume_ptr)
+		throw Missing_call_of_init_plugin();
+
+	_resume_ptr->resume_all();
+}
 
 
 Plugin::Plugin(int priority)
@@ -48,27 +70,6 @@ bool Plugin::supports_access(char const *path, int amode)
 }
 
 
-bool Plugin::supports_execve(char const *filename, char *const argv[],
-                             char *const envp[])
-{
-	return false;
-}
-
-
-bool Plugin::supports_freeaddrinfo(struct ::addrinfo *)
-{
-	return false;
-}
-
-
-bool Plugin::supports_getaddrinfo(const char *, const char *,
-                                  const struct ::addrinfo *,
-                                  struct ::addrinfo **)
-{
-	return false;
-}
-
-
 bool Plugin::supports_mkdir(const char *, mode_t)
 {
 	return false;
@@ -87,7 +88,13 @@ bool Plugin::supports_pipe()
 }
 
 
-bool Plugin::supports_readlink(const char *path, char *buf, size_t bufsiz)
+bool Plugin::supports_poll()
+{
+	return false;
+}
+
+
+bool Plugin::supports_readlink(const char *path, char *buf, ::size_t bufsiz)
 {
 	return false;
 }
@@ -148,7 +155,6 @@ bool Plugin::supports_mmap()
 #define DUMMY(ret_type, ret_val, name, args) \
 ret_type Plugin::name args \
 { \
-	PERR( #name " not implemented"); \
 	return ret_val; \
 }
 
@@ -178,7 +184,7 @@ DUMMY(ssize_t, -1, getdirentries, (File_descriptor *, char *, ::size_t, ::off_t 
 DUMMY(int,     -1, getpeername,   (File_descriptor *, struct sockaddr *, socklen_t *));
 DUMMY(int,     -1, getsockname,   (File_descriptor *, struct sockaddr *, socklen_t *));
 DUMMY(int,     -1, getsockopt,    (File_descriptor *, int, int, void *, socklen_t *));
-DUMMY(int,     -1, ioctl,         (File_descriptor *, int, char*));
+DUMMY(int,     -1, ioctl,         (File_descriptor *, unsigned long, char*));
 DUMMY(int,     -1, listen,        (File_descriptor *, int));
 DUMMY(::off_t, -1, lseek,         (File_descriptor *, ::off_t, int));
 DUMMY(ssize_t, -1, read,          (File_descriptor *, void *, ::size_t));
@@ -196,15 +202,14 @@ DUMMY(ssize_t, -1, write,         (File_descriptor *, const void *, ::size_t));
  * Misc
  */
 DUMMY(int, -1, access,       (char const *, int));
-DUMMY(int, -1, execve,       (char const *, char *const[], char *const[]));
-DUMMY(void,  , freeaddrinfo, (struct ::addrinfo *));
-DUMMY(int, -1, getaddrinfo,  (const char *, const char *, const struct ::addrinfo *, struct ::addrinfo **));
 DUMMY(int, -1, mkdir,        (const char*, mode_t));
 DUMMY(void *, (void *)(-1), mmap, (void *addr, ::size_t length, int prot, int flags,
                                    File_descriptor *, ::off_t offset));
 DUMMY(int, -1, munmap,       (void *, ::size_t));
+DUMMY(int, -1, msync,        (void *addr, ::size_t len, int flags));
 DUMMY(int, -1, pipe,         (File_descriptor*[2]));
-DUMMY(ssize_t, -1, readlink, (const char *, char *, size_t));
+DUMMY(bool, 0, poll,         (File_descriptor &, struct pollfd &));
+DUMMY(ssize_t, -1, readlink, (const char *, char *, ::size_t));
 DUMMY(int, -1, rename,       (const char *, const char *));
 DUMMY(int, -1, rmdir,        (const char*));
 DUMMY(int, -1, select,       (int, fd_set *, fd_set *, fd_set *, struct timeval *));

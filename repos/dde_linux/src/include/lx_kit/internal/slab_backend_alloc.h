@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_KIT__INTERAL__SLAB_BACKEND_ALLOC_H_
@@ -39,7 +39,7 @@ class Lx::Slab_backend_alloc : public Genode::Allocator
 		/**
 		 * Allocate
 		 */
-		virtual bool alloc(size_t size, void **out_addr) = 0;
+		virtual bool alloc(Genode::size_t size, void **out_addr) = 0;
 		virtual void free(void *addr) = 0;
 
 		/**

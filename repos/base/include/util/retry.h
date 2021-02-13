@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__UTIL__RETRY_H_
@@ -38,7 +38,7 @@ namespace Genode {
  */
 template <typename EXC, typename FUNC, typename HANDLER>
 auto Genode::retry(FUNC func, HANDLER handler,
-                   unsigned attempts = ~0U) -> decltype(func())
+                   unsigned attempts) -> decltype(func())
 {
 	for (unsigned i = 0; attempts == ~0U || i < attempts; i++)
 		try { return func(); }

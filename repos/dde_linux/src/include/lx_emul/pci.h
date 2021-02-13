@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /*****************
@@ -36,6 +36,7 @@ enum { PCI_ANY_ID = ~0U };
 typedef enum {
 	PCI_D0    = 0,
 	PCI_D1    = 1,
+	PCI_D2    = 2,
 	PCI_D3hot = 3,
 	PCI_D3cold = 4,
 } pci_power_t;

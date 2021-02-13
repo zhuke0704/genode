@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -20,9 +20,7 @@
 /* base-internal includes */
 #include <base/internal/stack.h>
 #include <base/internal/native_utcb.h>
-
-/* base-hw includes */
-#include <kernel/interface.h>
+#include <base/internal/capability_space.h>
 
 using namespace Genode;
 
@@ -47,10 +45,16 @@ void prepare_init_main_thread()
 	 * before the UTCB gets polluted by the following function calls.
 	 */
 	Native_utcb * utcb = Thread::myself()->utcb();
-	_parent_cap = utcb->cap_get(Native_utcb::PARENT);
-	Untyped_capability ds_cap(utcb->cap_get(Native_utcb::UTCB_DATASPACE));
+	_parent_cap = Capability_space::import(utcb->cap_get(Native_utcb::PARENT));
+	Kernel::ack_cap(Capability_space::capid(_parent_cap));
+
+	Untyped_capability ds_cap =
+		Capability_space::import(utcb->cap_get(Native_utcb::UTCB_DATASPACE));
 	_main_thread_utcb_ds = reinterpret_cap_cast<Ram_dataspace>(ds_cap);
-	_main_thread_cap = utcb->cap_get(Native_utcb::THREAD_MYSELF);
+	Kernel::ack_cap(Capability_space::capid(_main_thread_utcb_ds));
+
+	_main_thread_cap = Capability_space::import(utcb->cap_get(Native_utcb::THREAD_MYSELF));
+	Kernel::ack_cap(Capability_space::capid(_main_thread_cap));
 }
 
 
@@ -61,6 +65,8 @@ void prepare_reinit_main_thread() { prepare_init_main_thread(); }
  ** Thread **
  ************/
 
+/* prevent the compiler from optimizing out the 'this' pointer check */
+__attribute__((optimize("-fno-delete-null-pointer-checks")))
 Native_utcb *Thread::utcb()
 {
 	if (this) { return &_stack->utcb(); }
@@ -72,9 +78,14 @@ void Thread::_thread_start()
 {
 	Thread::myself()->_thread_bootstrap();
 	Thread::myself()->entry();
-	Thread::myself()->_join_lock.unlock();
+	Thread::myself()->_join.wakeup();
 	Genode::sleep_forever();
 }
 
-void Thread::_thread_bootstrap() {
-	native_thread().cap = myself()->utcb()->cap_get(Native_utcb::THREAD_MYSELF); }
+void Thread::_thread_bootstrap()
+{
+	Kernel::capid_t capid = myself()->utcb()->cap_get(Native_utcb::THREAD_MYSELF);
+	native_thread().cap = Capability_space::import(capid);
+	if (native_thread().cap.valid())
+		Kernel::ack_cap(Capability_space::capid(native_thread().cap));
+}

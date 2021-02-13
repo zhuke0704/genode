@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__TERMINAL_SESSION__TERMINAL_SESSION_H_
@@ -24,7 +24,17 @@ namespace Terminal { struct Session; }
 
 struct Terminal::Session : Genode::Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Terminal"; }
+
+	/*
+	 * A terminal session consumes a dataspace capability for the server's
+	 * session-object allocation, its session capability, and a dataspace
+	 * capability for the communication buffer.
+	 */
+	enum { CAP_QUOTA = 3 };
 
 	class Size
 	{
@@ -83,6 +93,11 @@ struct Terminal::Session : Genode::Session
 	 */
 	virtual void read_avail_sigh(Genode::Signal_context_capability cap) = 0;
 
+	/**
+	 * Register signal handler to be notified on terminal-size changes
+	 */
+	virtual void size_changed_sigh(Genode::Signal_context_capability cap) = 0;
+
 
 	/*******************
 	 ** RPC interface **
@@ -91,14 +106,15 @@ struct Terminal::Session : Genode::Session
 	GENODE_RPC(Rpc_size, Size, size);
 	GENODE_RPC(Rpc_avail, bool, avail);
 	GENODE_RPC(Rpc_read, Genode::size_t, _read, Genode::size_t);
-	GENODE_RPC(Rpc_write, void, _write, Genode::size_t);
+	GENODE_RPC(Rpc_write, Genode::size_t, _write, Genode::size_t);
 	GENODE_RPC(Rpc_connected_sigh, void, connected_sigh, Genode::Signal_context_capability);
 	GENODE_RPC(Rpc_read_avail_sigh, void, read_avail_sigh, Genode::Signal_context_capability);
+	GENODE_RPC(Rpc_size_changed_sigh, void, size_changed_sigh, Genode::Signal_context_capability);
 	GENODE_RPC(Rpc_dataspace, Genode::Dataspace_capability, _dataspace);
 
 	GENODE_RPC_INTERFACE(Rpc_size, Rpc_avail, Rpc_read, Rpc_write,
 	                     Rpc_connected_sigh, Rpc_read_avail_sigh,
-	                     Rpc_dataspace);
+	                     Rpc_size_changed_sigh, Rpc_dataspace);
 };
 
 #endif /* _INCLUDE__TERMINAL_SESSION__TERMINAL_SESSION_H_ */

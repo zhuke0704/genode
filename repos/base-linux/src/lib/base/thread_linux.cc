@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -17,11 +17,14 @@
 #include <base/thread.h>
 #include <base/snprintf.h>
 #include <base/sleep.h>
+#include <base/log.h>
 #include <linux_native_cpu/client.h>
 #include <cpu_thread/client.h>
+#include <deprecated/env.h>
 
 /* base-internal includes */
 #include <base/internal/stack.h>
+#include <base/internal/globals.h>
 
 /* Linux syscall bindings */
 #include <linux_syscalls.h>
@@ -33,10 +36,10 @@ extern int main_thread_futex_counter;
 static void empty_signal_handler(int) { }
 
 
-static Lock &startup_lock()
+static Blockade &startup_lock()
 {
-	static Lock lock(Lock::LOCKED);
-	return lock;
+	static Blockade blockade;
+	return blockade;
 }
 
 
@@ -46,45 +49,52 @@ static Lock &startup_lock()
 static void thread_exit_signal_handler(int) { lx_exit(0); }
 
 
-static char signal_stack[0x2000] __attribute__((aligned(0x1000)));
-
 void Thread::_thread_start()
 {
-	lx_sigaltstack(signal_stack, sizeof(signal_stack));
+	Thread * const thread = Thread::myself();
+
+	/* use primary stack as alternate stack for fatal signals (exceptions) */
+	void   *stack_base = (void *)thread->_stack->base();
+	size_t  stack_size = thread->_stack->top() - thread->_stack->base();
+
+	lx_sigaltstack(stack_base, stack_size);
+	if (stack_size < 0x1000)
+		raw("small stack of ", stack_size, " bytes for \"", thread->name(),
+		    "\" may break Linux signal handling");
 
 	/*
 	 * Set signal handler such that canceled system calls get not
 	 * transparently retried after a signal gets received.
 	 */
-	lx_sigaction(LX_SIGUSR1, empty_signal_handler);
-
-	Thread * const thread = Thread::myself();
+	lx_sigaction(LX_SIGUSR1, empty_signal_handler, false);
 
 	/* inform core about the new thread and process ID of the new thread */
-	Linux_native_cpu_client native_cpu(thread->_cpu_session->native_cpu());
-	native_cpu.thread_id(thread->cap(), thread->native_thread().pid, thread->native_thread().tid);
+	{
+		Linux_native_cpu_client native_cpu(thread->_cpu_session->native_cpu());
+		native_cpu.thread_id(thread->cap(), thread->native_thread().pid, thread->native_thread().tid);
+	}
 
 	/* wakeup 'start' function */
-	startup_lock().unlock();
+	startup_lock().wakeup();
 
 	thread->entry();
 
 	/* unblock caller of 'join()' */
-	thread->_join_lock.unlock();
+	thread->_join.wakeup();
 
 	sleep_forever();
 }
 
 
-void Thread::_init_platform_thread(size_t weight, Type type)
+void Thread::_init_platform_thread(size_t /* weight */, Type type)
 {
 	/* if no cpu session is given, use it from the environment */
 	if (!_cpu_session)
-		_cpu_session = env()->cpu_session();
+		_cpu_session = env_deprecated()->cpu_session();
 
 	/* for normal threads create an object at the CPU session */
 	if (type == NORMAL) {
-		_thread_cap = _cpu_session->create_thread(env()->pd_session_cap(),
+		_thread_cap = _cpu_session->create_thread(env_deprecated()->pd_session_cap(),
 		                                          _stack->name().string(),
 		                                          Affinity::Location(),
 		                                          Weight());
@@ -92,7 +102,7 @@ void Thread::_init_platform_thread(size_t weight, Type type)
 	}
 	/* adjust initial object state for main threads */
 	native_thread().futex_counter = main_thread_futex_counter;
-	_thread_cap = env()->parent()->main_thread_cap();
+	_thread_cap = main_thread_cap();
 }
 
 
@@ -113,7 +123,10 @@ void Thread::_deinit_platform_thread()
 	for (;;) {
 
 		/* destroy thread locally */
-		int ret = lx_tgkill(native_thread().pid, native_thread().tid, LX_SIGCANCEL);
+		int pid = native_thread().pid;
+		if (pid == 0) break;
+
+		int ret = lx_tgkill(pid, native_thread().tid, LX_SIGCANCEL);
 
 		if (ret < 0) break;
 
@@ -130,8 +143,10 @@ void Thread::_deinit_platform_thread()
 void Thread::start()
 {
 	/* synchronize calls of the 'start' function */
-	static Lock lock;
-	Lock::Guard guard(lock);
+	static Mutex mutex;
+	Mutex::Guard guard(mutex);
+
+	_init_cpu_session_and_trace_control();
 
 	/*
 	 * The first time we enter this code path, the 'start' function is
@@ -141,7 +156,7 @@ void Thread::start()
 	 */
 	static bool threadlib_initialized = false;
 	if (!threadlib_initialized) {
-		lx_sigaction(LX_SIGCANCEL, thread_exit_signal_handler);
+		lx_sigaction(LX_SIGCANCEL, thread_exit_signal_handler, false);
 		threadlib_initialized = true;
 	}
 
@@ -149,11 +164,5 @@ void Thread::start()
 	native_thread().pid = lx_getpid();
 
 	/* wait until the 'thread_start' function got entered */
-	startup_lock().lock();
-}
-
-
-void Thread::cancel_blocking()
-{
-	Cpu_thread_client(_thread_cap).cancel_blocking();
+	startup_lock().block();
 }

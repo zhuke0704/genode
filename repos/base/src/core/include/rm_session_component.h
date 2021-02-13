@@ -5,19 +5,19 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__RM_SESSION_COMPONENT_H_
 #define _CORE__INCLUDE__RM_SESSION_COMPONENT_H_
 
 /* Genode includes */
-#include <base/allocator_guard.h>
 #include <base/rpc_server.h>
 #include <rm_session/rm_session.h>
+#include <base/session_object.h>
 
 /* core includes */
 #include <region_map_component.h>
@@ -25,22 +25,17 @@
 namespace Genode { class Rm_session_component; }
 
 
-class Genode::Rm_session_component : public Rpc_object<Rm_session>
+class Genode::Rm_session_component : public Session_object<Rm_session>
 {
 	private:
 
-		Rpc_entrypoint   &_ep;
-		Allocator_guard   _md_alloc;
-		Pager_entrypoint &_pager_ep;
+		Rpc_entrypoint           &_ep;
+		Constrained_ram_allocator _ram_alloc;
+		Sliced_heap               _md_alloc;
+		Pager_entrypoint         &_pager_ep;
 
-		Lock                       _region_maps_lock;
-		List<Region_map_component> _region_maps;
-
-		void _destroy(Region_map_component &rmc)
-		{
-			_region_maps.remove(&rmc);
-			Genode::destroy(_md_alloc, &rmc);
-		}
+		Mutex                      _region_maps_lock { };
+		List<Region_map_component> _region_maps      { };
 
 	public:
 
@@ -48,25 +43,29 @@ class Genode::Rm_session_component : public Rpc_object<Rm_session>
 		 * Constructor
 		 */
 		Rm_session_component(Rpc_entrypoint   &ep,
-		                     Allocator        &md_alloc,
-		                     Pager_entrypoint &pager_ep,
-		                     size_t            ram_quota)
+		                     Resources  const &resources,
+		                     Label      const &label,
+		                     Diag       const &diag,
+		                     Ram_allocator    &ram_alloc,
+		                     Region_map       &local_rm,
+		                     Pager_entrypoint &pager_ep)
 		:
-			_ep(ep), _md_alloc(&md_alloc, ram_quota), _pager_ep(pager_ep)
+			Session_object(ep, resources, label, diag),
+			_ep(ep),
+			_ram_alloc(ram_alloc, _ram_quota_guard(), _cap_quota_guard()),
+			_md_alloc(_ram_alloc, local_rm),
+			_pager_ep(pager_ep)
 		{ }
 
 		~Rm_session_component()
 		{
-			Lock::Guard guard(_region_maps_lock);
+			Mutex::Guard guard(_region_maps_lock);
 
-			while (Region_map_component *rmc = _region_maps.first())
-				_destroy(*rmc);
+			while (Region_map_component *rmc = _region_maps.first()) {
+				_region_maps.remove(rmc);
+				Genode::destroy(_md_alloc, rmc);
+			}
 		}
-
-		/**
-		 * Register quota donation at allocator guard
-		 */
-		void upgrade_ram_quota(size_t ram_quota) { _md_alloc.upgrade(ram_quota); }
 
 
 		/**************************
@@ -75,29 +74,39 @@ class Genode::Rm_session_component : public Rpc_object<Rm_session>
 
 		Capability<Region_map> create(size_t size) override
 		{
-			Lock::Guard guard(_region_maps_lock);
+			Mutex::Guard guard(_region_maps_lock);
 
-			Region_map_component *rm =
-				new (_md_alloc)
-					Region_map_component(_ep, _md_alloc, _pager_ep, 0, size);
+			try {
+				Region_map_component *rm =
+					new (_md_alloc)
+						Region_map_component(_ep, _md_alloc, _pager_ep, 0, size,
+						                     Diag{false});
 
-			_region_maps.insert(rm);
+				_region_maps.insert(rm);
 
-			return rm->cap();
+				return rm->cap();
+			}
+			catch (Allocator::Out_of_memory) { throw Out_of_ram(); }
 		}
 
-		void destroy(Capability<Region_map> rm) override
+		void destroy(Capability<Region_map> cap) override
 		{
-			Lock::Guard guard(_region_maps_lock);
+			Mutex::Guard guard(_region_maps_lock);
 
-			_ep.apply(rm, [&] (Region_map_component *rmc) {
+			Region_map_component *rm = nullptr;
+
+			_ep.apply(cap, [&] (Region_map_component *rmc) {
 				if (!rmc) {
-					PWRN("could not look up region map to destruct");
+					warning("could not look up region map to destruct");
 					return;
 				}
 
-				_destroy(*rmc);
+				_region_maps.remove(rmc);
+				rm = rmc;
 			});
+
+			if (rm)
+				Genode::destroy(_md_alloc, rm);
 		}
 };
 

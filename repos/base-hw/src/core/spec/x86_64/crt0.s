@@ -2,23 +2,49 @@
  * \brief   Startup code for Genode 64Bit applications
  * \author  Sebastian Sumpf
  * \author  Martin Stein
+ * \author  Alexander Boettcher
  * \date    2011-05-11
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2018 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
-
-/**************************
- ** .text (program code) **
- **************************/
 
 .section ".text"
 
-	/* program entry-point */
+	/***********************
+	 ** kernel entry code **
+	 ***********************/
+
+	.global _start
+	_start:
+
+	/* load kernel stack size */
+	movq kernel_stack_size@GOTPCREL(%rip), %rbx
+	movq (%rbx), %rax
+
+	/* calculate stack top (rdi contains cpu_id), stack top is stored in rax */
+	movq %rdi, %rbx
+	inc %rbx
+	mulq %rbx
+
+	/* switch to kernel stack */
+	movq kernel_stack@GOTPCREL(%rip), %rbx
+	addq %rbx, %rax
+	subq $8, %rax
+	movq %rax, %rsp
+
+	/* jump to C entry code */
+	jmp kernel_init
+
+
+	/*********************************
+	 ** core main thread entry code **
+	 *********************************/
+
 	.global _core_start
 	_core_start:
 

@@ -5,21 +5,24 @@
  */
 
 /*
- * Copyright (C) 2011-2016 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/sleep.h>
 #include <cpu_session_component.h>
 #include <util/list.h>
 
 /* GDB monitor includes */
 #include "cpu_thread_component.h"
+
+/* libc includes */
+#include <sys/signal.h>
 
 /* genode-low.cc */
 extern void genode_remove_thread(unsigned long lwpid);
@@ -36,13 +39,13 @@ Cpu_session &Cpu_session_component::parent_cpu_session()
 
 Rpc_entrypoint &Cpu_session_component::thread_ep()
 {
-	return *_thread_ep;
+	return _ep;
 }
 
 
-Signal_receiver *Cpu_session_component::exception_signal_receiver()
+Entrypoint &Cpu_session_component::signal_ep()
 {
-	return _exception_signal_receiver;
+	return _signal_ep;
 }
 
 
@@ -109,7 +112,7 @@ int Cpu_session_component::send_signal(Thread_capability thread_cap,
 			Signal_transmitter(cpu_thread->sigint_signal_context_cap()).submit();
 			return 1;
 		default:
-			PERR("unexpected signal %d", signo);
+			error("unexpected signal ", signo);
 			return 0;
 	}
 }
@@ -174,9 +177,9 @@ bool Cpu_session_component::stop_new_threads()
 }
 
 
-Lock &Cpu_session_component::stop_new_threads_lock()
+Mutex &Cpu_session_component::stop_new_threads_mutex()
 {
-	return _stop_new_threads_lock;
+	return _stop_new_threads_mutex;
 }
 
 
@@ -194,7 +197,7 @@ int Cpu_session_component::handle_initial_breakpoint(unsigned long lwpid)
 
 void Cpu_session_component::pause_all_threads()
 {
-	Lock::Guard stop_new_threads_lock_guard(stop_new_threads_lock());
+	Mutex::Guard stop_new_threads_mutex_guard(stop_new_threads_mutex());
 
 	stop_new_threads(true);
 
@@ -209,7 +212,7 @@ void Cpu_session_component::pause_all_threads()
 
 void Cpu_session_component::resume_all_threads()
 {
-Lock::Guard stop_new_threads_guard(stop_new_threads_lock());
+	Mutex::Guard stop_new_threads_guard(stop_new_threads_mutex());
 
 	stop_new_threads(false);
 
@@ -251,7 +254,10 @@ Thread_capability Cpu_session_component::create_thread(Capability<Pd_session> pd
 {
 	Cpu_thread_component *cpu_thread =
 		new (_md_alloc) Cpu_thread_component(*this, _core_pd, name,
-		                                     affinity, weight, utcb);
+		                                     affinity, weight, utcb,
+		                                     _new_thread_pipe_write_end,
+		                                     _breakpoint_len,
+		                                     _breakpoint_data);
 
 	_thread_list.append(cpu_thread);
 
@@ -264,12 +270,13 @@ void Cpu_session_component::kill_thread(Thread_capability thread_cap)
 	Cpu_thread_component *cpu_thread = lookup_cpu_thread(thread_cap);
 
 	if (cpu_thread) {
-		genode_remove_thread(cpu_thread->lwpid());
+		if (cpu_thread->lwpid())
+			genode_remove_thread(cpu_thread->lwpid());
 		_thread_list.remove(cpu_thread);
 		destroy(_md_alloc, cpu_thread);
 	} else
-		PERR("%s: could not find thread info for the given thread capability",
-		     __PRETTY_FUNCTION__);
+		error(__PRETTY_FUNCTION__, ": "
+		      "could not find thread info for the given thread capability");
 
 	_parent_cpu_session.kill_thread(thread_cap);
 }
@@ -299,18 +306,28 @@ Capability<Cpu_session::Native_cpu> Cpu_session_component::native_cpu()
 }
 
 
-Cpu_session_component::Cpu_session_component(Rpc_entrypoint *thread_ep,
-                                             Allocator *md_alloc,
+Cpu_session_component::Cpu_session_component(Env &env,
+                                             Rpc_entrypoint &ep,
+                                             Allocator &md_alloc,
                                              Pd_session_capability core_pd,
-                                             Signal_receiver *exception_signal_receiver,
-                                             const char *args)
-: _thread_ep(thread_ep),
+                                             Entrypoint &signal_ep,
+                                             const char *args,
+                                             Affinity const &affinity,
+                                             int const new_thread_pipe_write_end,
+                                             int const breakpoint_len,
+                                             unsigned char const *breakpoint_data)
+: _env(env),
+  _ep(ep),
   _md_alloc(md_alloc),
   _core_pd(core_pd),
-  _parent_cpu_session(env()->parent()->session<Cpu_session>(args)),
-  _exception_signal_receiver(exception_signal_receiver),
+  _parent_cpu_session(env.session<Cpu_session>(_id_space_element.id(), args, affinity), *this),
+  _signal_ep(signal_ep),
+  _new_thread_pipe_write_end(new_thread_pipe_write_end),
+  _breakpoint_len(breakpoint_len),
+  _breakpoint_data(breakpoint_data),
   _native_cpu_cap(_setup_native_cpu())
 {
+	_ep.manage(this);
 }
 
 
@@ -323,6 +340,8 @@ Cpu_session_component::~Cpu_session_component()
 	}
 
 	_cleanup_native_cpu();
+
+	_ep.dissolve(this);
 }
 
 

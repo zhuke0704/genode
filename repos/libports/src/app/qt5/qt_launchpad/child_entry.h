@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef CHILD_ENTRY_H
@@ -28,8 +28,8 @@ class Child_entry : public QWidget
 
 		Ui::Child_entryClass ui;
 
-		Launchpad *_launchpad;
-		Launchpad_child *_launchpad_child;
+		Launchpad       &_launchpad;
+		Launchpad_child &_launchpad_child;
 
 	private slots:
 
@@ -37,8 +37,9 @@ class Child_entry : public QWidget
 
 	public:
 
-		Child_entry(const char *name, int quota_kb, int max_quota_kb,
-		            Launchpad *launchpad, Launchpad_child *launchpad_child,
+		Child_entry(Launchpad_child::Name const &name, int quota_kb,
+		            int max_quota_kb, Launchpad &launchpad,
+		            Launchpad_child &launchpad_child,
 		            QWidget *parent = 0);
 };
 

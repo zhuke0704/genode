@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -16,6 +16,10 @@
 #include <util/retry.h>
 #include <base/rpc_server.h>
 #include <pd_session/client.h>
+#include <deprecated/env.h>
+
+/* base-internal includes */
+#include <base/internal/globals.h>
 
 /* NOVA-specific part of the PD session interface */
 #include <nova_native_pd/client.h>
@@ -31,22 +35,23 @@ Native_capability Rpc_entrypoint::_alloc_rpc_cap(Pd_session &pd, Native_capabili
 
 	Nova_native_pd_client native_pd(_native_pd_cap);
 
-	Untyped_capability new_obj_cap =
-		retry<Genode::Pd_session::Out_of_metadata>(
-			[&] () {
-				return native_pd.alloc_rpc_cap(ep, entry, 0);
-			},
-			[&] () {
-				Pd_session_client *client =
-					dynamic_cast<Pd_session_client*>(&pd);
+	for (;;) {
 
-				if (client)
-					env()->parent()->upgrade(*client, "ram_quota=16K");
-			});
+		Ram_quota ram_upgrade { 0 };
+		Cap_quota cap_upgrade { 0 };
 
-	native_pd.imprint_rpc_cap(new_obj_cap, new_obj_cap.local_name());
+		try {
+			Untyped_capability new_obj_cap = native_pd.alloc_rpc_cap(ep, entry, 0);
+			native_pd.imprint_rpc_cap(new_obj_cap, new_obj_cap.local_name());
+			return new_obj_cap;
+		}
+		catch (Out_of_ram)  { ram_upgrade = Ram_quota { 2*1024*sizeof(long) }; }
+		catch (Out_of_caps) { cap_upgrade = Cap_quota { 4 }; }
 
-	return new_obj_cap;
+		env_deprecated()->parent()->upgrade(Parent::Env::pd(),
+		                                    String<100>("ram_quota=", ram_upgrade, ", "
+		                                                "cap_quota=", cap_upgrade).string());
+	}
 }
 
 

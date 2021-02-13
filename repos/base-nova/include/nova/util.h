@@ -5,16 +5,16 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NOVA__UTIL_H_
 #define _INCLUDE__NOVA__UTIL_H_
 
-#include <base/printf.h>
+#include <base/log.h>
 #include <base/thread.h>
 
 __attribute__((always_inline))
@@ -29,9 +29,8 @@ inline void nova_die(const char * text = 0)
 }
 
 
-inline void request_event_portal(Genode::Native_capability const &cap,
-                                 Genode::addr_t sel, Genode::addr_t event,
-                                 unsigned short log2_count = 0)
+inline void request_event_portal(Genode::addr_t const cap,
+                                 Genode::addr_t const sel, Genode::addr_t event)
 {
 	Genode::Thread * myself = Genode::Thread::myself();
 	Nova::Utcb *utcb = reinterpret_cast<Nova::Utcb *>(myself->utcb());
@@ -40,38 +39,37 @@ inline void request_event_portal(Genode::Native_capability const &cap,
 	Nova::Crd orig_crd = utcb->crd_rcv;
 
 	/* request event-handler portal */
-	utcb->crd_rcv = Nova::Obj_crd(sel, log2_count);
-	utcb->msg[0]  = event;
-	utcb->msg[1]  = log2_count;
-	utcb->set_msg_word(2);
+	utcb->crd_rcv = Nova::Obj_crd(sel, 0);
+	utcb->msg()[0]  = event;
+	utcb->set_msg_word(1);
 
-	Genode::uint8_t res = Nova::call(cap.local_name());
+	Genode::uint8_t res = Nova::call(cap);
 
 	/* restore original receive window */
 	utcb->crd_rcv = orig_crd;
 
 	if (res)
-		PERR("request of event (%lu) capability selector failed (res=%u)", event, res);
+		Genode::error("request of event (", Genode::Hex(event), ") ",
+		              "capability selector failed (res=", res, ")");
 }
 
 
-inline void request_native_ec_cap(Genode::Native_capability const &cap,
-                                  Genode::addr_t const sel,
-                                  unsigned const no_pager_cap = 0)
-{
-	request_event_portal(cap, sel , ~0UL, no_pager_cap);
-}
-
-
-inline void request_signal_sm_cap(Genode::Native_capability const &cap,
+inline void request_native_ec_cap(Genode::addr_t const cap,
                                   Genode::addr_t const sel)
 {
-	request_event_portal(cap, sel, ~0UL - 1, 0);
+	request_event_portal(cap, sel , ~0UL);
 }
 
 
-inline void delegate_vcpu_portals(Genode::Native_capability const &cap,
+inline void request_signal_sm_cap(Genode::addr_t const cap,
                                   Genode::addr_t const sel)
+{
+	request_event_portal(cap, sel, ~0UL - 1);
+}
+
+
+inline void translate_remote_pager(Genode::addr_t const cap,
+                                   Genode::addr_t const sel)
 {
 	Genode::Thread * myself = Genode::Thread::myself();
 	Nova::Utcb *utcb = reinterpret_cast<Nova::Utcb *>(myself->utcb());
@@ -83,34 +81,22 @@ inline void delegate_vcpu_portals(Genode::Native_capability const &cap,
 
 	Genode::uint8_t res = Nova::NOVA_OK;
 	enum {
-		TRANSLATE = true, THIS_PD = false, NON_GUEST = false, HOTSPOT = 0,
-		TRANSFER_ITEMS = 1U << (Nova::NUM_INITIAL_VCPU_PT_LOG2 - 1)
+		TRANSLATE = true, THIS_PD = false, NON_GUEST = false, HOTSPOT = 0
 	};
 
-	/* prepare translation items for every portal separately */
-	for (unsigned half = 0; !res && half < 2; half++) {
-		/* translate half of portals - due to size constraints on 64bit */
-		utcb->msg[0] = half;
-		utcb->set_msg_word(1);
-		/* add one translate item per portal */
-		for (unsigned i = 0; !res && i < TRANSFER_ITEMS; i++) {
-			Nova::Obj_crd obj_crd(sel + half * TRANSFER_ITEMS + i, 0);
+	/* translate one item */
+	utcb->msg()[0] = 0xaffe;
+	utcb->set_msg_word(1);
 
-			if (!utcb->append_item(obj_crd, HOTSPOT, THIS_PD, NON_GUEST,
-			                       TRANSLATE))
-				res = 0xff;
-		}
-		if (res != Nova::NOVA_OK)
-			break;
-
+	Nova::Obj_crd obj_crd(sel, 0);
+	if (utcb->append_item(obj_crd, HOTSPOT, THIS_PD, NON_GUEST, TRANSLATE))
 		/* trigger the translation */
-		res = Nova::call(cap.local_name());
-	}
+		res = Nova::call(cap);
 
 	/* restore original receive window */
 	utcb->crd_rcv = orig_crd;
 
-	if (res)
-		PERR("setting exception portals for vCPU failed %u", res);
+	if (res != Nova::NOVA_OK)
+		Genode::error("setting exception portals for vCPU failed res=", res);
 }
 #endif /* _INCLUDE__NOVA__UTIL_H_ */

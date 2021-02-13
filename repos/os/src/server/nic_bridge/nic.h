@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _SRC__SERVER__NIC_BRIDGE__NIC_H_
@@ -33,14 +33,18 @@ class Net::Nic : public Net::Packet_handler
 
 		::Nic::Packet_allocator     _tx_block_alloc;
 		::Nic::Connection           _nic;
-		Ethernet_frame::Mac_address _mac;
+		Mac_address _mac;
 
 	public:
 
-		Nic(Server::Entrypoint&, Vlan&);
+		Nic(Genode::Env&,
+		    Genode::Heap&,
+		    Vlan&,
+		    bool                  const &verbose,
+		    Genode::Session_label const &label);
 
 		::Nic::Connection          *nic() { return &_nic; }
-		Ethernet_frame::Mac_address mac() { return _mac; }
+		Mac_address mac() { return _mac; }
 
 		bool link_state() { return _nic.link_state(); }
 
@@ -48,15 +52,19 @@ class Net::Nic : public Net::Packet_handler
 		 ** Packet_handler interface **
 		 ******************************/
 
-		Packet_stream_sink< ::Nic::Session::Policy> * sink() {
+		Packet_stream_sink< ::Nic::Session::Policy> * sink() override {
 			return _nic.rx(); }
 
-		Packet_stream_source< ::Nic::Session::Policy> * source() {
+		Packet_stream_source< ::Nic::Session::Policy> * source() override {
 			return _nic.tx(); }
 
-		bool handle_arp(Ethernet_frame *eth,      Genode::size_t size);
-		bool handle_ip(Ethernet_frame *eth,       Genode::size_t size);
-		void finalize_packet(Ethernet_frame *eth, Genode::size_t size) {}
+		bool handle_arp(Ethernet_frame &eth,
+		                Size_guard     &size_guard) override;
+
+		bool handle_ip(Ethernet_frame &eth,
+		               Size_guard     &size_guard) override;
+
+		void finalize_packet(Ethernet_frame *, Genode::size_t) override { }
 };
 
 #endif /* _SRC__SERVER__NIC_BRIDGE__NIC_H_ */

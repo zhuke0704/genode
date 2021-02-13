@@ -1,33 +1,37 @@
 /*
  * \brief  OS specific backend for ACPICA library
  * \author Alexander Boettcher
- *
+ * \date   2016-11-14
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
-#include <base/env.h>
+#include <base/log.h>
+#include <base/sleep.h>
 #include <util/misc_math.h>
 
 #include <io_port_session/connection.h>
 #include <timer_session/connection.h>
+
+#include <acpica/acpica.h>
+
+#include "env.h"
 
 extern "C" {
 #include "acpi.h"
 #include "acpiosxf.h"
 }
 
+
 #define FAIL(retval) \
 	{ \
-		PERR("%s:%u called - dead", __func__, __LINE__); \
-		Genode::Lock lock; \
-		while (1) lock.lock(); \
+		Genode::error(__func__, ":", __LINE__, " called - dead"); \
+		while (1) Genode::sleep_forever(); \
 		return retval; \
 	}
 
@@ -39,40 +43,39 @@ ACPI_STATUS AcpiOsPredefinedOverride (const ACPI_PREDEFINED_NAMES *pre,
 }
 
 
-void * AcpiOsAllocate (ACPI_SIZE size) {
-	return Genode::env()->heap()->alloc(size); }
+void * AcpiOsAllocate (ACPI_SIZE size) { return Acpica::heap().alloc(size); }
 
 
 void AcpiOsFree (void *ptr)
 {
-	if (Genode::env()->heap()->need_size_for_free())
-		PWRN("%s called - warning - ptr=%p", __func__, ptr);
+	if (Acpica::heap().need_size_for_free())
+		Genode::warning(__func__, " called - warning - ptr=", ptr);
 
-	Genode::env()->heap()->free(ptr, 0);
+	Acpica::heap().free(ptr, 0);
 }
 
 ACPI_STATUS AcpiOsCreateLock (ACPI_SPINLOCK *spin_lock)
 {
-	*spin_lock = new (Genode::env()->heap()) Genode::Lock();
+	*spin_lock = new (Acpica::heap()) Genode::Mutex();
 	return AE_OK;
 }
 
 ACPI_CPU_FLAGS AcpiOsAcquireLock (ACPI_SPINLOCK h)
 {
-	Genode::Lock *lock = reinterpret_cast<Genode::Lock *>(h);
-	lock->lock();
+	Genode::Mutex *mutex = reinterpret_cast<Genode::Mutex *>(h);
+	mutex->acquire();
 
 	return AE_OK;
 }
 
 void AcpiOsReleaseLock (ACPI_SPINLOCK h, ACPI_CPU_FLAGS flags)
 {
-	Genode::Lock *lock = reinterpret_cast<Genode::Lock *>(h);
+	Genode::Mutex *mutex = reinterpret_cast<Genode::Mutex *>(h);
 
 	if (flags != AE_OK)
-		PWRN("warning - unknown flags in %s", __func__);
+		Genode::warning("warning - unknown flags in ", __func__);
 
-	lock->unlock();
+	mutex->release();
 
 	return;
 }
@@ -80,7 +83,7 @@ void AcpiOsReleaseLock (ACPI_SPINLOCK h, ACPI_CPU_FLAGS flags)
 ACPI_STATUS AcpiOsCreateSemaphore (UINT32 max, UINT32 initial,
                                    ACPI_SEMAPHORE *sem)
 {
-	*sem = new (Genode::env()->heap()) Genode::Semaphore(initial);
+	*sem = new (Acpica::heap()) Genode::Semaphore(initial);
 	return AE_OK;
 }
 
@@ -121,8 +124,16 @@ ACPI_STATUS AcpiOsSignalSemaphore (ACPI_SEMAPHORE h, UINT32 units)
 	return AE_OK;
 }
 
-ACPI_STATUS AcpiOsDeleteSemaphore (ACPI_SEMAPHORE)
-	FAIL(AE_BAD_PARAMETER)
+ACPI_STATUS AcpiOsDeleteSemaphore (ACPI_SEMAPHORE h)
+{
+	Genode::Semaphore *sem = reinterpret_cast<Genode::Semaphore *>(h);
+
+	if (!sem)
+		return AE_BAD_PARAMETER;
+
+	Genode::destroy(Acpica::heap(), sem);
+	return AE_OK;
+}
 
 ACPI_THREAD_ID AcpiOsGetThreadId (void) {
 	return reinterpret_cast<Genode::addr_t>(Genode::Thread::myself()); }
@@ -148,7 +159,7 @@ ACPI_STATUS AcpiOsReadPort (ACPI_IO_ADDRESS port, UINT32 *value, UINT32 width)
 	/* the I/O port may be owned by drivers, which will cause exceptions */
 	try {
 		unsigned const bytes = width / 8;
-		Genode::Io_port_connection io_port(port, bytes);
+		Genode::Io_port_connection io_port(Acpica::env(), port, bytes);
 
 		switch (bytes) {
 		case 1 :
@@ -163,9 +174,8 @@ ACPI_STATUS AcpiOsReadPort (ACPI_IO_ADDRESS port, UINT32 *value, UINT32 width)
 		default:
 			FAIL(AE_BAD_PARAMETER)
 		}
-	} catch (Genode::Parent::Service_denied) {
-		return AE_BAD_PARAMETER;
 	}
+	catch (Genode::Service_denied) { return AE_BAD_PARAMETER; }
 
 	return AE_OK;
 }
@@ -178,7 +188,7 @@ ACPI_STATUS AcpiOsWritePort (ACPI_IO_ADDRESS port, UINT32 value, UINT32 width)
 	/* the I/O port may be owned by drivers, which will cause exceptions */
 	try {
 		unsigned const bytes = width / 8;
-		Genode::Io_port_connection io_port(port, bytes);
+		Genode::Io_port_connection io_port(Acpica::env(), port, bytes);
 
 		switch (bytes) {
 		case 1 :
@@ -193,14 +203,14 @@ ACPI_STATUS AcpiOsWritePort (ACPI_IO_ADDRESS port, UINT32 value, UINT32 width)
 		default:
 			FAIL(AE_BAD_PARAMETER)
 		}
-	} catch (Genode::Parent::Service_denied) {
-		return AE_BAD_PARAMETER;
 	}
+	catch (Genode::Service_denied) { return AE_BAD_PARAMETER; }
 
 	return AE_OK;
 }
 
-static struct {
+static struct
+{
 	ACPI_EXECUTE_TYPE type;
 	ACPI_OSD_EXEC_CALLBACK func;
 	void *context;
@@ -226,7 +236,7 @@ ACPI_STATUS AcpiOsExecute(ACPI_EXECUTE_TYPE type, ACPI_OSD_EXEC_CALLBACK func,
 		deferred[i].context = context;
 		return AE_OK;
 	}
-	PERR("Queue full for deferred handlers");
+	Genode::error("queue full for deferred handlers");
 	return AE_BAD_PARAMETER;
 }
 
@@ -243,15 +253,29 @@ void AcpiOsWaitEventsComplete()
 	}
 }
 
-void AcpiOsSleep (UINT64 sleep_ms)
+static Timer::Connection &timer_connection()
 {
-	PDBG("%s %llu ms", __func__, sleep_ms);
-
-	static Timer::Connection conn;
-	conn.msleep(sleep_ms);
-	return;
+	static Timer::Connection connection(Acpica::env());
+	return connection;
 }
 
+void AcpiOsSleep (UINT64 sleep_ms)
+{
+	Genode::log(__func__, " ", sleep_ms, " ms");
+
+	timer_connection().msleep(sleep_ms);
+}
+
+void AcpiOsStall (UINT32 stall_us)
+{
+	Genode::log(__func__, " ", stall_us, " us");
+
+	timer_connection().usleep(stall_us);
+}
+
+ACPI_STATUS AcpiOsEnterSleep (UINT8, UINT32, UINT32) {
+	/* unused notification hook for OS */
+	return (AE_OK); }
 
 /********************************
  * unsupported/unused functions *
@@ -261,10 +285,9 @@ ACPI_STATUS AcpiOsSignal (UINT32, void *)
 	FAIL(AE_BAD_PARAMETER)
 
 UINT64 AcpiOsGetTimer (void)
-	FAIL(0)
-
-void AcpiOsStall (UINT32)
-	FAIL()
+{
+	return timer_connection().elapsed_us() * 10;
+}
 
 ACPI_STATUS AcpiOsReadMemory (ACPI_PHYSICAL_ADDRESS, UINT64 *, UINT32)
 	FAIL(AE_BAD_PARAMETER)
@@ -277,6 +300,21 @@ ACPI_STATUS AcpiOsRemoveInterruptHandler (UINT32, ACPI_OSD_HANDLER)
 
 ACPI_STATUS AcpiOsGetLine (char *, UINT32, UINT32 *)
 	FAIL(AE_BAD_PARAMETER)
+
+ACPI_STATUS
+AcpiOsWaitCommandReady (
+    void)
+{
+	FAIL(AE_BAD_PARAMETER)
+}
+
+ACPI_STATUS
+AcpiOsNotifyCommandComplete (
+    void)
+{
+	FAIL(AE_BAD_PARAMETER)
+}
+
 
 extern "C"
 {

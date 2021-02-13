@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__REGION_MAP_MMAP_H_
@@ -19,6 +19,7 @@
 #include <base/env.h>
 #include <region_map/region_map.h>
 #include <dataspace/client.h>
+#include <deprecated/env.h>
 
 /* base-internal includes */
 #include <base/internal/local_capability.h>
@@ -35,10 +36,10 @@ class Genode::Region_map_mmap : public Region_map, public Dataspace
 {
 	private:
 
-		Lock            _lock;    /* protect '_rmap' */
-		Region_registry _rmap;
-		bool      const _sub_rm;  /* false if region map is root */
-		size_t    const _size;
+		Region_registry _rmap { };
+
+		bool   const _sub_rm;  /* false if region map is root */
+		size_t const _size;
 
 		/**
 		 * Base offset of the RM session
@@ -78,7 +79,8 @@ class Genode::Region_map_mmap : public Region_map, public Dataspace
 		                 bool                 use_local_addr,
 		                 addr_t               local_addr,
 		                 bool                 executable,
-		                 bool                 overmap = false);
+		                 bool                 overmap,
+		                 bool                 writeable);
 
 		/**
 		 * Determine size of dataspace
@@ -108,7 +110,7 @@ class Genode::Region_map_mmap : public Region_map, public Dataspace
 		{
 			/* detach sub RM session when destructed */
 			if (_sub_rm && _is_attached())
-				env()->rm_session()->detach((void *)_base);
+				env_deprecated()->rm_session()->detach((void *)_base);
 		}
 
 
@@ -116,25 +118,25 @@ class Genode::Region_map_mmap : public Region_map, public Dataspace
 		 ** Region map interface **
 		 **************************/
 
-		Local_addr attach(Dataspace_capability ds, size_t size,
-		                  off_t, bool, Local_addr, bool executable);
+		Local_addr attach(Dataspace_capability, size_t size, off_t, bool,
+		                  Local_addr, bool, bool) override;
 
-		void detach(Local_addr local_addr);
+		void detach(Local_addr) override;
 
-		void fault_handler(Signal_context_capability handler) { }
+		void fault_handler(Signal_context_capability) override { }
 
-		State state() { return State(); }
+		State state() override { return State(); }
 
 
 		/*************************
 		 ** Dataspace interface **
 		 *************************/
 
-		size_t size() { return _size; }
+		size_t size() override { return _size; }
 
-		addr_t phys_addr() { return 0; }
+		addr_t phys_addr() override { return 0; }
 
-		bool writable() { return true; }
+		bool writable() override { return true; }
 
 		/**
 		 * Return pseudo dataspace capability of the RM session
@@ -143,7 +145,7 @@ class Genode::Region_map_mmap : public Region_map, public Dataspace
 		 * as argument to 'Region_map_mmap::attach'. It is not a
 		 * real capability.
 		 */
-		Dataspace_capability dataspace() {
+		Dataspace_capability dataspace() override {
 			return Local_capability<Dataspace>::local_cap(this); }
 };
 

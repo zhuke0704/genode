@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__PATH_H_
@@ -16,6 +16,7 @@
 
 /* Genode includes */
 #include <util/string.h>
+#include <base/output.h>
 
 namespace Genode {
 
@@ -36,14 +37,6 @@ class Genode::Path_base
 		{
 			return path[0] == '/';
 		}
-
-		/**
-		 * Return true if path starts with a '/'
-		 *
-		 * \noapi
-		 * \deprecated  use 'absolute' instead
-		 */
-		static bool is_absolute(char const *path) { return absolute(path); }
 
 		static bool ends_with(char c, char const *path)
 		{
@@ -83,13 +76,6 @@ class Genode::Path_base
 		{
 			return strlen(path) == 0;
 		}
-
-		/**
-		 * Return true if path contains no characters
-		 *
-		 * \deprecated  use 'empty' instead
-		 */
-		static bool is_empty(char const *path) { return empty(path); }
 
 		/**
 		 * Remove superfluous single dots followed by a slash from path
@@ -181,7 +167,8 @@ class Genode::Path_base
 			if (strlen(path) + orig_len + 1 >= _path_max_len)
 				throw Path_too_long();
 
-			strncpy(_path + orig_len, path, _path_max_len - orig_len);
+			if (_path)
+				copy_cstring(_path + orig_len, path, _path_max_len - orig_len);
 		}
 
 		void _append_slash_if_needed()
@@ -220,7 +207,7 @@ class Genode::Path_base
 			 * Use argument path if absolute
 			 */
 			if (absolute(path))
-				strncpy(_path, path, _path_max_len);
+				copy_cstring(_path, path, _path_max_len);
 
 			/*
 			 * Otherwise, concatenate current working directory with
@@ -229,7 +216,7 @@ class Genode::Path_base
 			else {
 				const char *const relative_path = path;
 
-				strncpy(_path, pwd, _path_max_len);
+				copy_cstring(_path, pwd, _path_max_len);
 
 				if (!empty(relative_path)) {
 
@@ -249,10 +236,11 @@ class Genode::Path_base
 			import(path, pwd);
 		}
 
-		char       *base()       { return _path; }
-		char const *base() const { return _path; }
+		char       *base()         { return _path; }
+		char const *base()   const { return _path; }
+		char const *string() const { return _path; }
 
-		size_t max_len() { return _path_max_len; }
+		size_t max_len() const { return _path_max_len; }
 
 		void remove_trailing(char c) { remove_trailing(c, _path); }
 
@@ -267,7 +255,9 @@ class Genode::Path_base
 
 		void strip_last_element()
 		{
-			last_element(_path)[1] = 0;
+			char *p = last_element(_path);
+			if (p)
+				p[p == _path ? 1 : 0] = 0;
 		}
 
 		bool equals(Path_base const &ref) const { return strcmp(ref._path, _path) == 0; }
@@ -310,6 +300,12 @@ class Genode::Path_base
 
 		void append(char const *str) { _append(str); _canonicalize(); }
 
+		void append_element(char const *str)
+		{
+			_append("/"); _append(str);
+			_canonicalize();
+		}
+
 		bool operator == (char const *other) const
 		{
 			return strcmp(_path, other) == 0;
@@ -319,12 +315,32 @@ class Genode::Path_base
 		{
 			return strcmp(_path, other) != 0;
 		}
+
+		bool operator == (Path_base const &other) const
+		{
+			return strcmp(_path, other._path) == 0;
+		}
+
+		bool operator != (Path_base const &other) const
+		{
+			return strcmp(_path, other._path) != 0;
+		}
+
+		char const *last_element()
+		{
+			return last_element(_path)+1;
+		}
+
+		/**
+		 * Print path to output stream
+		 */
+		void print(Genode::Output &output) const { output.out_string(base()); }
 };
 
 
 template <unsigned MAX_LEN>
-class Genode::Path : public Path_base {
-
+class Genode::Path : public Path_base
+{
 	private:
 
 		char _buf[MAX_LEN];
@@ -344,22 +360,76 @@ class Genode::Path : public Path_base {
 		Path(char const *path, char const *pwd = 0)
 		: Path_base(_buf, sizeof(_buf), path, pwd) { }
 
-		constexpr size_t capacity() { return MAX_LEN; }
+		/**
+		 * Constructor that implicitly imports a 'String'
+		 */
+		template <size_t N>
+		Path(String<N> const &string)
+		: Path_base(_buf, sizeof(_buf), string.string(), nullptr) { }
+
+		static constexpr size_t capacity() { return MAX_LEN; }
 
 		Path& operator=(char const *path)
 		{
-			Genode::strncpy(_buf, path, MAX_LEN);
+			copy_cstring(_buf, path, MAX_LEN);
 			_canonicalize();
 			return *this;
 		}
 
-		template <unsigned N>
-		Path& operator=(Path<N> &other)
+		Path(Path const &other) : Path_base(_buf, sizeof(_buf), other._buf) { }
+
+		Path& operator=(Path const &other)
 		{
-			Genode::strncpy(_buf, other._buf, MAX_LEN);
+			copy_cstring(_buf, other._buf, MAX_LEN);
 			return *this;
 		}
 
+		template <unsigned N>
+		Path& operator=(Path<N> const &other)
+		{
+			copy_cstring(_buf, other._buf, MAX_LEN);
+			return *this;
+		}
 };
+
+namespace Genode {
+
+	template <typename PATH>
+	static inline PATH path_from_label(char const *label)
+	{
+		PATH path;
+
+		char tmp[path.capacity()];
+		memset(tmp, 0, sizeof(tmp));
+
+		size_t len = strlen(label);
+
+		size_t i = 0;
+		for (size_t j = 1; j < len; ++j) {
+			if (!strcmp(" -> ", label+j, 4)) {
+				path.append("/");
+
+				copy_cstring(tmp, label+i, (j-i)+1);
+				/* rewrite any directory separators */
+				for (size_t k = 0; k < path.capacity(); ++k)
+					if (tmp[k] == '/')
+						tmp[k] = '_';
+				path.append(tmp);
+
+				j += 4;
+				i = j;
+			}
+		}
+		path.append("/");
+		copy_cstring(tmp, label+i, path.capacity());
+		/* rewrite any directory separators */
+		for (size_t k = 0; k < path.capacity(); ++k)
+			if (tmp[k] == '/')
+				tmp[k] = '_';
+		path.append(tmp);
+
+		return path;
+	}
+}
 
 #endif /* _INCLUDE__OS__PATH_H_ */

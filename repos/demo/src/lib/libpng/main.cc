@@ -1,4 +1,4 @@
-#include <base/printf.h>
+#include <base/log.h>
 
 extern "C" {
 #include <stdlib.h>
@@ -8,12 +8,9 @@ extern "C" {
 
 using namespace Genode;
 
-static void user_read_data(png_structp png_ptr, png_bytep data, png_size_t len)
-{
-//	read((char *)data, len);
-}
+static void user_read_data(png_structp, png_bytep, png_size_t) { }
 
-int main(int argc, char **argv)
+int main(int, char **)
 {
 	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, 0, 0, 0);
 	if (!png_ptr) return 1;
@@ -35,7 +32,7 @@ int main(int argc, char **argv)
 	             &interlace_type, int_p_NULL, int_p_NULL);
 	int _min_w = w;
 	int _min_h = h;
-	printf("png is %d x %d, depth=%d\n", _min_w, _min_h, bit_depth);
+	log("png is ", _min_w, " x ", _min_h, ", depth=", bit_depth);
 
 	if (color_type == PNG_COLOR_TYPE_PALETTE)
 		png_set_palette_to_rgb(png_ptr);

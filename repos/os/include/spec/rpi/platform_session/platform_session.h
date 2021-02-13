@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PLATFORM_SESSION__PLATFORM_SESSION_H_
@@ -17,7 +17,7 @@
 #include <base/capability.h>
 #include <base/rpc.h>
 #include <dataspace/capability.h>
-#include <platform/framebuffer_info.h>
+#include <spec/rpi/platform/framebuffer_info.h>
 
 namespace Platform {
 	using namespace Genode;
@@ -27,7 +27,12 @@ namespace Platform {
 
 struct Platform::Session : Genode::Session
 {
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Platform"; }
+
+	enum { CAP_QUOTA = 2 };
 
 	/**
 	 * Setup framebuffer

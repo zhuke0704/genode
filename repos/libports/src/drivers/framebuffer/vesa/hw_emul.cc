@@ -11,15 +11,18 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/sleep.h>
-#include <base/printf.h>
+/* Genode includes */
+#include <base/log.h>
+#include <util/retry.h>
 
+/* local includes */
+#include "framebuffer.h"
 #include "hw_emul.h"
 
 using namespace Genode;
@@ -38,13 +41,46 @@ enum {
 	PCI_DATA_REG = 0xcfc
 };
 
+
+struct Devfn
+{
+	unsigned char b, d, f;
+
+	Devfn(Platform::Device &device) { device.bus_address(&b, &d, &f); }
+
+	Devfn(unsigned short devfn)
+	: b((devfn >> 8) & 0xff), d((devfn >> 3) & 0x1f), f(devfn & 7) { }
+
+	unsigned short devfn() const { return b << 8 | d << 3 | f; }
+
+	void print(Genode::Output &out) const
+	{
+		Genode::print(out, Hex(b, Hex::OMIT_PREFIX, Hex::PAD), ":",
+		                   Hex(d, Hex::OMIT_PREFIX, Hex::PAD), ".",
+		                   Hex(f, Hex::OMIT_PREFIX));
+	}
+};
+
+
 class Pci_card
 {
 	private:
 
 		Platform::Connection    _pci_drv;
 		Platform::Device_client _device;
-		unsigned short     _devfn;
+		Devfn                   _devfn;
+
+		Platform::Device_capability _first_device()
+		{
+			return _pci_drv.with_upgrade([&] () {
+				return _pci_drv.first_device(); });
+		}
+
+		Platform::Device_capability _next_device(Platform::Device_capability prev)
+		{
+			return _pci_drv.with_upgrade([&] () {
+				return _pci_drv.next_device(prev); });
+		}
 
 		Platform::Device_capability _find_vga_card()
 		{
@@ -52,10 +88,9 @@ class Pci_card
 			 * Iterate through all accessible devices.
 			 */
 			Platform::Device_capability prev_device_cap, device_cap;
-			Genode::env()->parent()->upgrade(_pci_drv.cap(), "ram_quota=4096");
-			for (device_cap = _pci_drv.first_device();
+			for (device_cap = _first_device();
 			     device_cap.valid();
-			     device_cap = _pci_drv.next_device(prev_device_cap)) {
+			     device_cap = _next_device(prev_device_cap)) {
 
 				Platform::Device_client device(device_cap);
 
@@ -73,8 +108,8 @@ class Pci_card
 			}
 
 			if (!device_cap.valid()) {
-				PERR("PCI VGA card not found. Sleeping...");
-				sleep_forever();
+				Genode::error("PCI VGA card not found.");
+				throw Framebuffer::Fatal();
 			}
 
 			return device_cap;
@@ -82,27 +117,18 @@ class Pci_card
 
 	public:
 
-		Pci_card() : _pci_drv(), _device(_find_vga_card())
+		Pci_card(Genode::Env &env)
+		: _pci_drv(env), _device(_find_vga_card()), _devfn(_device)
 		{
-			unsigned char bus = 0, dev = 0, fn = 0;
-
-			_device.bus_address(&bus, &dev, &fn);
-			_devfn = bus << 8 | dev << 3 | fn;
-
-			if (verbose)
-				PDBG("Found PCI VGA at %x:%x.%x", bus, dev, fn);
+			Genode::log("Found PCI VGA at ", _devfn);
 		}
 
-		Platform::Device_client &device()       { return _device; }
-		unsigned short      devfn()  const { return _devfn; }
+		Platform::Device &device()   { return _device; }
+		unsigned short devfn() const { return _devfn.devfn(); }
 };
 
 
-static Pci_card *pci_card()
-{
-	static Pci_card _pci_card;
-	return &_pci_card;
-}
+static Constructible<Pci_card> pci_card;
 
 
 /**
@@ -124,15 +150,14 @@ static bool handle_pci_port_write(unsigned short port, T val)
 		 */
 		{
 			if (sizeof(T) != 4) {
-				PWRN("writing with size %zx not supported", sizeof(T));
+				warning("writing with size ", sizeof(T), " not supported", sizeof(T));
 				return true;
 			}
 
-			unsigned devfn = (val >> 8) & 0xffff;
-			if (devfn != pci_card()->devfn()) {
+			unsigned const devfn = (val >> 8) & 0xffff;
+			if (devfn != pci_card->devfn()) {
 				if (verbose)
-					PWRN("accessing unknown PCI device %02x:%02x.%x",
-					     devfn >> 8, (devfn >> 3) & 0x1f, devfn & 0x7);
+					warning("accessing unknown PCI device ", Devfn(devfn));
 				pci_cfg_addr_valid = false;
 				return true;
 			}
@@ -145,7 +170,7 @@ static bool handle_pci_port_write(unsigned short port, T val)
 		}
 
 	case PCI_DATA_REG:
-		PWRN("writing data register not supported (value=0x%x)", (int)val);
+		warning("writing data register not supported (value=", Hex(val), ")");
 		return true;
 
 	default:
@@ -183,13 +208,13 @@ static bool handle_pci_port_read(unsigned short port, T *val)
 			switch (pci_cfg_addr) {
 
 			case 0: /* vendor / device ID */
-				raw_val = pci_card()->device().vendor_id() |
-				         (pci_card()->device().device_id() << 16);
+				raw_val = pci_card->device().vendor_id() |
+				         (pci_card->device().device_id() << 16);
 				break;
 
 			case 4: /* status and command */
 			case 8: /* class code / revision ID */
-				raw_val = pci_card()->device().config_read(pci_cfg_addr,
+				raw_val = pci_card->device().config_read(pci_cfg_addr,
 				                                           Platform::Device::ACCESS_32BIT);
 				break;
 
@@ -201,9 +226,9 @@ static bool handle_pci_port_read(unsigned short port, T *val)
 			case 0x24: /* base address register 5 */
 				{
 					unsigned bar = (pci_cfg_addr - 0x10) / 4;
-					Platform::Device::Resource res = pci_card()->device().resource(bar);
+					Platform::Device::Resource res = pci_card->device().resource(bar);
 					if (res.type() == Platform::Device::Resource::INVALID) {
-						PWRN("requested PCI resource 0x%x invalid", bar);
+						warning("requested PCI resource ", bar, " invalid");
 						*val = 0;
 						return true;
 					}
@@ -213,7 +238,7 @@ static bool handle_pci_port_read(unsigned short port, T *val)
 				}
 
 			default:
-				PWRN("unexpected configuration address 0x%x", pci_cfg_addr);
+				warning("unexpected configuration address ", Hex(pci_cfg_addr));
 				return true;
 			}
 
@@ -313,3 +338,6 @@ bool hw_emul_handle_port_write(unsigned short port, T val)
 
 	return false;
 }
+
+
+void hw_emul_init(Genode::Env &env) { pci_card.construct(env); }

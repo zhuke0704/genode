@@ -1,0 +1,11 @@
+base
+libc
+mesa
+os
+qoost
+qt5
+qt5_component
+report_session
+stdcxx
+timer_session
+vfs

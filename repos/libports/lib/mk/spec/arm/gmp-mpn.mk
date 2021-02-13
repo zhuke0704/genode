@@ -6,7 +6,7 @@ FILTER_OUT += udiv_w_sdiv.c
 
 # add ARM-specific assembly files and filter out the generic C files if needed
 
-SRC_ASM += copyd.asm copyi.asm
+SRC_ASM += copyd.asm copyi.asm invert_limb.asm
 
 FILTER_OUT += popham.c
 
@@ -15,6 +15,8 @@ FILTER_OUT += add_n.c
 
 SRC_ASM += sub_n.asm
 FILTER_OUT += sub_n.c
+
+FILTER_OUT += logops_n.c sec_div.c sec_pi1_div.c copyi.c copyd.c
 
 SRC_C += $(notdir $(wildcard $(REP_DIR)/src/lib/gmp/mpn/spec/32bit/*.c))
 SRC_C += $(filter-out $(FILTER_OUT),$(notdir $(wildcard $(GMP_MPN_DIR)/generic/*.c)))
@@ -62,3 +64,5 @@ hamdist.o popcount.o: popham.c
 vpath %.c   $(REP_DIR)/src/lib/gmp/mpn/spec/32bit
 vpath %.c   $(GMP_MPN_DIR)/generic
 vpath %.asm $(GMP_MPN_DIR)/arm
+
+CC_CXX_WARN_STRICT =

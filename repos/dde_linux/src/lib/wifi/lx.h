@@ -5,17 +5,20 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 #ifndef _LX_H_
 #define _LX_H_
 
 /* Genode includes */
-#include <os/server.h>
+#include <base/allocator.h>
+
+/* NIC driver includes */
+#include <drivers/nic/mode.h>
 
 /* local includes */
 #include <lx_kit/scheduler.h>
@@ -28,14 +31,21 @@
 
 namespace Lx
 {
-	void socket_init(Server::Entrypoint &);
+	void emul_init(Genode::Env&, Genode::Allocator&);
 
-	void nic_init(Server::Entrypoint &);
+	void socket_init(Genode::Entrypoint&, Genode::Allocator&);
+	void socket_kick();
+
+	void nic_init(Genode::Env&,
+	              Genode::Allocator&,
+	              Genode::Nic_driver_mode);
 
 	Genode::Ram_dataspace_capability backend_alloc(Genode::addr_t, Genode::Cache_attribute);
 	void backend_free(Genode::Ram_dataspace_capability);
 
 	void get_mac_address(unsigned char *);
+
+	bool open_device();
 }
 
 #endif /* _LX_H_ */

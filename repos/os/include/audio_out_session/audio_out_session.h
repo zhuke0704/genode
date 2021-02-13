@@ -27,10 +27,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__AUDIO_OUT_SESSION__AUDIO_OUT_SESSION_H_
@@ -50,10 +50,14 @@ namespace Audio_out {
 
 	enum {
 		QUEUE_SIZE  = 256,           /* buffer queue size */
-		PERIOD      = 512,           /* samples per period (~11.6ms) */
 		SAMPLE_RATE = 44100,
 		SAMPLE_SIZE = sizeof(float),
 	};
+
+	/**
+	 * Samples per perios (~11.6ms)
+	 */
+	static constexpr Genode::size_t PERIOD = 512;
 }
 
 
@@ -85,12 +89,12 @@ class Audio_out::Packet
 		 * \param  data  frames to copy in
 		 * \param  size  number of frames to copy
 		 */
-		void content(float *data, Genode::size_t samples)
+		void content(float const *data, Genode::size_t samples)
 		{
 			Genode::memcpy(_data, data, (samples > PERIOD ? PERIOD : samples) * SAMPLE_SIZE);
 
 			if (samples < PERIOD)
-				Genode::memset(data + samples, 0, (PERIOD - samples) * SAMPLE_SIZE);
+				Genode::memset(_data + samples, 0, (PERIOD - samples) * SAMPLE_SIZE);
 		}
 
 		/**
@@ -301,11 +305,16 @@ class Audio_out::Session : public Genode::Session
 {
 	protected:
 
-		Stream *_stream;
+		Stream *_stream = nullptr;
 
 	public:
 
+		/**
+		 * \noapi
+		 */
 		static const char *service_name() { return "Audio_out"; }
+
+		enum { CAP_QUOTA = 4 };
 
 		/**
 		 * Return stream of this session, see 'Stream' above

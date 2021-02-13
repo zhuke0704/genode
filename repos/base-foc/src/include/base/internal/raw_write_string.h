@@ -5,27 +5,22 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__RAW_WRITE_STRING_H_
 #define _INCLUDE__BASE__INTERNAL__RAW_WRITE_STRING_H_
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/kdebug.h>
-}
+#include <util/string.h>
+#include "foc_assert.h"
 
 namespace Genode {
 
-	void raw_write_string(char const *str)
-	{
-		using namespace Fiasco;
-		outstring(const_cast<char *>(str));
-	}
+	void raw_write_string(char const *str) {
+		Foc::outstring(const_cast<char *>(str)); }
 }
 
 #endif /* _INCLUDE__BASE__INTERNAL__RAW_WRITE_STRING_H_ */

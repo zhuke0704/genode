@@ -1,14 +1,14 @@
 #
 # Build
 #
-if {[have_spec gpio] == 0} {
+if {![have_board rpi]} {
 	puts "Runs only on platforms with GPIO"
 	exit 0
 }
 
 set build_components {
-	core init
-	drivers/timer drivers/gpio
+	core init timer
+	drivers/gpio
 	test/gpio_led
 }
 
@@ -25,7 +25,6 @@ append config {
 <config>
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -40,8 +39,10 @@ append config {
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
-	</start>
-	<start name="gpio_drv">
+	</start>}
+
+append config {
+		<start name="rpi_gpio_drv">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Gpio"/></provides>
 		<config>
@@ -62,10 +63,12 @@ install_config $config
 
 # generic modules
 set boot_modules {
-	core init
+	core ld.lib.so init
 	timer
-	gpio_drv
 	led_gpio_drv
+	rpi_gpio_drv
 }
 
 build_boot_image $boot_modules
+
+run_genode_until forever

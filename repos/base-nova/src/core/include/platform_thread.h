@@ -6,27 +6,27 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PLATFORM_THREAD_H_
 #define _CORE__INCLUDE__PLATFORM_THREAD_H_
 
 /* Genode includes */
-#include <thread/capability.h>
 #include <base/thread_state.h>
-#include <base/native_types.h>
 #include <base/thread.h>
+#include <nova_native_cpu/nova_native_cpu.h>
+#include <base/trace/types.h>
 
 /* base-internal includes */
 #include <base/internal/stack.h>
 
 /* core includes */
 #include <pager.h>
-#include <address_space.h>
+#include <assertion.h>
 
 namespace Genode {
 
@@ -45,6 +45,8 @@ namespace Genode {
 				MAIN_THREAD = 0x1U,
 				VCPU        = 0x2U,
 				WORKER      = 0x4U,
+				SC_CREATED  = 0x8U,
+				REMOTE_PD   = 0x10U,
 			};
 			uint8_t _features;
 			uint8_t _priority;
@@ -59,19 +61,38 @@ namespace Genode {
 			inline bool main_thread() const { return _features & MAIN_THREAD; }
 			inline bool vcpu()        const { return _features & VCPU; }
 			inline bool worker()      const { return _features & WORKER; }
+			inline bool sc_created()  const { return _features & SC_CREATED; }
+			inline bool remote_pd()   const { return _features & REMOTE_PD; }
+
+			/*
+			 * Noncopyable
+			 */
+			Platform_thread(Platform_thread const &);
+			Platform_thread &operator = (Platform_thread const &);
+
+			/**
+			 * Create OOM portal and delegate it
+			 */
+			bool _create_and_map_oom_portal(Nova::Utcb &);
 
 		public:
 
-			/* invalid thread number */
-			enum { THREAD_INVALID = -1 };
+			/* mark as vcpu in remote pd if it is a vcpu */
+			addr_t remote_vcpu() {
+				if (!vcpu())
+					return Native_thread::INVALID_INDEX;
+
+				_features |= Platform_thread::REMOTE_PD;
+				return _sel_exc_base;
+			}
 
 			/**
 			 * Constructor
 			 */
-			Platform_thread(size_t, const char *name = 0,
-			                unsigned priority = 0,
-			                Affinity::Location affinity = Affinity::Location(),
-			                int thread_id = THREAD_INVALID);
+			Platform_thread(size_t quota, char const *name,
+			                unsigned priority,
+			                Affinity::Location affinity,
+			                addr_t utcb);
 
 			/**
 			 * Destructor
@@ -105,11 +126,6 @@ namespace Genode {
 			void resume();
 
 			/**
-			 * Cancel currently blocking operation
-			 */
-			void cancel_blocking();
-
-			/**
 			 * Override thread state with 's'
 			 *
 			 * \throw Cpu_session::State_access_failed
@@ -123,25 +139,31 @@ namespace Genode {
 			 */
 			Thread_state state();
 
-			/**
-			 * Return the address space to which the thread is bound
-			 */
-			Weak_ptr<Address_space> address_space();
-
-
 			/************************
 			 ** Accessor functions **
 			 ************************/
 
 			/**
+			 * Set thread type and exception portal base
+			 */
+			void thread_type(Cpu_session::Native_cpu::Thread_type thread_type,
+			                 Cpu_session::Native_cpu::Exception_base exception_base);
+
+			/**
 			 * Set pager
 			 */
-			void pager(Pager_object *pager) { _pager = pager; }
+			void pager(Pager_object &pager);
 
 			/**
 			 * Return pager object
 			 */
-			Pager_object *pager() { return _pager; }
+			Pager_object &pager()
+			{
+				if (_pager)
+					return *_pager;
+
+				ASSERT_NEVER_CALLED;
+			}
 
 			/**
 			 * Return identification of thread when faulting
@@ -154,9 +176,19 @@ namespace Genode {
 			void affinity(Affinity::Location location);
 
 			/**
+			 * Pager_object starts migration preparation and calls for
+			 * finalization of the migration.
+			 * The method delegates the new exception portals to
+			 * the protection domain and set the new acknowledged location.
+			 */
+			void prepare_migration();
+			void finalize_migration(Affinity::Location const location) {
+				_location = location; }
+
+			/**
 			 * Get the executing CPU for this thread
 			 */
-			Affinity::Location affinity() const;
+			Affinity::Location affinity() const { return _location; }
 
 			/**
 			 * Get thread name
@@ -181,12 +213,12 @@ namespace Genode {
 			/**
 			 * Set CPU quota of the thread to 'quota'
 			 */
-			void quota(size_t const quota) { /* not supported*/ }
+			void quota(size_t const) { /* not supported*/ }
 
 			/**
 			 * Return execution time consumed by the thread
 			 */
-			unsigned long long execution_time() const;
+			Trace::Execution_time execution_time() const;
 	};
 }
 

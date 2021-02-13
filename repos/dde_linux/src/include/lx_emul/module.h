@@ -9,10 +9,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /******************
@@ -50,7 +50,7 @@
 
 
 struct module;
-#define module_init(fn) void module_##fn(void) { fn(); }
+#define module_init(fn) int module_##fn(void) { return fn(); }
 #define module_exit(fn) void module_exit_##fn(void) { fn(); }
 void module_put_and_exit(int);
 
@@ -65,6 +65,7 @@ int try_module_get(struct module *);
 
 #define module_param(name, type, perm)
 #define module_param_named(name, value, type, perm)
+
 #define module_param_unsafe(name, type, perm)
 #define module_param_named_unsafe(name, value, type, perm)
 #define MODULE_PARM_DESC(_parm, desc)

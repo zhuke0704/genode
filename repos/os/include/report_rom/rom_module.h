@@ -5,24 +5,25 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__REPORT_ROM__ROM_MODULE_H_
 #define _INCLUDE__REPORT_ROM__ROM_MODULE_H_
 
 /* Genode includes */
-#include <util/volatile_object.h>
-#include <os/attached_ram_dataspace.h>
+#include <util/reconstructible.h>
 #include <os/session_policy.h>
+#include <base/attached_ram_dataspace.h>
 
 namespace Rom {
 	using Genode::size_t;
-	using Genode::Lazy_volatile_object;
+	using Genode::Constructible;
 	using Genode::Attached_ram_dataspace;
+	using Genode::Interface;
 
 	class Module;
 	class Readable_module;
@@ -37,20 +38,26 @@ namespace Rom {
 }
 
 
-struct Rom::Writer : Writer_list::Element
+struct Rom::Writer : private Writer_list::Element, Interface
 {
+	friend class Genode::List<Writer>;
+	using Writer_list::Element::next;
+
 	virtual Genode::Session_label label() const = 0;
 };
 
 
-struct Rom::Reader : Reader_list::Element
+struct Rom::Reader : private Reader_list::Element, Interface
 {
+	friend class Genode::List<Reader>;
+	using Reader_list::Element::next;
+
 	virtual void notify_module_changed()     = 0;
 	virtual void notify_module_invalidated() = 0;
 };
 
 
-struct Rom::Readable_module
+struct Rom::Readable_module : Interface
 {
 	/**
 	 * Exception type
@@ -86,13 +93,25 @@ struct Rom::Readable_module
  *
  * The Rom::Module gets destroyed when no client refers to it anymore.
  */
-struct Rom::Module : Module_list::Element, Readable_module
+struct Rom::Module : private Module_list::Element, Readable_module
 {
+	private:
+
+		friend class Genode::List<Module>;
+
+		/*
+		 * Noncopyable
+		 */
+		Module(Module const &);
+		Module &operator = (Module const &);
+
 	public:
+
+		using Module_list::Element::next;
 
 		typedef Genode::String<200> Name;
 
-		struct Read_policy
+		struct Read_policy : Interface
 		{
 			/**
 			 * Return true if the reader is allowed to read the module content
@@ -101,7 +120,7 @@ struct Rom::Module : Module_list::Element, Readable_module
 			                            Writer const &, Reader const &) const = 0;
 		};
 
-		struct Write_policy
+		struct Write_policy : Interface
 		{
 			/**
 			 * Return true of the writer is permitted to write content
@@ -117,11 +136,14 @@ struct Rom::Module : Module_list::Element, Readable_module
 
 		Name _name;
 
+		Genode::Ram_allocator &_ram;
+		Genode::Region_map    &_rm;
+
 		Read_policy  const &_read_policy;
 		Write_policy const &_write_policy;
 
-		Reader_list mutable _readers;
-		Writer_list mutable _writers;
+		Reader_list mutable _readers { };
+		Writer_list mutable _writers { };
 
 		/**
 		 * Origin of the content currently stored in the module
@@ -135,7 +157,7 @@ struct Rom::Module : Module_list::Element, Readable_module
 		 * allow for the immediate release of the underlying backing store when
 		 * the module gets destructed.
 		 */
-		Lazy_volatile_object<Attached_ram_dataspace> _ds;
+		Constructible<Attached_ram_dataspace> _ds { };
 
 		/**
 		 * Content size, which may less than the capacilty of '_ds'.
@@ -152,17 +174,23 @@ struct Rom::Module : Module_list::Element, Readable_module
 		/**
 		 * Constructor
 		 *
+		 * \param ram           allocator for the module's backing store
+		 * \param rm            region map of the local address space, needed
+		 *                      to access the allocated backing store
 		 * \param name          module name
 		 * \param read_policy   policy hook function that is evaluated each
 		 *                      time when the module content is obtained
 		 * \param write_policy  policy hook function that is evaluated each
 		 *                      time when the module content is changed
 		 */
-		Module(Name         const &name,
-		       Read_policy  const &read_policy,
-		       Write_policy const &write_policy)
+		Module(Genode::Ram_allocator &ram,
+		       Genode::Region_map    &rm,
+		       Name            const &name,
+		       Read_policy     const &read_policy,
+		       Write_policy    const &write_policy)
 		:
-			_name(name), _read_policy(read_policy), _write_policy(write_policy)
+			_name(name), _ram(ram), _rm(rm),
+			_read_policy(read_policy), _write_policy(write_policy)
 		{ }
 
 
@@ -240,7 +268,7 @@ struct Rom::Module : Module_list::Element, Readable_module
 			 * append a zero termination to textual reports.
 			 */
 			if (!_ds.constructed() || _ds->size() < (src_len + 1))
-				_ds.construct(Genode::env()->ram_session(), (src_len + 1));
+				_ds.construct(_ram, _rm, (src_len + 1));
 
 			/* copy content into backing store */
 			_size = src_len;

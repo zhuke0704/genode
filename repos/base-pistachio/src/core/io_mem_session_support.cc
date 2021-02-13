@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -26,8 +26,6 @@ namespace Pistachio {
 }
 
 using namespace Genode;
-
-static const bool verbose = false;
 
 
 /*
@@ -52,12 +50,7 @@ bool is_conventional_memory(addr_t base)
 }
 
 
-void Io_mem_session_component::_unmap_local(addr_t base, size_t size)
-{
-	/* TODO .... */
-	if (verbose)
-		PDBG("not yet implemented!");
-}
+void Io_mem_session_component::_unmap_local(addr_t, size_t) { }
 
 
 static inline bool can_use_super_page(addr_t base, size_t size) {
@@ -83,14 +76,11 @@ addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
 
 		/* find appropriate region for mapping */
 		void *result = 0;
-		if (platform()->region_alloc()->alloc_aligned(size, &result, alignment).error())
-			PERR("alloc_aligned failed!");
+		if (platform().region_alloc().alloc_aligned(size, &result, alignment).error())
+			error(__func__, ": alloc_aligned failed!");
 
 		local_base = (addr_t)result;
 	}
-
-	if (verbose)
-		PDBG("base = 0x%08lx, size = 0x%08zx -> local = 0x%lx", base, size, local_base);
 
 	unsigned offset = 0;
 	while (size) {
@@ -99,20 +89,16 @@ addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
 		if (can_use_super_page(base + offset, size))
 			page_size = get_super_page_size();
 
-		L4_Fpage_t ret =
-			L4_Sigma0_GetPage_RcvWindow(get_sigma0(),
-			                            L4_Fpage(base       + offset, page_size),
-			                            L4_Fpage(local_base + offset, page_size));
+		L4_Sigma0_GetPage_RcvWindow(get_sigma0(),
+		                            L4_Fpage(base       + offset, page_size),
+		                            L4_Fpage(local_base + offset, page_size));
 
 		if (_cacheable == WRITE_COMBINED) {
 			int res = L4_Set_PageAttribute(L4_Fpage(local_base + offset, page_size),
 			                               L4_WriteCombiningMemory);
 			if (res != 1)
-				PERR("L4_Set_PageAttributes virt returned %d", res);
+				error(__func__, ": L4_Set_PageAttributes virt returned ", res);
 		}
-
-		if (L4_IsNilFpage(ret) && verbose)
-			PDBG("Got nil fpage for 0x%08lx from sigma0 (ignoring)", base + offset);
 
 		offset += page_size;
 		size   -= page_size;

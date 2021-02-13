@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* core includes */
 #include <pager.h>
@@ -22,7 +22,7 @@ using namespace Genode;
 
 void Pager_object::wake_up()
 {
-	PWRN("user-level page fault handling is not supported on this platform");
+	warning("user-level page fault handling is not supported on this platform");
 }
 
 

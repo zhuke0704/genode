@@ -11,17 +11,16 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 #define _INCLUDE__BASE__INTERNAL__LOCK_HELPER_H_
 
 /* Genode includes */
-#include <base/native_types.h>
 #include <base/thread.h>
 
 /* Linux includes */
@@ -47,20 +46,16 @@ static inline bool thread_check_stopped_and_restart(Genode::Thread *thread_base)
 }
 
 
-static inline void thread_switch_to(Genode::Thread *thread_base)
-{
-	thread_yield();
-}
+static inline void thread_switch_to(Genode::Thread *) { thread_yield(); }
 
 
-static inline void thread_stop_myself()
+static inline void thread_stop_myself(Genode::Thread *myself)
 {
 	/*
 	 * Just go to sleep without modifying the counter value. The
 	 * 'thread_check_stopped_and_restart()' function will get called
 	 * repeatedly until this thread has actually executed the syscall.
 	 */
-	Genode::Thread *myself = Genode::Thread::myself();
 	const int *futex_counter_ptr = myself ?
 	                               &myself->native_thread().futex_counter :
 	                               &main_thread_futex_counter;

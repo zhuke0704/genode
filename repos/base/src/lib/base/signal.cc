@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2008-2013 Genode Labs GmbH
+ * Copyright (C) 2008-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -18,15 +18,17 @@
 #include <base/thread.h>
 #include <base/sleep.h>
 #include <base/trace/events.h>
-#include <signal_source/client.h>
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
+#include <deprecated/env.h>
 
 /* base-internal includes */
 #include <base/internal/globals.h>
+#include <base/internal/unmanaged_singleton.h>
+#include <signal_source/client.h>
 
 using namespace Genode;
 
-class Signal_handler_thread : Thread, Lock
+class Signal_handler_thread : Thread, Blockade
 {
 	private:
 
@@ -37,12 +39,12 @@ class Signal_handler_thread : Thread, Lock
 		 * thread because on some platforms (e.g., Fiasco.OC), the calling
 		 * thread context is used for implementing the signal-source protocol.
 		 */
-		Lazy_volatile_object<Signal_source_client> _signal_source;
+		Constructible<Signal_source_client> _signal_source { };
 
-		void entry()
+		void entry() override
 		{
-			_signal_source.construct(env()->pd_session()->alloc_signal_source());
-			unlock();
+			_signal_source.construct(env_deprecated()->pd_session()->alloc_signal_source());
+			wakeup();
 			Signal_receiver::dispatch_signals(&(*_signal_source));
 		}
 
@@ -54,7 +56,7 @@ class Signal_handler_thread : Thread, Lock
 		 * Constructor
 		 */
 		Signal_handler_thread(Env &env)
-		: Thread(env, "signal handler", STACK_SIZE), Lock(Lock::LOCKED)
+		: Thread(env, "signal handler", STACK_SIZE)
 		{
 			start();
 
@@ -63,12 +65,12 @@ class Signal_handler_thread : Thread, Lock
 			 * with the use of signals. Otherwise, signals may get lost until
 			 * the construction finished.
 			 */
-			lock();
+			block();
 		}
 
 		~Signal_handler_thread()
 		{
-			env()->pd_session()->free_signal_source(*_signal_source);
+			env_deprecated()->pd_session()->free_signal_source(_signal_source->rpc_cap());
 		}
 };
 
@@ -76,12 +78,11 @@ class Signal_handler_thread : Thread, Lock
 /*
  * The signal-handler thread will be constructed before global constructors are
  * called and, consequently, must not be a global static object. Otherwise, the
- * Lazy_volatile_object constructor will be executed twice.
+ * 'Constructible' constructor will be executed twice.
  */
-static Lazy_volatile_object<Signal_handler_thread> & signal_handler_thread()
+static Constructible<Signal_handler_thread> & signal_handler_thread()
 {
-	static Lazy_volatile_object<Signal_handler_thread> inst;
-	return inst;
+	return *unmanaged_singleton<Constructible<Signal_handler_thread> >();
 }
 
 
@@ -105,6 +106,20 @@ namespace Genode {
 	void destroy_signal_thread()
 	{
 		signal_handler_thread().destruct();
+	}
+}
+
+
+/********************
+ ** Signal_context **
+ ********************/
+
+void Signal_context::local_submit()
+{
+	if (_receiver) {
+		/* construct and locally submit signal object */
+		Signal::Data signal(this, 1);
+		_receiver->local_submit(signal);
 	}
 }
 
@@ -135,34 +150,34 @@ namespace Genode {
 			 * scalability problem, we might introduce a more sophisticated
 			 * associative data structure.
 			 */
-			Lock mutable                        _lock;
-			List<List_element<Signal_context> > _list;
+			Mutex mutable                       _mutex { };
+			List<List_element<Signal_context> > _list { };
 
 		public:
 
 			void insert(List_element<Signal_context> *le)
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 				_list.insert(le);
 			}
 
 			void remove(List_element<Signal_context> *le)
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 				_list.remove(le);
 			}
 
 			bool test_and_lock(Signal_context *context) const
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
 				/* search list for context */
 				List_element<Signal_context> const *le = _list.first();
 				for ( ; le; le = le->next()) {
 
 					if (context == le->object()) {
-						/* lock object */
-						context->_lock.lock();
+						/* acquire the object */
+						context->_mutex.acquire();
 						return true;
 					}
 				}
@@ -182,31 +197,6 @@ Genode::Signal_context_registry *signal_context_registry()
 }
 
 
-/********************
- ** Signal context **
- ********************/
-
-void Signal_context::submit(unsigned num)
-{
-	if (!_receiver) {
-		PWRN("signal context with no receiver");
-		return;
-	}
-
-	if (!signal_context_registry()->test_and_lock(this)) {
-		PWRN("encountered dead signal context");
-		return;
-	}
-
-	/* construct and locally submit signal object */
-	Signal::Data signal(this, num);
-	_receiver->local_submit(signal);
-
-	/* free context lock that was taken by 'test_and_lock' */
-	_lock.unlock();
-}
-
-
 /*********************
  ** Signal receiver **
  *********************/
@@ -221,29 +211,34 @@ Signal_context_capability Signal_receiver::manage(Signal_context *context)
 
 	context->_receiver = this;
 
-	Lock::Guard list_lock_guard(_contexts_lock);
+	Mutex::Guard contexts_guard(_contexts_mutex);
 
 	/* insert context into context list */
-	_contexts.insert(&context->_receiver_le);
+	_contexts.insert_as_tail(context);
 
 	/* register context at process-wide registry */
 	signal_context_registry()->insert(&context->_registry_le);
 
-	retry<Pd_session::Out_of_metadata>(
-		[&] () {
+	for (;;) {
+
+		Ram_quota ram_upgrade { 0 };
+		Cap_quota cap_upgrade { 0 };
+
+		try {
 			/* use signal context as imprint */
-			context->_cap = env()->pd_session()->alloc_context(_cap, (long)context);
-		},
-		[&] () {
-			size_t const quota = 1024*sizeof(long);
-			char buf[64];
-			snprintf(buf, sizeof(buf), "ram_quota=%zu", quota);
-
-			PINF("upgrading quota donation for PD session (%zu bytes)", quota);
-
-			env()->parent()->upgrade(env()->pd_session_cap(), buf);
+			context->_cap = env_deprecated()->pd_session()->alloc_context(_cap, (long)context);
+			break;
 		}
-	);
+		catch (Out_of_ram)  { ram_upgrade = Ram_quota { 1024*sizeof(long) }; }
+		catch (Out_of_caps) { cap_upgrade = Cap_quota { 4 }; }
+
+		log("upgrading quota donation for PD session "
+		    "(", ram_upgrade, " bytes, ", cap_upgrade, " caps)");
+
+		env_deprecated()->parent()->upgrade(Parent::Env::pd(),
+		                                    String<100>("ram_quota=", ram_upgrade, ", "
+		                                                "cap_quota=", cap_upgrade).string());
+	}
 
 	return context->_cap;
 }
@@ -255,16 +250,58 @@ void Signal_receiver::block_for_signal()
 }
 
 
-void Signal_receiver::local_submit(Signal::Data ns)
+Signal Signal_receiver::pending_signal()
 {
-	Signal_context *context = ns.context;
+	Mutex::Guard contexts_guard(_contexts_mutex);
+	Signal::Data result;
+	_contexts.for_each_locked([&] (Signal_context &context) -> bool {
+
+		if (!context._pending) return false;
+
+		_contexts.head(context._next);
+		context._pending     = false;
+		result               = context._curr_signal;
+		context._curr_signal = Signal::Data(0, 0);
+
+		Trace::Signal_received trace_event(context, result.num);
+		return true;
+	});
+	if (result.context) {
+		Mutex::Guard context_guard(result.context->_mutex);
+		if (result.num == 0)
+			warning("returning signal with num == 0");
+
+		return result;
+	}
+
+	/*
+	 * Normally, we should never arrive at this point because that would
+	 * mean, the '_signal_available' semaphore was increased without
+	 * registering the signal in any context associated to the receiver.
+	 *
+	 * However, if a context gets dissolved right after submitting a
+	 * signal, we may have increased the semaphore already. In this case
+	 * the signal-causing context is absent from the list.
+	 */
+	return Signal();
+}
+
+void Signal_receiver::unblock_signal_waiter(Rpc_entrypoint &)
+{
+	_signal_available.up();
+}
+
+
+void Signal_receiver::local_submit(Signal::Data data)
+{
+	Signal_context *context = data.context;
 
 	/*
 	 * Replace current signal of the context by signal with accumulated
 	 * counters. In the common case, the current signal is an invalid
 	 * signal with a counter value of zero.
 	 */
-	unsigned num = context->_curr_signal.num + ns.num;
+	unsigned num = context->_curr_signal.num + data.num;
 	context->_curr_signal = Signal::Data(context, num);
 
 	/* wake up the receiver if the context becomes pending */
@@ -284,12 +321,12 @@ void Signal_receiver::dispatch_signals(Signal_source *signal_source)
 		Signal_context *context = (Signal_context *)(source_signal.imprint());
 
 		if (!context) {
-			PERR("received null signal imprint, stop signal handling");
+			error("received null signal imprint, stop signal dispatcher");
 			sleep_forever();
 		}
 
 		if (!signal_context_registry()->test_and_lock(context)) {
-			PWRN("encountered dead signal context");
+			warning("encountered dead signal context ", context, " in signal dispatcher");
 			continue;
 		}
 
@@ -298,20 +335,27 @@ void Signal_receiver::dispatch_signals(Signal_source *signal_source)
 			Signal::Data signal(context, source_signal.num());
 			context->_receiver->local_submit(signal);
 		} else {
-			PWRN("signal context with no receiver");
+			warning("signal context ", context, " with no receiver in signal dispatcher");
 		}
 
-		/* free context lock that was taken by 'test_and_lock' */
-		context->_lock.unlock();
+		/* free context mutex that was taken by 'test_and_lock' */
+		context->_mutex.release();
 	}
 }
 
 
-void Signal_receiver::_platform_begin_dissolve(Signal_context *) { }
+void Signal_receiver::_platform_begin_dissolve(Signal_context *context)
+{
+	/*
+	 * Because the 'remove' operation takes the registry mutex, the context
+	 * must not be acquired when calling this method. See the comment in
+	 * 'Signal_receiver::dissolve'.
+	 */
+	signal_context_registry()->remove(&context->_registry_le);
+}
 
 
-void Signal_receiver::_platform_finish_dissolve(Signal_context * const c) {
-	signal_context_registry()->remove(&c->_registry_le); }
+void Signal_receiver::_platform_finish_dissolve(Signal_context *) { }
 
 
 void Signal_receiver::_platform_destructor() { }

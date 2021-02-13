@@ -5,13 +5,13 @@
  */
 
 /*
- * Copyright (C) 2013-2014 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-#include <base/printf.h>
+#include <base/log.h>
 
 extern "C" {
 
@@ -22,7 +22,8 @@ enum {
 #define DUMMY(retval, name) \
 	int name(void) { \
 	if (SHOW_DUMMY) \
-		PDBG(#name " called (from %p) not implemented", __builtin_return_address(0)); \
+		Genode::warning(#name " called (from ", __builtin_return_address(0), ") " \
+		                "not implemented"); \
 	return retval; \
 }
 

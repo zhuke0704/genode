@@ -5,18 +5,18 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
+#include <base/component.h>
 #include <base/allocator_avl.h>
-#include <os/attached_rom_dataspace.h>
-#include <os/config.h>
+#include <base/attached_rom_dataspace.h>
+#include <base/heap.h>
 #include <os/reporter.h>
-#include <os/server.h>
 #include <util/list.h>
 #include <util/string.h>
 #include <util/xml_generator.h>
@@ -31,6 +31,9 @@ namespace Usb_filter {
 	using Genode::Xml_generator;
 	using Genode::Attached_rom_dataspace;
 	using Genode::snprintf;
+	using Genode::error;
+	using Genode::log;
+	using Genode::warning;
 
 	struct Device_registry;
 	struct Main;
@@ -45,17 +48,16 @@ class Usb_filter::Device_registry
 {
 	private:
 
-		Genode::Allocator         &_alloc;
-		Server::Entrypoint &_ep;
+		Genode::Env       &_env;
+		Genode::Allocator &_alloc;
 
-		Genode::Reporter   _reporter { "usb_devices" };
+		Genode::Reporter   _reporter { _env, "usb_devices" };
 
-		Attached_rom_dataspace _devices_rom        { "devices" };
-		Attached_rom_dataspace _usb_drv_config_rom { "usb_drv_config" };
+		Attached_rom_dataspace _devices_rom        { _env, "devices" };
+		Attached_rom_dataspace _usb_drv_config_rom { _env, "usb_drv_config" };
 
 		Genode::Allocator_avl    _fs_packet_alloc { &_alloc };
-		File_system::Connection  _fs              { _fs_packet_alloc, 128*1024, "usb_drv.config" };
-		File_system::File_handle _file;
+		File_system::Connection  _fs              { _env, _fs_packet_alloc, "usb_drv.config" };
 
 		struct Entry : public Genode::List<Entry>::Element
 		{
@@ -68,11 +70,11 @@ class Usb_filter::Device_registry
 			: bus(b), dev(d), vendor(v), product(p) { }
 		};
 
-		Genode::List<Entry> _list;
+		Genode::List<Entry> _list { };
 
 		enum { MAX_LABEL_LEN = 512 };
 		typedef Genode::String<MAX_LABEL_LEN> Label;
-		Label _client_label;
+		Label _client_label { };
 
 		template <typename FUNC>
 		void _for_each_entry(FUNC const &func) const
@@ -122,7 +124,7 @@ class Usb_filter::Device_registry
 		}
 
 		static void _gen_policy_entry(Xml_generator &xml, Xml_node &node,
-		                        Entry const &entry, char const *label)
+		                        Entry const &, char const *label)
 		{
 			xml.node("policy", [&] {
 				char buf[MAX_LABEL_LEN + 16];
@@ -151,19 +153,21 @@ class Usb_filter::Device_registry
 		{
 			using namespace Genode;
 
+			Constructible<File_system::File_handle> file;
+
 			try {
 				File_system::Dir_handle root_dir = _fs.dir("/", false);
-				_file = _fs.file(root_dir, config_file, File_system::READ_WRITE, false);
+				file.construct(_fs.file(root_dir, config_file, File_system::READ_WRITE, false));
 			} catch (...) {
-				PERR("Could not open '%s'", config_file);
+				error("could not open '", config_file, "'");
 				return;
 			}
 
 			char old_file[1024];
-			size_t n = File_system::read(_fs, _file, old_file,
+			size_t n = File_system::read(_fs, *file, old_file,
 			                                   sizeof(old_file));
 			if (n == 0) {
-				PERR("Could not read '%s'", config_file);
+				error("could not read '", config_file, "'");
 				return;
 			}
 
@@ -182,13 +186,14 @@ class Usb_filter::Device_registry
 				/* copy other nodes */
 				drv_config.for_each_sub_node([&] (Xml_node &node) {
 					if (!node.has_type("raw")) {
-						xml.append(node.addr(), node.size());
+						node.with_raw_node([&] (char const *start, size_t length) {
+							xml.append(start, length); });
 						return;
 					}
 				});
 
 				if (!drv_config.has_sub_node("raw"))
-					PINF("enable raw support in usb_drv");
+					log("enable raw support in usb_drv");
 
 				xml.node("raw", [&] {
 					xml.node("report", [&] {
@@ -211,26 +216,26 @@ class Usb_filter::Device_registry
 
 			new_file[xml.used()] = 0;
 			if (verbose)
-				PLOG("new usb_drv configuration:\n%s", new_file);
+				log("new usb_drv configuration:\n", Cstring(new_file));
 
-			n = File_system::write(_fs, _file, new_file, xml.used());
+			n = File_system::write(_fs, *file, new_file, xml.used());
 			if (n == 0)
-				PERR("Could not write '%s'", config_file);
+				error("could not write '", config_file, "'");
 
-			_fs.close(_file);
+			_fs.close(*file);
 		}
 
-		Genode::Signal_rpc_member<Device_registry> _devices_dispatcher =
-		{ _ep, *this, &Device_registry::_handle_devices };
+		Genode::Signal_handler<Device_registry> _devices_handler =
+		{ _env.ep(), *this, &Device_registry::_handle_devices };
 
-		void _handle_devices(unsigned)
+		void _handle_devices()
 		{
 			_devices_rom.update();
 
 			if (!_devices_rom.valid()) return;
 
 			if (verbose)
-				PLOG("device report:\n%s", _devices_rom.local_addr<char>());
+				log("device report:\n", _devices_rom.local_addr<char const>());
 
 			Xml_node usb_devices(_devices_rom.local_addr<char>(), _devices_rom.size());
 
@@ -240,7 +245,7 @@ class Usb_filter::Device_registry
 		bool _check_config(Xml_node &drv_config)
 		{
 			if (!drv_config.has_sub_node("raw")) {
-				PERR("Could not access <raw> node");
+				error("could not access <raw> node");
 				return false;
 			}
 
@@ -256,8 +261,9 @@ class Usb_filter::Device_registry
 				});
 
 				if (verbose && !result)
-					PWRN("No matching policy was created for device %d-%d (%x:%x)",
-					     entry.bus, entry.dev, entry.vendor, entry.product);
+					warning("No matching policy was created for "
+					        "device ", entry.bus, "-", entry.dev, " "
+					        "(", entry.vendor, ":", entry.product, ")");
 			};
 			_for_each_entry(check_policy);
 
@@ -265,7 +271,7 @@ class Usb_filter::Device_registry
 		}
 
 		static void _gen_device_entry(Xml_generator &xml, Xml_node &node,
-		                              Entry const &entry)
+		                              Entry const &)
 		{
 			xml.node("device", [&] {
 				char buf[16];
@@ -294,6 +300,8 @@ class Usb_filter::Device_registry
 		{
 			using namespace Genode;
 
+			if (!_devices_rom.valid()) return;
+
 			/*
 			 * XXX it might happen that the device list has changed after we are
 			 *     waiting for the usb_drv_config update
@@ -313,10 +321,10 @@ class Usb_filter::Device_registry
 			});
 		}
 
-		Genode::Signal_rpc_member<Device_registry> _usb_drv_config_dispatcher =
-		{ _ep, *this, &Device_registry::_handle_usb_drv_config };
+		Genode::Signal_handler<Device_registry> _usb_drv_config_handler =
+		{ _env.ep(), *this, &Device_registry::_handle_usb_drv_config };
 
-		void _handle_usb_drv_config(unsigned)
+		void _handle_usb_drv_config()
 		{
 			_usb_drv_config_rom.update();
 
@@ -353,15 +361,14 @@ class Usb_filter::Device_registry
 		/**
 		 * Constructor
 		 */
-		Device_registry(Genode::Allocator         &alloc,
-		                Server::Entrypoint &ep)
-		: _alloc(alloc), _ep(ep)
+		Device_registry(Genode::Env &env, Genode::Allocator &alloc)
+		:  _env(env), _alloc(alloc)
 		{
 			_reporter.enabled(true);
 
-			_devices_rom.sigh(_devices_dispatcher);
+			_devices_rom.sigh(_devices_handler);
 
-			_usb_drv_config_rom.sigh(_usb_drv_config_dispatcher);
+			_usb_drv_config_rom.sigh(_usb_drv_config_handler);
 		}
 
 		/**
@@ -395,9 +402,9 @@ class Usb_filter::Device_registry
 			config.for_each_sub_node("device", add_new_entry);
 
 			try {
-				config.sub_node("client").attribute("label").value(&_client_label);
+				config.sub_node("client").attribute("label").value(_client_label);
 			} catch (...) {
-				PERR("Could not update client label");
+				error("could not update client label");
 			}
 		}
 };
@@ -405,30 +412,31 @@ class Usb_filter::Device_registry
 
 struct Usb_filter::Main
 {
-	Server::Entrypoint &ep;
+	Genode::Env &_env;
 
-	Genode::Signal_rpc_member<Main> _config_dispatcher =
-	{ ep, *this, &Main::_handle_config };
+	Genode::Heap _heap { _env.ram(), _env.rm() };
 
-	void _handle_config(unsigned)
+	Genode::Attached_rom_dataspace _config { _env, "config" };
+
+	Genode::Signal_handler<Main> _config_handler =
+	{ _env.ep(), *this, &Main::_handle_config };
+
+	void _handle_config()
 	{
-		Genode::config()->reload();
-		device_registry.update_entries(Genode::config()->xml_node());
+		_config.update();
+		device_registry.update_entries(_config.xml());
 	}
 
-	Device_registry device_registry { *Genode::env()->heap(), ep };
+	Device_registry device_registry { _env, _heap };
 
-	Main(Server::Entrypoint &ep) : ep(ep)
+	Main(Genode::Env &env) : _env(env)
 	{
-		Genode::config()->sigh(_config_dispatcher);
+		_config.sigh(_config_handler);
 
-		_handle_config(0);
+		_handle_config();
 	}
 };
 
 
-namespace Server {
-	char const *name()             { return "usb_report_filter_ep";    }
-	size_t      stack_size()       { return 4*1024*sizeof(addr_t);     }
-	void construct(Entrypoint &ep) { static Usb_filter::Main main(ep); }
-}
+void Component::construct(Genode::Env &env) {
+	static Usb_filter::Main main(env); }

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INPUT__ROOT_H_
@@ -54,14 +54,14 @@ class Input::Root_component : public Genode::Static_root<Input::Session>
     	        Genode::Affinity           const &affinity) override
 		{
 			if (_session.event_queue().enabled())
-				throw Root::Unavailable();
+				throw Genode::Service_denied();
 
 			_session.event_queue().enabled(true);
 
 			return Static_root<Input::Session>::session(args, affinity);
 		}
 
-		void close(Genode::Capability<Session>)
+		void close(Genode::Capability<Genode::Session>) override
 		{
 			_session.event_queue().enabled(false);
 		}

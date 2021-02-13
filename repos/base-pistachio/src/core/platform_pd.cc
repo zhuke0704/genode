@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -22,15 +22,12 @@ namespace Pistachio {
 #include <l4/thread.h>
 #include <l4/sigma0.h>
 #include <l4/schedule.h>
+#include <l4/space.h>
+#include <l4/types.h>
 }
 
 using namespace Pistachio;
 using namespace Genode;
-
-
-static const bool verbose = false;
-
-#define PT_DBG(args...) if (verbose) { PDBG(args); } else { }
 
 
 /**************************
@@ -47,8 +44,6 @@ L4_Word_t Platform_pd::_core_utcb_ptr = 0;
 void Platform_pd::_create_pd(bool syscall)
 {
 	if (syscall) {
-		PT_DBG("_create_pd (_l4_task_id = 0x%08lx)",
-		       _l4_task_id.raw);
 
 		/* create place-holder thread representing the PD */
 		L4_ThreadId_t l4t = make_l4_id(_pd_id, 0, _version);
@@ -75,17 +70,13 @@ void Platform_pd::_destroy_pd()
 {
 	using namespace Pistachio;
 
-	PT_DBG("_destroy_pd (_l4_task_id = 0x%08lx)",
-	 _l4_task_id.raw);
-
-	// Space Specifier == nilthread -> destroy
+	/* Space Specifier == nilthread -> destroy */
 	L4_Word_t res = L4_ThreadControl(_l4_task_id, L4_nilthread,
 	                                 L4_nilthread, L4_nilthread,
 	                                 (void *)-1);
 
-	if (res != 1) {
-		panic("Destroying protection domain failed.");
-	}
+	if (res != 1)
+		panic("destroying protection domain failed");
 
 	_l4_task_id = L4_nilthread;
 }
@@ -156,7 +147,7 @@ Platform_thread* Platform_pd::_next_thread()
 }
 
 
-int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
+int Platform_pd::_alloc_thread(int thread_id, Platform_thread &thread)
 {
 	int i = thread_id;
 
@@ -173,7 +164,7 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 		if (_threads[i]) return -2;
 	}
 
-	_threads[i] = thread;
+	_threads[i] = &thread;
 
 	return i;
 }
@@ -182,7 +173,7 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 void Platform_pd::_free_thread(int thread_id)
 {
 	if (!_threads[thread_id])
-		PWRN("double-free of thread %x.%x detected", _pd_id, thread_id);
+		warning("double-free of thread ", Hex(_pd_id), ".", Hex(thread_id), " detected");
 
 	_threads[thread_id] = 0;
 }
@@ -192,59 +183,50 @@ void Platform_pd::_free_thread(int thread_id)
  ** Public object members **
  ***************************/
 
-bool Platform_pd::bind_thread(Platform_thread *thread)
+bool Platform_pd::bind_thread(Platform_thread &thread)
 {
 	using namespace Pistachio;
 
 	/* thread_id is THREAD_INVALID by default - only core is the special case */
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 	L4_ThreadId_t l4_thread_id;
 
 	int t = _alloc_thread(thread_id, thread);
 	if (t < 0) {
-		PERR("thread alloc failed");
+		error("thread alloc failed");
 		return false;
 	}
 	thread_id = t;
 	l4_thread_id = make_l4_id(_pd_id, thread_id, _version);
 
 	/* finally inform thread about binding */
-	thread->bind(thread_id, l4_thread_id, this);
+	thread.bind(thread_id, l4_thread_id, *this);
 
-	if (verbose) _debug_log_threads();
 	return true;
 }
 
 
-void Platform_pd::unbind_thread(Platform_thread *thread)
+void Platform_pd::unbind_thread(Platform_thread &thread)
 {
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 
 	/* unbind thread before proceeding */
-	thread->unbind();
+	thread.unbind();
 
 	_free_thread(thread_id);
 
-	if (verbose) _debug_log_threads();
 }
 
 
 void Platform_pd::touch_utcb_space()
 {
-	L4_Word_t utcb_ptr;
-
 	L4_KernelInterfacePage_t *kip = get_kip();
 	L4_ThreadId_t mylocalid = L4_MyLocalId();
-	utcb_ptr = *(L4_Word_t *) &mylocalid;
+	L4_Word_t utcb_ptr = *(L4_Word_t *) &mylocalid;
 	utcb_ptr &= ~(L4_UtcbAreaSize (kip) - 1);
 
 	/* store a pointer to core's utcb area */
 	_core_utcb_ptr = utcb_ptr;
-
-	PT_DBG("Core's UTCB area is at 0x%08lx (0x%08lx)",
-	 utcb_ptr, L4_UtcbAreaSize(kip));
-	PWRN("Core can have %lu threads.",
-	 L4_UtcbAreaSize(kip) / L4_UtcbSize(kip));
 
 	/*
 	 * We used to touch the UTCB space here, but that was probably not
@@ -275,35 +257,19 @@ void Platform_pd::_setup_address_space()
 
 	L4_KernelInterfacePage_t *kip = (L4_KernelInterfacePage_t *)get_kip();
 	L4_Fpage_t kip_space = L4_FpageLog2((L4_Word_t)kip, L4_KipAreaSizeLog2(kip));
-	PT_DBG("kip_start = %08lx", L4_Address(kip_space));
-
-	/* utcb space follows the kip, but must be aligned */
-	L4_Word_t kip_end = L4_Address(kip_space) + L4_KipAreaSize(kip);
-	PT_DBG("kip_end = %08lx", kip_end);
 
 	L4_Word_t utcb_start = _core_utcb_ptr;
-//	L4_Word_t utcb_start = (L4_Word_t)(&_kip_utcb_area);
-	PT_DBG("utcb_start = %08lx", utcb_start);
 	L4_Word_t utcb_size = L4_UtcbSize(kip) * THREAD_MAX;
-	PT_DBG("utcb_size = %08lx", utcb_size);
 
-	L4_Fpage_t utcb_space = L4_Fpage(utcb_start,
-	 // L4_Fpage truncates this.
-	 utcb_size + get_page_size() - 1 );
-
-	PT_DBG("Creating address space for %08lx.", ss.raw);
+	L4_Fpage_t utcb_space = L4_Fpage(utcb_start, utcb_size + get_page_size() - 1);
 
 	L4_Word_t old_control;
-	int res;
-
-	res = L4_SpaceControl(ss, 0, kip_space, utcb_space, L4_anythread, &old_control);
+	int res = L4_SpaceControl(ss, 0, kip_space, utcb_space, L4_anythread, &old_control);
 
 	if (res != 1 ) {
-		PERR("Error while setting up address space: %lu", L4_ErrorCode());
+		error("setting up address space failed, error ", L4_ErrorCode());
 		panic("L4_SpaceControl");
 	}
-
-	PT_DBG("Address space for %08lx created!", ss.raw);
 
 	_kip_ptr  = L4_Address(kip_space);
 	_utcb_ptr = L4_Address(utcb_space);
@@ -316,8 +282,28 @@ L4_Word_t Platform_pd::_utcb_location(unsigned int thread_id)
 }
 
 
-Platform_pd::Platform_pd(bool core) :
-	_l4_task_id(L4_MyGlobalId())
+void Platform_pd::flush(addr_t, size_t size, Core_local_addr core_local_base)
+{
+	/*
+	 * Pistachio's 'unmap' syscall unmaps the specified flexpage from all
+	 * address spaces to which we mapped the pages. We cannot target this
+	 * operation to a specific L4 task. Hence, we unmap the dataspace from
+	 * all tasks, not only for this RM client.
+	 */
+
+	using namespace Pistachio;
+
+	L4_Word_t page_size = get_page_size();
+
+	addr_t addr = core_local_base.value;
+	for (; addr < core_local_base.value + size; addr += page_size) {
+		L4_Fpage_t fp = L4_Fpage(addr, page_size);
+		L4_Unmap(L4_FpageAddRightsTo(&fp, L4_FullyAccessible));
+	}
+}
+
+
+Platform_pd::Platform_pd(bool) : _l4_task_id(L4_MyGlobalId())
 {
 	/*
 	 * Start with version 2 to avoid being mistaken as local or
@@ -340,19 +326,20 @@ Platform_pd::Platform_pd(bool core) :
 }
 
 
-Platform_pd::Platform_pd(Allocator * md_alloc, char const *,
-                         signed pd_id, bool create)
+Platform_pd::Platform_pd(Allocator &, char const *, signed pd_id, bool create)
 {
 	if (!create)
 		panic("create must be true.");
 
 	_init_threads();
 
-	_pd_id = _alloc_pd(pd_id);
-
-	if (_pd_id < 0) {
-		PERR("pd alloc failed");
+	int const id = _alloc_pd(pd_id);
+	if (id < 0) {
+		error("pd alloc failed");
+		return;
 	}
+
+	_pd_id = id;
 
 	_create_pd(create);
 }
@@ -360,32 +347,9 @@ Platform_pd::Platform_pd(Allocator * md_alloc, char const *,
 
 Platform_pd::~Platform_pd()
 {
-	/* invalidate weak pointers to this object */
-	Address_space::lock_for_destruction();
-
-	PT_DBG("Destroying all threads of pd %p", this);
-
 	/* unbind all threads */
-	while (Platform_thread *t = _next_thread()) unbind_thread(t);
-
-	PT_DBG("Destroying pd %p", this);
+	while (Platform_thread *t = _next_thread()) unbind_thread(*t);
 
 	_destroy_pd();
 	_free_pd();
-}
-
-
-/***********************
- ** Debugging support **
- ***********************/
-
-void Platform_pd::_debug_log_threads()
-{
-	PWRN("_debug_log_threads disabled.");
-}
-
-
-void Platform_pd::_debug_log_pds()
-{
-	PWRN("_debug_log_pds disabled.");
 }

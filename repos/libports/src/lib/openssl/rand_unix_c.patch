@@ -1,19 +1,19 @@
-diff --git a/crypto/rand/rand_unix.c b/crypto/rand/rand_unix.c
-index e3a6557..27b26e4 100644
 --- a/crypto/rand/rand_unix.c
 +++ b/crypto/rand/rand_unix.c
-@@ -233,6 +233,24 @@ int RAND_poll(void)
- 
- 	return 1;
+@@ -222,6 +222,26 @@
+     }
+     return 1;
  }
-+#elif defined RAND_GENODE
++# elif defined RAND_GENODE
 +int RAND_poll(void)
 +{
 +	unsigned char buf[ENTROPY_NEEDED];
++	char const *rand_file = "/dev/random";
 +
-+	int fd = open("/dev/random", O_RDONLY);
++	int fd = open(rand_file, O_RDONLY);
 +	if (fd == -1) {
-+		perror("open");
++		fprintf(stderr, "libcrypto: open(%s) failed with '%s'\n",
++				rand_file, strerror(errno));
 +		return 0;
 +	}
 +
@@ -24,6 +24,6 @@ index e3a6557..27b26e4 100644
 +
 +	return 1;
 +}
- #else /* !defined(__OpenBSD__) */
+ # elif defined __OpenBSD__
  int RAND_poll(void)
  {

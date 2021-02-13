@@ -7,26 +7,30 @@
  */
 
 /*
- * Copyright (C) 2006-2015 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PAGER_H_
 #define _CORE__INCLUDE__PAGER_H_
 
 /* Genode includes */
+#include <base/session_label.h>
 #include <base/thread.h>
 #include <base/object_pool.h>
-#include <cap_session/cap_session.h>
 #include <pager/capability.h>
+#include <cpu_session/cpu_session.h>
 #include <ipc_pager.h>
 
 /* core-local includes */
 #include <rpc_cap_factory.h>
+#include <pager_object_exception_state.h>
 
 namespace Genode {
+
+	typedef Cpu_session::Thread_creation_failed Invalid_thread;
 
 	/**
 	 * Special server object for paging
@@ -53,7 +57,7 @@ class Genode::Pager_object : public Object_pool<Pager_object>::Entry
 		/**
 		 * Local name for this pager object
 		 */
-		unsigned long _badge;
+		unsigned long const _badge;
 
 		Cpu_session_capability _cpu_session_cap;
 		Thread_capability      _thread_cap;
@@ -62,24 +66,33 @@ class Genode::Pager_object : public Object_pool<Pager_object>::Entry
 		 * User-level signal handler registered for this pager object via
 		 * 'Cpu_session::exception_handler()'.
 		 */
-		Signal_context_capability _exception_sigh;
+		Signal_context_capability _exception_sigh { };
+
+		Session_label             _pd_label;
+		Cpu_session::Name         _name;
 
 	public:
 
 		/**
 		 * Contains information about exception state of corresponding thread.
 		 */
-		Thread_state state;
+		Pager_object_exception_state state { };
 
 		/**
 		 * Constructor
 		 *
 		 * \param location  affinity of paged thread to physical CPU
+		 *
+		 * \throw Invalid_thread
 		 */
-		Pager_object(Cpu_session_capability cpu_sesion, Thread_capability thread,
-		             unsigned long badge, Affinity::Location location)
+		Pager_object(Cpu_session_capability cpu_sesion,
+		             Thread_capability thread,
+		             unsigned long badge, Affinity::Location,
+		             Session_label const &pd_label,
+		             Cpu_session::Name const &name)
 		:
-			_badge(badge), _cpu_session_cap(cpu_sesion), _thread_cap(thread)
+			_badge(badge), _cpu_session_cap(cpu_sesion), _thread_cap(thread),
+			_pd_label(pd_label), _name(name)
 		{ }
 
 		virtual ~Pager_object() { }
@@ -137,16 +150,25 @@ class Genode::Pager_object : public Object_pool<Pager_object>::Entry
 		 * fault occurred.
 		 */
 		void unresolved_page_fault_occurred();
+
+		/*
+		 * Print pager object belonging
+		 */
+		void print(Output &out) const
+		{
+			Genode::print(out, "pager_object: pd='", _pd_label,
+			                   "' thread='", _name, "'");
+		}
 };
 
 
 class Genode::Pager_entrypoint : public Object_pool<Pager_object>,
-                                 public Thread_deprecated<PAGER_EP_STACK_SIZE>
+                                 public Thread
 {
 	private:
 
-		Ipc_pager       _pager;
-		Rpc_cap_factory _cap_factory;
+		Ipc_pager        _pager { };
+		Rpc_cap_factory &_cap_factory;
 
 		Untyped_capability _pager_object_cap(unsigned long badge);
 
@@ -161,26 +183,27 @@ class Genode::Pager_entrypoint : public Object_pool<Pager_object>,
 		 */
 		Pager_entrypoint(Rpc_cap_factory &cap_factory)
 		:
-			Thread_deprecated<PAGER_EP_STACK_SIZE>("pager_ep"),
+			Thread(Weight::DEFAULT_WEIGHT, "pager_ep", PAGER_EP_STACK_SIZE,
+			       Type::NORMAL),
 			_cap_factory(cap_factory)
 		{ start(); }
 
 		/**
 		 * Associate Pager_object with the entry point
 		 */
-		Pager_capability manage(Pager_object *obj);
+		Pager_capability manage(Pager_object &obj);
 
 		/**
 		 * Dissolve Pager_object from entry point
 		 */
-		void dissolve(Pager_object *obj);
+		void dissolve(Pager_object &obj);
 
 
 		/**********************
 		 ** Thread interface **
 		 **********************/
 
-		void entry();
+		void entry() override;
 };
 
 #endif /* _CORE__INCLUDE__PAGER_H_ */

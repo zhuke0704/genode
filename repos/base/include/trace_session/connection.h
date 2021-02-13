@@ -5,15 +5,16 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__TRACE_SESSION__CONNECTION_H_
 #define _INCLUDE__TRACE_SESSION__CONNECTION_H_
 
+#include <util/retry.h>
 #include <trace_session/client.h>
 #include <base/connection.h>
 
@@ -23,19 +24,10 @@ namespace Genode { namespace Trace { struct Connection; } }
 struct Genode::Trace::Connection : Genode::Connection<Genode::Trace::Session>,
                                    Genode::Trace::Session_client
 {
-	/**
-	 * Issue session request
-	 *
-	 * \noapi
-	 */
-	Capability<Trace::Session> _session(Parent  &parent,
-	                                    size_t   ram_quota,
-	                                    size_t   arg_buffer_size,
-	                                    unsigned parent_levels)
+	template <typename FUNC>
+	auto _retry(FUNC func) -> decltype(func())
 	{
-		return session(parent,
-		               "ram_quota=%zu, arg_buffer_size=%zu, parent_levels=%u",
-		               ram_quota, arg_buffer_size, parent_levels);
+		return retry_with_upgrade(Ram_quota{8*1024}, Cap_quota{2}, func);
 	}
 
 	/**
@@ -47,24 +39,35 @@ struct Genode::Trace::Connection : Genode::Connection<Genode::Trace::Session>,
 	 */
 	Connection(Env &env, size_t ram_quota, size_t arg_buffer_size, unsigned parent_levels)
 	:
-		Genode::Connection<Session>(env, _session(env.parent(), ram_quota,
-		                                          arg_buffer_size, parent_levels)),
-		Session_client(cap())
+		Genode::Connection<Session>(env,
+			session(env.parent(), "ram_quota=%lu, arg_buffer_size=%lu, parent_levels=%u",
+			        ram_quota + 10*1024, arg_buffer_size, parent_levels)),
+		Session_client(env.rm(), cap())
 	{ }
 
-	/**
-	 * Constructor
-	 *
-	 * \noapi
-	 * \deprecated  Use the constructor with 'Env &' as first
-	 *              argument instead
-	 */
-	Connection(size_t ram_quota, size_t arg_buffer_size, unsigned parent_levels)
-	:
-		Genode::Connection<Session>(_session(*env()->parent(), ram_quota,
-		                                     arg_buffer_size, parent_levels)),
-		Session_client(cap())
-	{ }
+	Policy_id alloc_policy(size_t size) override
+	{
+		return _retry([&] () {
+			return Session_client::alloc_policy(size); });
+	}
+
+	void trace(Subject_id s, Policy_id p, size_t buffer_size) override
+	{
+		_retry([&] () { Session_client::trace(s, p, buffer_size); });
+	}
+
+	size_t subjects(Subject_id *dst, size_t dst_len) override
+	{
+		return _retry([&] () {
+			return Session_client::subjects(dst, dst_len); });
+	}
+
+	template <typename FN>
+	For_each_subject_info_result for_each_subject_info(FN const &fn)
+	{
+		return _retry([&] () {
+			return Session_client::for_each_subject_info(fn); });
+	}
 };
 
 #endif /* _INCLUDE__TRACE_SESSION__CONNECTION_H_ */

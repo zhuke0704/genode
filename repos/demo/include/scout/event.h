@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2005-2013 Genode Labs GmbH
+ * Copyright (C) 2005-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__SCOUT__EVENT_H_
@@ -49,10 +49,10 @@ class Scout::Event
 			WHEEL     = 6,   /* mouse wheel         */
 		};
 
-		ev_type type;
-		Point   mouse_position;
-		Point   wheel_movement;
-		int     code;       /* key code */
+		ev_type type           { UNDEFINED };
+		Point   mouse_position { };
+		Point   wheel_movement { };
+		int     code           { 0 };       /* key code */
 
 		/**
 		 * Assign new event information to event structure
@@ -76,7 +76,7 @@ class Scout::Event_handler
 		/**
 		 * Handle event
 		 */
-		virtual void handle(Event &e) = 0;
+		virtual void handle_event(Event const &e) = 0;
 };
 
 #endif /* _INCLUDE__SCOUT__EVENT_H_ */

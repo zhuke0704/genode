@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _SRC__SERVER__VMM__INCLUDE__ATAG_H_
@@ -187,7 +187,7 @@ class Atag {
 
 			_params->hdr.tag  = ATAG_CMDLINE;
 			_params->hdr.size = (sizeof(struct atag_header) + len + 1 + 4) >> 2;
-			Genode::strncpy(_params->u.cmdline.cmdline, line, len + 1);
+			Genode::copy_cstring(_params->u.cmdline.cmdline, line, len + 1);
 			_next();
 		}
 

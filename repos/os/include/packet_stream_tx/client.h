@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2013 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PACKET_STREAM_TX__CLIENT_H_
@@ -49,10 +49,11 @@ class Packet_stream_tx::Client : public Genode::Rpc_client<CHANNEL>
 		 *                      transmission buffer
 		 */
 		Client(Genode::Capability<CHANNEL> channel_cap,
-		       Genode::Range_allocator *buffer_alloc)
+		       Genode::Region_map &rm,
+		       Genode::Range_allocator &buffer_alloc)
 		:
 			Genode::Rpc_client<CHANNEL>(channel_cap),
-			_source(buffer_alloc, Base::template call<Rpc_dataspace>())
+			_source(Base::template call<Rpc_dataspace>(), rm, buffer_alloc)
 		{
 			/* wire data-flow signals for the packet transmitter */
 			_source.register_sigh_packet_avail(Base::template call<Rpc_packet_avail>());
@@ -61,13 +62,13 @@ class Packet_stream_tx::Client : public Genode::Rpc_client<CHANNEL>
 			sigh_ack_avail(_source.sigh_ack_avail());
 		}
 
-		void sigh_ready_to_submit(Genode::Signal_context_capability sigh) {
+		void sigh_ready_to_submit(Genode::Signal_context_capability sigh) override {
 			Base::template call<Rpc_ready_to_submit>(sigh); }
 
-		void sigh_ack_avail(Genode::Signal_context_capability sigh) {
+		void sigh_ack_avail(Genode::Signal_context_capability sigh) override {
 			Base::template call<Rpc_ack_avail>(sigh); }
 
-		typename CHANNEL::Source *source() { return &_source; }
+		typename CHANNEL::Source *source() override { return &_source; }
 };
 
 #endif /* _INCLUDE__PACKET_STREAM_TX__CLIENT_H_ */

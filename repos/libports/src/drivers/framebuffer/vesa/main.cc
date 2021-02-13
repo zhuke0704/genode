@@ -7,250 +7,160 @@
  */
 
 /*
- * Copyright (C) 2007-2013 Genode Labs GmbH
+ * Copyright (C) 2007-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-/* Genode */
-#include <base/env.h>
-#include <base/sleep.h>
-#include <base/rpc_server.h>
-#include <root/component.h>
-#include <cap_session/connection.h>
-#include <framebuffer_session/framebuffer_session.h>
-#include <rom_session/connection.h>
-#include <util/xml_node.h>
-#include <dataspace/client.h>
-#include <blit/blit.h>
-#include <os/config.h>
+/* Genode includes */
+#include <base/component.h>
+#include <base/heap.h>
+#include <base/attached_rom_dataspace.h>
+#include <util/reconstructible.h>
 #include <timer_session/connection.h>
+#include <capture_session/connection.h>
+#include <blit/painter.h>
+#include <os/pixel_rgb888.h>
 
-/* Local */
+/* local includes */
 #include "framebuffer.h"
 
-using namespace Genode;
-
-
-/***************
- ** Utilities **
- ***************/
-
-/**
- * Determine session argument value based on config file and session arguments
- *
- * \param attr_name   attribute name of config node
- * \param args        session argument string
- * \param arg_name    argument name
- * \param default     default session argument value if value is neither
- *                    specified in config node nor in session arguments
- */
-unsigned long session_arg(const char *attr_name, const char *args,
-                          const char *arg_name, unsigned long default_value)
-{
-	unsigned long result = default_value;
-
-	/* try to obtain value from config file */
-	try { Genode::config()->xml_node().attribute(attr_name).value(&result); }
-	catch (...) { }
-
-	/* check session argument to override value from config file */
-	result = Arg_string::find_arg(args, arg_name).ulong_value(result);
-	return result;
+namespace Vesa_driver {
+	using namespace Genode;
+	struct Main;
 }
 
 
-bool config_attribute(const char *attr_name)
+struct Vesa_driver::Main
 {
-	return Genode::config()->xml_node().attribute_value(attr_name, false);
-}
+	using Pixel = Capture::Pixel;
+	using Area  = Capture::Area;
+
+	Env &_env;
+
+	Heap _heap { _env.ram(), _env.rm() };
 
 
-/***********************************************
- ** Implementation of the framebuffer service **
- ***********************************************/
-
-namespace Framebuffer {
-
-	class Session_component : public Genode::Rpc_object<Session>
-	{
-		private:
-
-			unsigned _scr_width, _scr_height, _scr_mode;
-			bool     _buffered;
-
-			/* dataspace uses a back buffer (if '_buffered' is true) */
-			Genode::Ram_dataspace_capability _bb_ds;
-			void                            *_bb_addr;
-
-			/* dataspace of physical frame buffer */
-			Genode::Dataspace_capability _fb_ds;
-			void                        *_fb_addr;
-
-			Timer::Connection _timer;
-
-			void _refresh_buffered(int x, int y, int w, int h)
-			{
-				/* clip specified coordinates against screen boundaries */
-				int x2 = min(x + w - 1, (int)_scr_width  - 1),
-				    y2 = min(y + h - 1, (int)_scr_height - 1);
-				int x1 = max(x, 0),
-				    y1 = max(y, 0);
-				if (x1 > x2 || y1 > y2) return;
-
-				/* determine bytes per pixel */
-				int bypp = 0;
-				if (_scr_mode == 16) bypp = 2;
-				if (!bypp) return;
-
-				/* copy pixels from back buffer to physical frame buffer */
-				char *src = (char *)_bb_addr + bypp*(_scr_width*y1 + x1),
-				     *dst = (char *)_fb_addr + bypp*(_scr_width*y1 + x1);
-
-				blit(src, bypp*_scr_width, dst, bypp*_scr_width,
-				     bypp*(x2 - x1 + 1), y2 - y1 + 1);
-			}
-
-		public:
-
-			/**
-			 * Constructor
-			 */
-			Session_component(unsigned scr_width, unsigned scr_height, unsigned scr_mode,
-			                  Genode::Dataspace_capability fb_ds, bool buffered)
-			:
-				_scr_width(scr_width), _scr_height(scr_height), _scr_mode(scr_mode),
-				_buffered(buffered), _fb_ds(fb_ds)
-			{
-				if (!_buffered) return;
-
-				if (scr_mode != 16) {
-					PWRN("buffered mode not supported for mode %d", (int)scr_mode);
-					_buffered = false;
-				}
-
-				size_t buf_size = scr_width*scr_height*scr_mode/8;
-				try { _bb_ds = Genode::env()->ram_session()->alloc(buf_size); }
-				catch (...) {
-					PWRN("could not allocate back buffer, disabled buffered output");
-					_buffered = false;
-				}
-				PDBG("use buf size %zd", buf_size);
-
-				if (_buffered && _bb_ds.valid()) {
-					_bb_addr = Genode::env()->rm_session()->attach(_bb_ds);
-					_fb_addr = Genode::env()->rm_session()->attach(_fb_ds);
-				}
-
-				if (_buffered)
-					PINF("using buffered output");
-			}
-
-			/**
-			 * Destructor
-			 */
-			~Session_component()
-			{
-				if (!_buffered) return;
-
-				Genode::env()->rm_session()->detach(_bb_addr);
-				Genode::env()->ram_session()->free(_bb_ds);
-				Genode::env()->rm_session()->detach(_fb_addr);
-			}
-
-
-			/***********************************
-			 ** Framebuffer session interface **
-			 ***********************************/
-
-			Dataspace_capability dataspace() override {
-				return _buffered ? Dataspace_capability(_bb_ds)
-				                 : Dataspace_capability(_fb_ds); }
-
-			Mode mode() const override
-			{
-				return Mode(_scr_width, _scr_height,
-				            _scr_mode == 16 ? Mode::RGB565 : Mode::INVALID);
-			}
-
-			void mode_sigh(Genode::Signal_context_capability) override { }
-
-			void sync_sigh(Genode::Signal_context_capability sigh) override
-			{
-				_timer.sigh(sigh);
-				_timer.trigger_periodic(10*1000);
-			}
-
-			void refresh(int x, int y, int w, int h) override
-			{
-				if (_buffered)
-					_refresh_buffered(x, y, w, h);
-			}
-	};
-
-
-	/**
-	 * Shortcut for single-client root component
+	/*
+	 * Config
 	 */
-	typedef Genode::Root_component<Session_component, Genode::Single_client> Root_component;
 
-	class Root : public Root_component
+	Attached_rom_dataspace _config { _env, "config" };
+
+	Area _size { 1, 1 };
+
+	void _handle_config();
+
+	Signal_handler<Main> _config_handler { _env.ep(), *this, &Main::_handle_config };
+
+
+	/*
+	 * Capture
+	 */
+
+	Capture::Connection _capture { _env };
+
+	Constructible<Capture::Connection::Screen> _captured_screen { };
+
+
+	/*
+	 * Timer
+	 */
+
+	Timer::Connection _timer { _env };
+
+	Signal_handler<Main> _timer_handler { _env.ep(), *this, &Main::_handle_timer };
+
+	void _handle_timer();
+
+
+	/*
+	 * Driver
+	 */
+
+	bool const _framebuffer_initialized = ( Framebuffer::init(_env, _heap), true );
+
+	Constructible<Attached_dataspace> _fb_ds { };
+
+	Main(Env &env) : _env(env)
 	{
-		protected:
+		_config.sigh(_config_handler);
+		_timer.sigh(_timer_handler);
 
-			Session_component *_create_session(const char *args) override
-			{
-				unsigned long scr_width  = session_arg("width",  args, "fb_width",  0),
-				              scr_height = session_arg("height", args, "fb_height", 0),
-				              scr_mode   = session_arg("depth",  args, "fb_mode",   16);
-				bool          buffered   = config_attribute("buffered");
+		_handle_config();
+	}
+};
 
-				if (Framebuffer_drv::set_mode(scr_width, scr_height, scr_mode) != 0) {
-					PWRN("Could not set vesa mode %lux%lu@%lu", scr_width, scr_height,
-					     scr_mode);
-					throw Root::Invalid_args();
-				}
 
-				printf("Using video mode: %lu x %lu x %lu\n", scr_width, scr_height, scr_mode);
+void Vesa_driver::Main::_handle_timer()
+{
+	if (!_fb_ds.constructed())
+		return;
 
-				return new (md_alloc()) Session_component(scr_width, scr_height, scr_mode,
-				                                          Framebuffer_drv::hw_framebuffer(),
-				                                          buffered);
-			}
+	Surface<Pixel> surface(_fb_ds->local_addr<Pixel>(), _size);
 
-		public:
-
-			Root(Rpc_entrypoint *session_ep, Allocator *md_alloc)
-			: Root_component(session_ep, md_alloc) { }
-	};
+	_captured_screen->apply_to_surface(surface);
 }
 
 
-int main(int argc, char **argv)
+void Vesa_driver::Main::_handle_config()
 {
-	/* We need to create capabilities for sessions. Therefore, we request the
-	 * CAP service. */
-	static Cap_connection cap;
+	_config.update();
 
-	/* initialize server entry point */
-	enum { STACK_SIZE = 8*1024 };
-	static Rpc_entrypoint ep(&cap, STACK_SIZE, "vesa_ep");
+	Xml_node const config = _config.xml();
 
-	/* init driver back end */
-	if (Framebuffer_drv::init()) {
-		PERR("H/W driver init failed");
-		return 3;
+	Area const configured_size { config.attribute_value("width",  0U),
+	                             config.attribute_value("height", 0U) };
+	if (configured_size == _size)
+		return;
+
+	_size = Area { };
+	_fb_ds.destruct();
+	_timer.trigger_periodic(0);
+
+	/* set VESA mode */
+	{
+		enum { BITS_PER_PIXEL = 32 };
+
+		struct Pretty_mode
+		{
+			Area size;
+			void print(Output &out) const {
+				Genode::print(out, "VESA mode ", size, "@", (int)BITS_PER_PIXEL); }
+		};
+
+		unsigned width  = configured_size.w(),
+		         height = configured_size.h();
+
+		if (Framebuffer::set_mode(width, height, BITS_PER_PIXEL) != 0) {
+			warning("could not set ", Pretty_mode{configured_size});
+			return;
+		}
+
+		/*
+		 * Framebuffer::set_mode may return a size different from the passed
+		 * argument. In paricular, when passing a size of (0,0), the function
+		 * sets and returns the highest screen mode possible.
+		 */
+		_size = Area { width, height };
+
+		log("using ", Pretty_mode{_size});
 	}
 
-	/* entry point serving framebuffer root interface */
-	static Framebuffer::Root fb_root(&ep, env()->heap());
+	/* enable pixel capturing */
+	_fb_ds.construct(_env.rm(), Framebuffer::hw_framebuffer());
+	_captured_screen.construct(_capture, _env.rm(), _size);
 
-	/* tell parent about the service */
-	env()->parent()->announce(ep.manage(&fb_root));
+	unsigned long const period_ms = config.attribute_value("period_ms", 20U);
+	_timer.trigger_periodic(period_ms*1000);
+}
 
-	/* main's done - go to sleep */
 
-	sleep_forever();
-	return 0;
+void Component::construct(Genode::Env &env)
+{
+	/* XXX execute constructors of global statics */
+	env.exec_static_constructors();
+
+	static Vesa_driver::Main inst(env);
 }

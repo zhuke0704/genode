@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__RPC_CLIENT_H_
@@ -107,8 +107,8 @@ namespace Genode {
 
 	template <typename RPC_INTERFACE>
 	template <typename IF>
-	void Capability<RPC_INTERFACE>::
-	_call(typename IF::Client_args &args, typename IF::Ret_type &ret) const
+	typename IF::Ret_type Capability<RPC_INTERFACE>::
+	_call(typename IF::Client_args &args) const
 	{
 		/**
 		 * Message buffer for RPC message
@@ -144,7 +144,6 @@ namespace Genode {
 			throw Ipc_error();
 
 		Ipc_unmarshaller unmarshaller(reply_buf);
-		unmarshaller.extract(ret);
 
 		{
 			Trace::Rpc_returned trace_event(IF::name(), reply_buf);
@@ -156,6 +155,10 @@ namespace Genode {
 		/* reflect callee-side exception at the caller */
 		_check_for_exceptions(exception_code,
 		                      Meta::Overload_selector<typename IF::Exceptions>());
+
+		/* the return value does only exist if no exception was thrown */
+		Meta::Overload_selector<typename IF::Ret_type> ret_overloader;
+		return unmarshaller.extract(ret_overloader);
 	}
 }
 
@@ -171,13 +174,31 @@ namespace Genode {
  * simple wrapper in the line of 'return call<Rpc_function>(arguments...)'.
  */
 template <typename RPC_INTERFACE>
-struct Genode::Rpc_client : Capability<RPC_INTERFACE>, RPC_INTERFACE
+class Genode::Rpc_client : public RPC_INTERFACE
 {
-	typedef RPC_INTERFACE Rpc_interface;
+	private:
 
-	Rpc_client(Capability<RPC_INTERFACE> const &cap)
-	: Capability<RPC_INTERFACE>(cap) { }
+		Capability<RPC_INTERFACE> _cap;
+
+	public:
+
+		typedef RPC_INTERFACE Rpc_interface;
+
+		Rpc_client(Capability<RPC_INTERFACE> const &cap) : _cap(cap) { }
+
+		template <typename IF, typename... ARGS>
+		typename IF::Ret_type call(ARGS &&...args)
+		{
+			return _cap.template call<IF>(args...);
+		}
+
+		template <typename IF, typename... ARGS>
+		typename IF::Ret_type call(ARGS &&...args) const
+		{
+			return _cap.template call<IF>(args...);
+		}
+
+		Capability<RPC_INTERFACE> rpc_cap() const { return _cap; }
 };
-
 
 #endif /* _INCLUDE__BASE__RPC_CLIENT_H_ */

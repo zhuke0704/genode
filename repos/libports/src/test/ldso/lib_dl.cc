@@ -6,14 +6,14 @@
  */
 
 /*
- * Copyright (C) 2014-2015 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* test-local includes */
 #include "test-ldso.h"
@@ -24,7 +24,7 @@ struct Global_object
 {
 	Global_object()
 	{
-		Genode::printf("Global object constructed\n");
+		Genode::log("Global object constructed");
 	}
 };
 
@@ -40,7 +40,7 @@ Global_object global_object;
  */
 extern "C" void lib_dl_symbol()
 {
-	Genode::printf("called (from '%s')\n", __func__);
-	Genode::printf("Call 'lib_1_good': ");
+	Genode::log("called (from '", __func__, "')");
+	Genode::log("Call 'lib_1_good': ");
 	lib_1_good();
 }

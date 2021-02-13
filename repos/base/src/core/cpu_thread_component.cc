@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -21,8 +21,8 @@ void Cpu_thread_component::_update_exception_sigh()
 {
 	Signal_context_capability sigh = _thread_sigh.valid()
 	                               ? _thread_sigh : _session_sigh;
-	if (_platform_thread.pager())
-		_platform_thread.pager()->exception_handler(sigh);
+
+	_platform_thread.pager().exception_handler(sigh);
 }
 
 
@@ -60,12 +60,6 @@ void Cpu_thread_component::single_step(bool enabled)
 void Cpu_thread_component::resume()
 {
 	_platform_thread.resume();
-}
-
-
-void Cpu_thread_component::cancel_blocking()
-{
-	_platform_thread.cancel_blocking();
 }
 
 

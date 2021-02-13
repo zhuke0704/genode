@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NIC__ROOT_H_
@@ -18,6 +18,7 @@
 #include <root/component.h>
 
 namespace Nic {
+	using namespace Genode;
 
 	template <class SESSION_COMPONENT> class Root;
 };
@@ -29,11 +30,12 @@ class Nic::Root : public Genode::Root_component<SESSION_COMPONENT,
 {
 	private:
 
-		Server::Entrypoint &_ep;
+		Env       &_env;
+		Allocator &_md_alloc;
 
 	protected:
 
-		SESSION_COMPONENT *_create_session(const char *args)
+		SESSION_COMPONENT *_create_session(const char *args) override
 		{
 			using namespace Genode;
 
@@ -44,7 +46,7 @@ class Nic::Root : public Genode::Root_component<SESSION_COMPONENT,
 			/* deplete ram quota by the memory needed for the session structure */
 			size_t session_size = max(4096UL, (unsigned long)sizeof(SESSION_COMPONENT));
 			if (ram_quota < session_size)
-				throw Genode::Root::Quota_exceeded();
+				throw Genode::Insufficient_ram_quota();
 
 			/*
 			 * Check if donated ram quota suffices for both communication
@@ -52,23 +54,21 @@ class Nic::Root : public Genode::Root_component<SESSION_COMPONENT,
 			 */
 			if (tx_buf_size + rx_buf_size < tx_buf_size ||
 			    tx_buf_size + rx_buf_size > ram_quota - session_size) {
-				PERR("insufficient 'ram_quota', got %zd, need %zd",
-				     ram_quota, tx_buf_size + rx_buf_size + session_size);
-				throw Genode::Root::Quota_exceeded();
+				Genode::error("insufficient 'ram_quota', got ", ram_quota, ", "
+				              "need ", tx_buf_size + rx_buf_size + session_size);
+				throw Genode::Insufficient_ram_quota();
 			}
 
 			return new (Root::md_alloc())
 			            SESSION_COMPONENT(tx_buf_size, rx_buf_size,
-			                             *env()->heap(),
-			                             *env()->ram_session(),
-			                             _ep);
+			                             _md_alloc, _env);
 		}
 
 	public:
 
-		Root(Server::Entrypoint &ep, Genode::Allocator &md_alloc)
-		: Genode::Root_component<SESSION_COMPONENT, Genode::Single_client>(&ep.rpc_ep(), &md_alloc),
-			_ep(ep)
+		Root(Genode::Env &env, Genode::Allocator &md_alloc)
+		: Genode::Root_component<SESSION_COMPONENT, Genode::Single_client>(&env.ep().rpc_ep(), &md_alloc),
+			_env(env), _md_alloc(md_alloc)
 		{ }
 };
 

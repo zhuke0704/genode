@@ -5,19 +5,17 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
 #include <platform_thread.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/thread.h>
-} }
+/* base-internal includes */
+#include <base/internal/okl4.h>
 
 using namespace Genode;
 using namespace Okl4;
@@ -26,7 +24,6 @@ using namespace Okl4;
 Thread_state Platform_thread::state()
 {
 	Thread_state s;
-	s.tid = _l4_thread_id;
 
 	L4_Copy_regs_to_mrs(_l4_thread_id);
 
@@ -59,7 +56,7 @@ Thread_state Platform_thread::state()
 
 void Platform_thread::state(Thread_state)
 {
-	PDBG("Not implemented");
+	warning("Platform_thread::state not implemented");
 	throw Cpu_thread::State_access_failed();
 }
 

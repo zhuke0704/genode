@@ -5,17 +5,17 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__ATTACHED_MMIO_H_
 #define _INCLUDE__OS__ATTACHED_MMIO_H_
 
 /* Genode includes */
-#include <os/attached_io_mem_dataspace.h>
+#include <base/attached_io_mem_dataspace.h>
 #include <util/mmio.h>
 
 namespace Genode { class Attached_mmio; }
@@ -42,14 +42,16 @@ class Genode::Attached_mmio : public Attached_io_mem_dataspace,
 		 * \param size            size of resource
 		 * \param write_combined  enable write combining for the resource
 		 *
-		 * \throw Parent::Service_denied
-		 * \throw Parent::Quota_exceeded
-		 * \throw Parent::Unavailable
-		 * \throw Rm_session::Attach_failed
+		 * \throw Service_denied
+		 * \throw Insufficient_ram_quota
+		 * \throw Insufficient_cap_quota
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
+		 * \throw Region_map::Region_conflict
 		 */
-		Attached_mmio(addr_t base, size_t size,
+		Attached_mmio(Env &env, addr_t base, size_t size,
 		              bool write_combined = false)
-		: Attached_io_mem_dataspace(base, size, write_combined),
+		: Attached_io_mem_dataspace(env, base, size, write_combined),
 		  Mmio((addr_t)local_addr<void>()) { }
 };
 

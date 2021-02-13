@@ -5,83 +5,63 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
-/* core includes */
+#include <bios_data_area.h>
 #include <platform.h>
-#include <board.h>
-#include <pic.h>
-#include <kernel/kernel.h>
-#include <multiboot.h>
+#include <kernel/cpu.h>
+#include <map_local.h>
 
 using namespace Genode;
 
-/* contains physical pointer to multiboot */
-extern "C" Genode::addr_t __initial_bx;
-
-void Platform::_init_additional() { };
-
-Native_region * Platform::_core_only_mmio_regions(unsigned const i)
+void Platform::_init_additional_platform_info(Xml_generator &xml)
 {
-	static Native_region _regions[] =
-	{
-		{ Board::MMIO_LAPIC_BASE,  Board::MMIO_LAPIC_SIZE  },
-		{ Board::MMIO_IOAPIC_BASE, Board::MMIO_IOAPIC_SIZE },
-		{ 0, 0}
-	};
+	if (_boot_info().plat_info.efi_system_table != 0) {
+		xml.node("efi-system-table", [&] () {
+			xml.attribute("address", String<32>(Hex(_boot_info().plat_info.efi_system_table)));
+		});
+	}
+	xml.node("acpi", [&] () {
+		uint32_t const revision = _boot_info().plat_info.acpi_rsdp.revision;
+		uint32_t const rsdt     = _boot_info().plat_info.acpi_rsdp.rsdt;
+		uint64_t const xsdt     = _boot_info().plat_info.acpi_rsdp.xsdt;
 
-	unsigned const max = sizeof(_regions) / sizeof(_regions[0]);
+		if (revision && (rsdt || xsdt)) {
+			xml.attribute("revision", revision);
+			if (rsdt)
+				xml.attribute("rsdt", String<32>(Hex(rsdt)));
 
-	if (!_regions[max - 1].size)
-		_regions[max - 1] = { __initial_bx & ~0xFFFUL, get_page_size() };
-
-	return i < max ? &_regions[i] : nullptr;
-}
-
-
-void Platform::setup_irq_mode(unsigned irq_number, unsigned trigger,
-                              unsigned polarity)
-{
-	Kernel::pic()->ioapic.setup_irq_mode(irq_number, trigger, polarity);
-}
-
-
-bool Platform::get_msi_params(const addr_t mmconf, addr_t &address,
-                              addr_t &data, unsigned &irq_number)
-{
-	return false;
-}
-
-
-Native_region * Platform::_ram_regions(unsigned const i)
-{
-	static Native_region _regions[16];
-
-	Multiboot_info::Mmap v = Genode::Multiboot_info(__initial_bx).phys_ram(i);
-	if (!v.base)
-		return nullptr;
-
-	Multiboot_info::Mmap::Addr::access_t base = v.read<Multiboot_info::Mmap::Addr>();
-	Multiboot_info::Mmap::Length::access_t size = v.read<Multiboot_info::Mmap::Length>();
-
-	unsigned const max = sizeof(_regions) / sizeof(_regions[0]);
-
-	if (i < max && _regions[i].size == 0) {
-		if (base == 0 && size >= get_page_size()) {
-			/*
-			 * Exclude first physical page, so that it will become part of the
-			 * MMIO allocator. The framebuffer requests this page as MMIO.
-			 */
-			base  = get_page_size();
-			size -= get_page_size();
+			if (xsdt)
+				xml.attribute("xsdt", String<32>(Hex(xsdt)));
 		}
-		_regions[i] = { base, size };
-	} else if (i >= max)
-		PWRN("physical ram region 0x%llx+0x%llx will be not used", base, size);
-
-	return i < max ? &_regions[i] : nullptr;
+	});
+	xml.node("boot", [&] () {
+		xml.node("framebuffer", [&] () {
+			Hw::Framebuffer const &boot_fb = _boot_info().plat_info.framebuffer;
+			xml.attribute("phys",   String<32>(Hex(boot_fb.addr)));
+			xml.attribute("width",  boot_fb.width);
+			xml.attribute("height", boot_fb.height);
+			xml.attribute("bpp",    boot_fb.bpp);
+			xml.attribute("type",   boot_fb.type);
+			xml.attribute("pitch",  boot_fb.pitch);
+		});
+	});
+	xml.node("hardware", [&] () {
+		xml.node("features", [&] () {
+			xml.attribute("svm", false);
+			xml.attribute("vmx", false);
+		});
+	});
 }
+
+
+bool Platform::get_msi_params(addr_t, addr_t &, addr_t &, unsigned &) {
+	return false; }
+
+
+Board::Serial::Serial(addr_t, size_t, unsigned baudrate)
+:X86_uart(Bios_data_area::singleton()->serial_port(), 0, baudrate) {}

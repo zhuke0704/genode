@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2018 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__FILE_SYSTEM_SESSION__CLIENT_H_
@@ -37,10 +37,11 @@ class File_system::Session_client : public Genode::Rpc_client<Session>
 		 *                         transmission buffer
 		 */
 		Session_client(Session_capability       session,
-		               Genode::Range_allocator &tx_buffer_alloc)
+		               Genode::Range_allocator &tx_buffer_alloc,
+		               Genode::Region_map      &rm)
 		:
 			Rpc_client<Session>(session),
-			_tx(call<Rpc_tx_cap>(), &tx_buffer_alloc)
+			_tx(call<Rpc_tx_cap>(), rm, tx_buffer_alloc)
 		{ }
 
 
@@ -48,7 +49,17 @@ class File_system::Session_client : public Genode::Rpc_client<Session>
 		 ** File-system session interface **
 		 ***********************************/
 
-		Tx::Source *tx() { return _tx.source(); }
+		Tx::Source *tx() override { return _tx.source(); }
+
+		void sigh_ready_to_submit(Genode::Signal_context_capability sigh)
+		{
+			_tx.sigh_ready_to_submit(sigh);
+		}
+
+		void sigh_ack_avail(Genode::Signal_context_capability sigh)
+		{
+			_tx.sigh_ack_avail(sigh);
+		}
 
 		File_handle file(Dir_handle dir, Name const &name, Mode mode, bool create) override
 		{
@@ -68,6 +79,11 @@ class File_system::Session_client : public Genode::Rpc_client<Session>
 		Node_handle node(Path const &path) override
 		{
 			return call<Rpc_node>(path);
+		}
+
+		Watch_handle watch(Path const &path) override
+		{
+			return call<Rpc_watch>(path);
 		}
 
 		void close(Node_handle node) override
@@ -99,16 +115,6 @@ class File_system::Session_client : public Genode::Rpc_client<Session>
 		          Dir_handle to_dir,   Name const &to_name) override
 		{
 			call<Rpc_move>(from_dir, from_name, to_dir, to_name);
-		}
-
-		void sigh(Node_handle node, Genode::Signal_context_capability sigh) override
-		{
-			call<Rpc_sigh>(node, sigh);
-		}
-
-		void sync(Node_handle node) override
-		{
-			call<Rpc_sync>(node);
 		}
 };
 

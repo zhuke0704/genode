@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -27,8 +27,7 @@ void reinit_main_thread();
 namespace Genode { extern bool inhibit_tracing; }
 
 
-void Genode::Platform_env::reinit(Native_capability::Dst dst,
-                                  long local_name)
+void Genode::Platform_env::reinit(Native_capability::Raw raw)
 {
 	/*
 	 * This function is unused during the normal operation of Genode. It is
@@ -54,15 +53,13 @@ void Genode::Platform_env::reinit(Native_capability::Dst dst,
 	 * Patch new parent capability into the original location as specified by
 	 * the linker script.
 	 */
-	Native_capability::Raw *raw = (Native_capability::Raw *)(&_parent_cap);
-	raw->dst                    = dst;
-	raw->local_name             = local_name;
+	*(Native_capability::Raw *)(&_parent_cap) = raw;
 
 	/*
 	 * Re-initialize 'Platform_env' members
 	 */
 	Expanding_parent_client * const p = &_parent_client;
-	construct_at<Expanding_parent_client>(p, parent_cap(), *this);
+	construct_at<Expanding_parent_client>(p, parent_cap());
 	construct_at<Resources>(&_resources, _parent_client);
 
 	/*
@@ -72,7 +69,7 @@ void Genode::Platform_env::reinit(Native_capability::Dst dst,
 	 * no problem because they are used by the 'Heap' destructor only, which is
 	 * never called for heap instance of 'Platform_env'.
 	 */
-	_heap.reassign_resources(&_resources.ram, &_resources.rm);
+	_heap.reassign_resources(&_resources.pd, &_resources.rm);
 }
 
 

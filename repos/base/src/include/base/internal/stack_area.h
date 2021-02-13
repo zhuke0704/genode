@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2016 Genode Labs GmbH
+ * Copyright (C) 2016-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__STACK_AREA_H_
@@ -18,7 +18,7 @@
 
 namespace Genode {
 
-	static constexpr addr_t stack_area_virtual_base() { return 0x40000000UL; }
+	addr_t stack_area_virtual_base();
 	static constexpr addr_t stack_area_virtual_size() { return 0x10000000UL; }
 	static constexpr addr_t stack_virtual_size()      { return 0x00100000UL; }
 }

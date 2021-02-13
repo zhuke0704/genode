@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2013 Genode Labs GmbH
+ * Copyright (C) 2013-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__PLATFORM_SESSION__CLIENT_H_
@@ -34,7 +34,7 @@ struct Platform::Client : Genode::Rpc_client<Platform::Session>
 	void power_state(Power power, bool enable) override {
 		call<Rpc_set_power_state>(power, enable); }
 
-	uint32_t clock_rate(Clock clock) {
+	uint32_t clock_rate(Clock clock) override {
 		return call<Rpc_get_clock_rate>(clock); }
 };
 

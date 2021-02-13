@@ -1,42 +1,18 @@
-#
-# Build
-#
-
-if {[have_spec hw_odroid_xu]} {
-	puts "Run script not supported on this platform."; exit 0 }
-
-set build_components {
-	core init
-	drivers/timer
-	server/nitpicker
-	server/dynamic_rom
-	server/report_rom
-	drivers/framebuffer drivers/input
-	app/trace_subject_reporter
-	app/cpu_load_display
-	app/cpu_burner
-	app/pointer
-}
-
-lappend_if [have_spec usb]  build_components drivers/usb
-lappend_if [have_spec gpio] build_components drivers/gpio
-
-source ${genode_dir}/repos/base/run/platform_drv.inc
-append_platform_drv_build_components
-
-build $build_components
-
 create_boot_directory
+import_from_depot [depot_user]/src/[base_src] \
+                  [depot_user]/pkg/[drivers_interactive_pkg] \
+                  [depot_user]/src/dynamic_rom \
+                  [depot_user]/src/report_rom \
+                  [depot_user]/src/nitpicker \
+                  [depot_user]/src/cpu_burner \
+                  [depot_user]/src/cpu_load_display \
+                  [depot_user]/src/trace_subject_reporter \
+                  [depot_user]/src/init
 
-#
-# Generate config
-#
-
-append config {
+install_config {
 <config prio_levels="2">
 	<parent-provides>
 		<service name="ROM"/>
-		<service name="RAM"/>
 		<service name="IRQ"/>
 		<service name="IO_MEM"/>
 		<service name="IO_PORT"/>
@@ -48,67 +24,38 @@ append config {
 	</parent-provides>
 	<default-route>
 		<any-service> <parent/> <any-child/> </any-service>
-	</default-route>}
+	</default-route>
+	<default caps="100"/>
 
-append_if [have_spec sdl] config {
-	<start name="fb_sdl">
-		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
-		</provides>
-	</start>}
-
-append_platform_drv_config
-
-append_if [have_spec framebuffer] config {
-	<start name="fb_drv">
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Framebuffer"/></provides>
-		<config buffered="yes"/>
-	</start>}
-
-append_if [have_spec gpio] config {
-	<start name="gpio_drv">
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Gpio"/></provides>
-		<config/>
-	</start>}
-
-append_if [have_spec imx53] config {
-	<start name="input_drv">
-		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Input"/></provides>
-		<config/>
-	</start> }
-
-append_if [have_spec ps2] config {
-	<start name="ps2_drv">
-		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Input"/></provides>
-	</start>}
-
-append_if [expr ![have_spec ps2] && [have_spec usb]] config {
-	<start name="usb_drv">
-		<resource name="RAM" quantum="12M"/>
-		<provides><service name="Input"/></provides>
-		<config ehci="yes" uhci="yes" xhci="no"> <hid/> </config>
-	</start> }
-
-append config {
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="Timer"/></provides>
 	</start>
 
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
+		<binary name="init"/>
+		<route>
+			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+
 	<start name="nitpicker">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
+
 			<domain name="pointer" layer="1" label="no" content="client" origin="pointer" />
 			<domain name="default" layer="2" label="no" content="client" hover="always" />
 
-			<policy label="pointer" domain="pointer"/>
+			<policy label_prefix="pointer" domain="pointer"/>
 			<default-policy domain="default"/>
 		</config>
 	</start>
@@ -116,7 +63,7 @@ append config {
 	<start name="pointer">
 		<resource name="RAM" quantum="1M"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
@@ -139,14 +86,16 @@ append config {
 			<report activity="yes" affinity="yes"/>
 		</config>
 		<route>
-			<any-service> <child name="report_rom"/> <any-child/> <parent/> </any-service>
+			<service name="Report"> <child name="report_rom"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
 	<start name="cpu_load_display">
 		<resource name="RAM" quantum="6M"/>
 		<route>
-			<any-service> <child name="report_rom"/> <any-child/> <parent/> </any-service>
+			<service name="ROM" label="trace_subjects"> <child name="report_rom"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
@@ -180,54 +129,24 @@ append config {
 	<start name="cpu_burner.1">
 		<binary name="cpu_burner"/>
 		<resource name="RAM" quantum="1M"/>
-		<configfile name="cpu_burner1.config"/>
 		<route>
-			<any-service> <child name="dynamic_rom"/> <any-child/> <parent/> </any-service>
+			<service name="ROM" label="config">
+				<child name="dynamic_rom" label="cpu_burner1.config"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
 	<start name="cpu_burner.2">
 		<binary name="cpu_burner"/>
 		<resource name="RAM" quantum="1M"/>
-		<configfile name="cpu_burner2.config"/>
 		<route>
-			<any-service> <child name="dynamic_rom"/> <any-child/> <parent/> </any-service>
+			<service name="ROM" label="config">
+				<child name="dynamic_rom" label="cpu_burner2.config"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 </config>}
 
-install_config $config
-
-# copy backdrop PNG images to bin directory
-foreach file { genode_logo.png grid.png } {
-	file copy -force [genode_dir]/repos/gems/src/app/backdrop/$file bin/ }
-
-
-#
-# Boot modules
-#
-
-# generic modules
-set boot_modules {
-	core init
-	timer
-	nitpicker report_rom dynamic_rom pointer
-	cpu_load_display cpu_burner trace_subject_reporter
-}
-
-# platform-specific modules
-append_platform_drv_boot_modules
-
-lappend_if [have_spec linux]            boot_modules fb_sdl
-lappend_if [have_spec ps2]              boot_modules ps2_drv
-lappend_if [have_spec framebuffer]      boot_modules fb_drv
-lappend_if [have_spec usb]              boot_modules usb_drv
-lappend_if [have_spec gpio]             boot_modules gpio_drv
-lappend_if [have_spec imx53]            boot_modules input_drv
-
-build_boot_image $boot_modules
-
-append qemu_args " -m 256 "
+build_boot_image {}
 append qemu_args " -smp 4,cores=4 "
-
 run_genode_until forever

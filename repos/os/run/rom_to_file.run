@@ -4,7 +4,7 @@ assert_spec linux
 # Build
 #
 
-build { core init drivers/timer
+build { core init timer
 	server/dynamic_rom
 	app/rom_to_file
 	server/lx_fs
@@ -22,12 +22,11 @@ install_config {
 		<service name="LOG"/>
 		<service name="RM"/>
 		<service name="ROM" />
-		<service name="RAM" />
 		<service name="CPU" />
 		<service name="PD" />
 	</parent-provides>
 	<default-route>
-		<any-service> <any-child/> <parent/> </any-service>
+		<any-service> <parent/> <any-child/> </any-service>
 	</default-route>
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
@@ -45,16 +44,21 @@ install_config {
 			</rom>
 		</config>
 	</start>
-	<start name="lx_fs">
+	<start name="lx_fs" ld="no">
 		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system" /> </provides>
 		<config>
-			<policy label="rom_to_file" root="/fs_test" writeable="yes" />
+			<policy label_prefix="rom_to_file" root="/fs_test" writeable="yes" />
 		</config>
 	</start>
 	<start name="rom_to_file">
 		<resource name="RAM" quantum="4M"/>
 		<config rom="test" />
+		<route>
+			<service name="ROM" label="test"> <child name="dynamic_rom"/> </service>
+			<service name="File_system">      <child name="lx_fs"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
 	</start>
 </config>}
 
@@ -64,7 +68,7 @@ install_config {
 
 exec mkdir -p bin/fs_test
 
-build_boot_image { core init timer
+build_boot_image { core ld.lib.so init timer
 	dynamic_rom
 	rom_to_file
 	lx_fs

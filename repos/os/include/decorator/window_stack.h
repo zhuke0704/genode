@@ -5,18 +5,18 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__DECORATOR__WINDOW_STACK_H_
 #define _INCLUDE__DECORATOR__WINDOW_STACK_H_
 
 /* Genode includes */
-#include <nitpicker_session/nitpicker_session.h>
-#include <base/printf.h>
+#include <gui_session/gui_session.h>
+#include <base/log.h>
 
 /* local includes */
 #include <decorator/types.h>
@@ -31,28 +31,21 @@ class Decorator::Window_stack : public Window_base::Draw_behind_fn
 {
 	private:
 
-		Window_list          _windows;
-		Window_factory_base &_window_factory;
-		Dirty_rect mutable   _dirty_rect;
+		List_model<Window_base> _windows { };
+		Window_factory_base    &_window_factory;
+		Dirty_rect mutable      _dirty_rect { };
+
+		unsigned long _front_most_id = ~0UL;
 
 		inline void _draw_rec(Canvas_base &canvas, Window_base const *win,
 		                      Rect rect) const;
-
-		Window_base *_lookup_by_id(unsigned const id)
-		{
-			for (Window_base *win = _windows.first(); win; win = win->next())
-				if (win->id() == id)
-					return win;
-
-			return 0;
-		}
 
 		static inline
 		Xml_node _xml_node_by_window_id(Genode::Xml_node node, unsigned id)
 		{
 			for (node = node.sub_node("window"); ; node = node.next()) {
 
-				if (node.has_type("window") && attribute(node, "id", 0UL) == id)
+				if (node.has_type("window") && node.attribute_value("id", 0UL) == id)
 					return node;
 
 				if (node.last()) break;
@@ -61,24 +54,14 @@ class Decorator::Window_stack : public Window_base::Draw_behind_fn
 			throw Xml_node::Nonexistent_sub_node();
 		}
 
-		void _destroy(Window_base &window)
-		{
-			_windows.remove(&window);
-			_window_factory.destroy(&window);
-		}
-
 		/**
 		 * Generate window list in reverse order
-		 *
-		 * After calling this method, the '_windows' list is empty.
 		 */
-		Window_list _reversed_window_list()
+		Reversed_windows _reversed_window_list()
 		{
-			Window_list reversed;
-			while (Window_base *w = _windows.first()) {
-				_windows.remove(w);
-				reversed.insert(w);
-			}
+			Reversed_windows reversed { };
+			_windows.for_each([&] (Window_base &window) {
+				window.prepend_to_reverse_list(reversed); });
 			return reversed;
 		}
 
@@ -89,28 +72,33 @@ class Decorator::Window_stack : public Window_base::Draw_behind_fn
 			_window_factory(window_factory)
 		{ }
 
+		void mark_as_dirty(Rect rect) { _dirty_rect.mark_as_dirty(rect); }
+
 		Dirty_rect draw(Canvas_base &canvas) const
 		{
 			Dirty_rect result = _dirty_rect;
 
 			_dirty_rect.flush([&] (Rect const &rect) {
-				_draw_rec(canvas, _windows.first(), rect); });
+				_windows.apply_first([&] (Window_base const &first) {
+					_draw_rec(canvas, &first, rect); }); });
 
 			return result;
 		}
 
-		inline void update_model(Xml_node root_node);
+		template <typename FN>
+		inline void update_model(Xml_node root_node, FN const &flush);
 
 		bool schedule_animated_windows()
 		{
 			bool redraw_needed = false;
 
-			for (Window_base *win = _windows.first(); win; win = win->next()) {
-				if (win->animated()) {
-					_dirty_rect.mark_as_dirty(win->outer_geometry());
+			_windows.for_each([&] (Window_base const &win) {
+
+				if (win.animated()) {
+					_dirty_rect.mark_as_dirty(win.outer_geometry());
 					redraw_needed = true;
 				}
-			}
+			});
 			return redraw_needed;
 		}
 
@@ -120,48 +108,41 @@ class Decorator::Window_stack : public Window_base::Draw_behind_fn
 		 * The functor is called with 'Window_base &' as argument.
 		 */
 		template <typename FUNC>
-		void for_each_window(FUNC const &func)
-		{
-			for (Window_base *win = _windows.first(); win; win = win->next())
-				func(*win);
-		}
+		void for_each_window(FUNC const &func) { _windows.for_each(func); }
 
-		void update_nitpicker_views()
+		void update_gui_views()
 		{
 			/*
-			 * Update nitpicker views in reverse order (back-most first). The
+			 * Update GUI views in reverse order (back-most first). The
 			 * reverse order is important because the stacking position of a
 			 * view is propagated by referring to the neighbor the view is in
 			 * front of. By starting with the back-most view, we make sure that
 			 * each view is always at its final stacking position when
 			 * specified as neighbor of another view.
 			 */
-			Window_list reversed = _reversed_window_list();
+			Reversed_windows reversed = _reversed_window_list();
 
-			while (Window_base *win = reversed.first()) {
-				win->update_nitpicker_views();
+			while (Genode::List_element<Window_base> *win = reversed.first()) {
+				win->object()->update_gui_views();
 				reversed.remove(win);
-				_windows.insert(win);
 			}
-		}
-
-		void flush()
-		{
-			while (Window_base *window = _windows.first())
-				_destroy(*window);
 		}
 
 		Window_base::Hover hover(Point pos) const
 		{
-			for (Window_base const *win = _windows.first(); win; win = win->next())
-				if (win->outer_geometry().contains(pos)) {
+			Window_base::Hover result { };
 
-					Window_base::Hover const hover = win->hover(pos);
+			_windows.for_each([&] (Window_base const &win) {
+
+				if (!result.window_id && win.outer_geometry().contains(pos)) {
+
+					Window_base::Hover const hover = win.hover(pos);
 					if (hover.window_id != 0)
-						return hover;
+						result = hover;
 				}
+			});
 
-			return Window_base::Hover();
+			return result;
 		}
 
 
@@ -184,7 +165,7 @@ void Decorator::Window_stack::_draw_rec(Decorator::Canvas_base       &canvas,
 
 	/* find next window that intersects with the rectangle */
 	for ( ; win && !(clipped = Rect::intersect(win->outer_geometry(), rect)).valid(); )
-		win = win->next();;
+		win = win->next();
 
 	/* check if we hit the bottom of the window stack */
 	if (!win) return;
@@ -205,136 +186,149 @@ void Decorator::Window_stack::_draw_rec(Decorator::Canvas_base       &canvas,
 }
 
 
-void Decorator::Window_stack::update_model(Genode::Xml_node root_node)
+template <typename FN>
+void Decorator::Window_stack::update_model(Genode::Xml_node root_node,
+                                           FN const &flush_window_stack_changes)
 {
-	/*
-	 * Step 1: Remove windows that are no longer present.
-	 */
-	for (Window_base *window = _windows.first(), *next = 0; window; window = next) {
-		next = window->next();
-		try {
-			_xml_node_by_window_id(root_node, window->id());
+	Abandoned_windows _abandoned_windows { };
+
+	struct Update_policy : List_model<Window_base>::Update_policy
+	{
+		Abandoned_windows   &_abandoned_windows;
+		Window_factory_base &_window_factory;
+		Dirty_rect          &_dirty_rect;
+
+		Update_policy(Abandoned_windows   &abandoned_windows,
+		              Window_factory_base &window_factory,
+		              Dirty_rect          &dirty_rect)
+		:
+			_abandoned_windows(abandoned_windows),
+			_window_factory(window_factory),
+			_dirty_rect(dirty_rect)
+		{ }
+
+		void destroy_element(Window_base &window)
+		{
+			window.abandon(_abandoned_windows);
 		}
-		catch (Xml_node::Nonexistent_sub_node) {
-			_dirty_rect.mark_as_dirty(window->outer_geometry());
-			_destroy(*window);
-		};
-	}
 
-	/*
-	 * Step 2: Update window properties of already present windows.
-	 */
-	for (Window_base *window = _windows.first(); window; window = window->next()) {
+		Window_base &create_element(Xml_node node)
+		{
+			return *_window_factory.create(node);
+		}
 
-		/*
-		 * After step 1, a Xml_node::Nonexistent_sub_node exception can no
-		 * longer occur. All windows remaining in the window stack are present
-		 * in the XML model.
-		 */
-		try {
-			Rect const orig_geometry = window->outer_geometry();
-			if (window->update(_xml_node_by_window_id(root_node, window->id()))) {
+		void update_element(Window_base &window, Xml_node node)
+		{
+			Rect const orig_geometry = window.outer_geometry();
+
+			if (window.update(node)) {
 				_dirty_rect.mark_as_dirty(orig_geometry);
-				_dirty_rect.mark_as_dirty(window->outer_geometry());
+				_dirty_rect.mark_as_dirty(window.outer_geometry());
 			}
 		}
-		catch (Xml_node::Nonexistent_sub_node) {
-			PERR("could not look up window %ld in XML model", window->id()); }
-	}
 
-	/*
-	 * Step 3: Add new appearing windows to the window stack.
-	 */
-	for_each_sub_node(root_node, "window", [&] (Xml_node window_node) {
-
-		unsigned long const id = attribute(window_node, "id", 0UL);
-
-		if (!_lookup_by_id(id)) {
-
-			Window_base *new_window = _window_factory.create(window_node);
-
-			if (new_window) {
-
-				new_window->update(window_node);
-
-				/*
-				 * Insert new window in front of all other windows.
-				 *
-				 * Immediately propagate the new stacking position of the new
-				 * window to nitpicker ('update_nitpicker_views'). Otherwise,
-				 */
-				new_window->stack(Nitpicker::Session::View_handle());
-
-				_windows.insert(new_window);
-
-				_dirty_rect.mark_as_dirty(new_window->outer_geometry());
-			}
-		}
-	});
-
-	/*
-	 * Step 4: Adjust window order.
-	 */
-	Window_base *previous_window = 0;
-	Window_base *window          = _windows.first();
-
-	for_each_sub_node(root_node, "window", [&] (Xml_node window_node) {
-
-		if (!window) {
-			PERR("unexpected end of window list during re-ordering");
-			return;
+		static bool element_matches_xml_node(Window_base const &elem, Xml_node node)
+		{
+			return elem.id() == node.attribute_value("id", ~0UL);
 		}
 
-		unsigned long const id = attribute(window_node, "id", 0UL);
+		static bool node_is_element(Xml_node) { return true; }
+	};
 
-		if (window->id() != id) {
-			window = _lookup_by_id(id);
-			if (!window) {
-				PERR("window lookup unexpectedly failed during re-ordering");
-				return;
-			}
+	Update_policy policy { _abandoned_windows, _window_factory, _dirty_rect };
 
-			_windows.remove(window);
-			_windows.insert(window, previous_window);
+	_windows.update_from_xml(policy, root_node);
 
-			_dirty_rect.mark_as_dirty(window->outer_geometry());
-		}
-
-		previous_window = window;
-		window          = window->next();
-	});
+	unsigned long new_front_most_id = ~0UL;
+	if (root_node.has_sub_node("window"))
+		new_front_most_id = root_node.sub_node("window").attribute_value("id", ~0UL);
 
 	/*
-	 * Propagate changed stacking order to nitpicker
+	 * Propagate changed stacking order to the GUI server
 	 *
 	 * First, we reverse the window list. The 'reversed' list starts with
 	 * the back-most window. We then go throuh each window back to front
 	 * and check if its neighbor is consistent with its position in the
 	 * window list.
 	 */
-	Window_list reversed = _reversed_window_list();
+	Reversed_windows reversed = _reversed_window_list();
 
-	if (Window_base * const back_most = reversed.first()) {
+	/* return true if window just came to front */
+	auto new_front_most_window = [&] (Window_base const &win) {
+		return (new_front_most_id != _front_most_id) && (win.id() == new_front_most_id); };
 
-		/* keep back-most window as is */
+	auto stack_back_most_window = [&] (Window_base &window) {
+
+		if (window.stacked())
+			return;
+
+		if (new_front_most_window(window))
+			window.stack_front_most();
+		else
+			window.stack_back_most();
+
+		_dirty_rect.mark_as_dirty(window.outer_geometry());
+	};
+
+	auto stack_window = [&] (Window_base &window, Window_base &neighbor) {
+
+		if (window.stacked() && window.in_front_of(neighbor))
+			return;
+
+		if (new_front_most_window(window))
+			window.stack_front_most();
+		else
+			window.stack(neighbor.frontmost_view());
+
+		_dirty_rect.mark_as_dirty(window.outer_geometry());
+	};
+
+	if (Genode::List_element<Window_base> *back_most = reversed.first()) {
+
+		/* handle back-most window */
 		reversed.remove(back_most);
-		_windows.insert(back_most);
+		Window_base &window = *back_most->object();
+		stack_back_most_window(window);
+		window.stacking_neighbor(Window_base::View_handle());
+
+		Window_base *neighbor = &window;
 
 		/* check consistency between window list order and view stacking */
-		while (Window_base *w = reversed.first()) {
+		while (Genode::List_element<Window_base> *elem = reversed.first()) {
 
-			Window_base * const neighbor = _windows.first();
+			reversed.remove(elem);
 
-			reversed.remove(w);
-			_windows.insert(w);
-
-			/* propagate change stacking order to nitpicker */
-			if (w->in_front_of(*neighbor))
-				continue;
-
-			w->stack(neighbor->frontmost_view());
+			Window_base &window = *elem->object();
+			stack_window(window, *neighbor);
+			window.stacking_neighbor(neighbor->frontmost_view());
+			neighbor = &window;
 		}
 	}
+
+	/*
+	 * Apply window-creation operations before destroying windows to prevent
+	 * flickering.
+	 */
+	flush_window_stack_changes();
+
+	/*
+	 * Destroy abandoned window objects
+	 *
+	 * This is done after all other operations to avoid flickering whenever one
+	 * window is replaced by another one. If we first destroyed the original
+	 * one, the window background would appear for a brief moment until the new
+	 * window is created. By deferring the destruction of the old window to the
+	 * point when the new one already exists, one of both windows is visible at
+	 * all times.
+	 */
+	Genode::List_element<Window_base> *elem = _abandoned_windows.first(), *next = nullptr;
+	for (; elem; elem = next) {
+		next = elem->next();
+		_dirty_rect.mark_as_dirty(elem->object()->outer_geometry());
+		_window_factory.destroy(elem->object());
+	}
+
+	_front_most_id = new_front_most_id;
 }
 
 #endif /* _INCLUDE__DECORATOR__WINDOW_STACK_H_ */

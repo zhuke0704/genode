@@ -5,22 +5,21 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/env.h>
 #include <base/child.h>
-#include <base/printf.h>
+#include <base/log.h>
 #include <linux_native_pd/client.h>
 
 /* base-internal includes */
 #include <linux_syscalls.h>
 #include <base/internal/elf.h>
-
 
 using namespace Genode;
 
@@ -50,66 +49,42 @@ void Child::Initial_thread::start(addr_t) { }
 /*
  * On Linux, the ELF loading is performed by the kernel
  */
-Child::Process::Loaded_executable::Loaded_executable(Dataspace_capability,
+Child::Process::Loaded_executable::Loaded_executable(Type,
                                                      Dataspace_capability,
-                                                     Ram_session &,
+                                                     Ram_allocator &,
                                                      Region_map &,
                                                      Region_map &,
                                                      Parent_capability) { }
 
 
-Child::Process::Process(Dataspace_capability  elf_ds,
+Child::Process::Process(Type                  type,
                         Dataspace_capability  ldso_ds,
-                        Pd_session_capability pd_cap,
                         Pd_session           &pd,
-                        Ram_session          &ram,
-                        Initial_thread_base  &initial_thread,
+                        Initial_thread_base  &,
                         Region_map           &local_rm,
                         Region_map           &remote_rm,
                         Parent_capability     parent_cap)
 :
-	initial_thread(initial_thread),
-	loaded_executable(elf_ds, ldso_ds, ram, local_rm, remote_rm, parent_cap)
+	loaded_executable(type, ldso_ds, pd, local_rm, remote_rm, parent_cap)
 {
 	/* skip loading when called during fork */
-	if (!elf_ds.valid())
+	if (type == TYPE_FORKED)
 		return;
-
-	/* attach ELF locally */
-	addr_t elf_addr;
-	try { elf_addr = local_rm.attach(elf_ds); }
-	catch (Region_map::Attach_failed) {
-		PERR("local attach of ELF executable failed"); throw; }
-
-	/* setup ELF object and read program entry pointer */
-	Elf_binary elf(elf_addr);
-	if (!elf.valid())
-		throw Invalid_executable();
-
-	bool const dynamically_linked = elf.dynamically_linked();
-
-	local_rm.detach(elf_addr);
 
 	/*
 	 * If the specified executable is a dynamically linked program, we load
 	 * the dynamic linker instead.
 	 */
-	if (dynamically_linked) {
-
-		if (!ldso_ds.valid()) {
-			PERR("attempt to start dynamic executable without dynamic linker");
-			throw Missing_dynamic_linker();
-		}
-
-		elf_ds = ldso_ds;
+	if (!ldso_ds.valid()) {
+		error("attempt to start dynamic executable without dynamic linker");
+		throw Missing_dynamic_linker();
 	}
 
 	pd.assign_parent(parent_cap);
 
-	Linux_native_pd_client
-		lx_pd(static_cap_cast<Linux_native_pd>(pd.native_pd()));
+	Linux_native_pd_client lx_pd(pd.native_pd());
 
-	lx_pd.start(elf_ds);
+	lx_pd.start(ldso_ds);
 }
 
 

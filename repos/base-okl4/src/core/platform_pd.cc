@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -20,16 +20,10 @@
 #include <platform_thread.h>
 #include <platform.h>
 
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/config.h>
-#include <l4/ipc.h>
-} }
+/* base-internal includes */
+#include <base/internal/okl4.h>
 
 using namespace Genode;
-
-
-static const bool verbose = false;
 
 
 /****************************
@@ -46,7 +40,7 @@ void Platform_pd::_create_pd(bool syscall)
 	L4_Word_t    control        = L4_SpaceCtrl_new;
 	L4_ClistId_t cap_list       = L4_rootclist;
 	L4_Word_t    utcb_area_size = L4_GetUtcbSize()*(1 << Thread_id_bits::THREAD);
-	L4_Word_t    utcb_location  = platform_specific()->utcb_base()
+	L4_Word_t    utcb_location  = platform_specific().utcb_base()
 	                            + _pd_id*utcb_area_size;
 	L4_Fpage_t   utcb_area      = L4_Fpage(utcb_location, utcb_area_size);
 	L4_Word_t    resources      = 0;
@@ -61,8 +55,7 @@ void Platform_pd::_create_pd(bool syscall)
 	                          resources, &old_resources);
 
 	if (ret != 1)
-		PERR("L4_SpaceControl(new) returned %d, error code=%d",
-		     ret, (int)L4_ErrorCode());
+		error("L4_SpaceControl(new) returned ", ret, ", error=", L4_ErrorCode());
 }
 
 
@@ -73,7 +66,7 @@ void Platform_pd::_destroy_pd()
 	L4_Word_t    control        = L4_SpaceCtrl_delete;
 	L4_ClistId_t cap_list       = L4_rootclist;
 	L4_Word_t    utcb_area_size = L4_GetUtcbSize()*(1 << Thread_id_bits::THREAD);
-	L4_Word_t    utcb_location  = platform_specific()->utcb_base()
+	L4_Word_t    utcb_location  = platform_specific().utcb_base()
 	                            + _pd_id*utcb_area_size;
 	L4_Fpage_t   utcb_area      = L4_Fpage(utcb_location, utcb_area_size);
 	L4_Word_t    resources      = 0;
@@ -87,8 +80,7 @@ void Platform_pd::_destroy_pd()
 	                          resources, &old_resources);
 
 	if (ret != 1)
-		PERR("L4_SpaceControl(delete) returned %d, error code=%d",
-		     ret, (int)L4_ErrorCode());
+		error("L4_SpaceControl(delete) returned ", ret, ", error=", L4_ErrorCode());
 }
 
 
@@ -142,7 +134,7 @@ Platform_thread* Platform_pd::_next_thread()
 }
 
 
-int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
+int Platform_pd::_alloc_thread(int thread_id, Platform_thread &thread)
 {
 	int i = thread_id;
 
@@ -157,7 +149,7 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 		if (_threads[i]) return -2;
 	}
 
-	_threads[i] = thread;
+	_threads[i] = &thread;
 
 	return i;
 }
@@ -166,7 +158,8 @@ int Platform_pd::_alloc_thread(int thread_id, Platform_thread *thread)
 void Platform_pd::_free_thread(int thread_id)
 {
 	if (!_threads[thread_id])
-		PWRN("double-free of thread %x.%x detected", _pd_id, thread_id);
+		warning("double-free of thread ",
+		        Hex(_pd_id), ".", Hex(thread_id), " detected");
 
 	_threads[thread_id] = 0;
 }
@@ -176,79 +169,72 @@ void Platform_pd::_free_thread(int thread_id)
  ** Public object members **
  ***************************/
 
-bool Platform_pd::bind_thread(Platform_thread *thread)
+bool Platform_pd::bind_thread(Platform_thread &thread)
 {
 	using namespace Okl4;
 
 	/* thread_id is THREAD_INVALID by default - only core is the special case */
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 	L4_ThreadId_t l4_thread_id;
 
 	int t = _alloc_thread(thread_id, thread);
 	if (t < 0) {
-		PERR("thread alloc failed");
+		error("thread alloc failed");
 		return false;
 	}
 	thread_id = t;
 	l4_thread_id = make_l4_id(_pd_id, thread_id);
 
 	/* finally inform thread about binding */
-	thread->bind(thread_id, l4_thread_id, this);
+	thread.bind(thread_id, l4_thread_id, *this);
 	return true;
 }
 
 
-void Platform_pd::unbind_thread(Platform_thread *thread)
+void Platform_pd::unbind_thread(Platform_thread &thread)
 {
-	int thread_id = thread->thread_id();
+	int thread_id = thread.thread_id();
 
 	/* unbind thread before proceeding */
-	thread->unbind();
+	thread.unbind();
 
 	_free_thread(thread_id);
-
-	if (verbose) _debug_log_threads();
 }
 
 
-void Platform_pd::space_pager(Platform_thread *thread)
+void Platform_pd::space_pager(Platform_thread &thread)
 {
 	using namespace Okl4;
 
-	L4_Word_t control           = L4_SpaceCtrl_space_pager;
-	L4_SpaceId_t pager_space    = L4_SpaceId(thread->pd()->pd_id());
+	L4_Word_t    control        = L4_SpaceCtrl_space_pager;
+	L4_SpaceId_t pager_space    = L4_SpaceId(thread.pd()->pd_id());
 	L4_ClistId_t cap_list       = L4_rootclist;
 	L4_Word_t    utcb_area_size = L4_GetUtcbSize()*(1 << Thread_id_bits::THREAD);
-	L4_Word_t    utcb_location  = platform_specific()->utcb_base()
+	L4_Word_t    utcb_location  = platform_specific().utcb_base()
 	                            + _pd_id*utcb_area_size;
 	L4_Fpage_t   utcb_area      = L4_Fpage(utcb_location, utcb_area_size);
 	L4_Word_t    resources      = 0;
 	L4_Word_t    old_resources  = 0;
 
 	/* set the space pager */
-	_space_pager = thread;
+	_space_pager = &thread;
 	L4_LoadMR(0,pager_space.raw);
-	int ret = L4_SpaceControl(L4_SpaceId(_pd_id), control, cap_list, utcb_area,
-	                      resources, &old_resources);
+	int ret = L4_SpaceControl(L4_SpaceId(_pd_id),
+	                          control, cap_list, utcb_area,
+	                          resources, &old_resources);
 
 	if (ret != 1)
-		PERR("L4_SpaceControl(new space_pager...) returned %d, error code=%d",
-		     ret, (int)L4_ErrorCode());
+		error("L4_SpaceControl(new space_pager...) returned ", ret, ", error=",
+		      L4_ErrorCode());
 
 	/* grant the pager mapping rights regarding this space */
 	if(!L4_AllowUserMapping(pager_space, 0x0, 0xff000000))
-		PERR("Failed to delegate pt access to %lx, error %lx",
-		     pager_space.raw, L4_ErrorCode());
+		error("failed to delegate pt access to ", Hex(pager_space.raw), ", "
+		      "error=", L4_ErrorCode());
 }
 
 
-void Platform_pd::_setup_address_space()
-{
-	PERR("not yet implemented");
-}
-
-
-static const bool verbose_unmap = false;
+void Platform_pd::_setup_address_space() { }
 
 
 static void unmap_log2_range(unsigned pd_id, addr_t base, size_t size_log2)
@@ -259,20 +245,17 @@ static void unmap_log2_range(unsigned pd_id, addr_t base, size_t size_log2)
 	L4_FpageAddRightsTo(&fpage, L4_FullyAccessible);
 	int ret = L4_UnmapFpage(L4_SpaceId(pd_id), fpage);
 	if (ret != 1)
-		PERR("could not unmap page at %p from space %x (Error Code %ld)",
-		     (void *)base, pd_id, L4_ErrorCode());
+		error("could not unmap page at ", Hex(base), " from space ", Hex(pd_id), ", "
+		      "error=", L4_ErrorCode());
 }
 
 
-void Platform_pd::flush(addr_t addr, size_t size)
+void Platform_pd::flush(addr_t addr, size_t size, Core_local_addr)
 {
 	using namespace Okl4;
 
 	L4_Word_t remaining_size = size;
 	L4_Word_t size_log2      = get_page_size_log2();
-
-	if (verbose_unmap)
-		printf("PD %d: unmap [%lx,%lx)\n", _pd_id, addr, addr + size);
 
 	/*
 	 * Let unmap granularity ('size_log2') grow
@@ -311,8 +294,7 @@ void Platform_pd::flush(addr_t addr, size_t size)
 }
 
 
-Platform_pd::Platform_pd(bool core)
-: _space_pager(0)
+Platform_pd::Platform_pd(bool) : _space_pager(0)
 {
 	/* init remainder */
 	Pd_alloc free(false, true);
@@ -326,15 +308,14 @@ Platform_pd::Platform_pd(bool core)
 }
 
 
-Platform_pd::Platform_pd(Allocator *, char const *label)
-: _space_pager(0)
+Platform_pd::Platform_pd(Allocator &, char const *)
 {
 	_init_threads();
 
 	_pd_id = _alloc_pd();
 
 	if (_pd_id > PD_MAX)
-		PERR("pd alloc failed");
+		error("pd alloc failed");
 
 	_create_pd(true);
 }
@@ -342,28 +323,10 @@ Platform_pd::Platform_pd(Allocator *, char const *label)
 
 Platform_pd::~Platform_pd()
 {
-	/* invalidate weak pointers to this object */
-	Address_space::lock_for_destruction();
-
 	/* unbind all threads */
-	while (Platform_thread *t = _next_thread()) unbind_thread(t);
+	while (Platform_thread *t = _next_thread()) unbind_thread(*t);
 
 	_destroy_pd();
 	_free_pd();
 }
 
-
-/***********************
- ** Debugging support **
- ***********************/
-
-void Platform_pd::_debug_log_threads()
-{
-	PWRN("_debug_log_threads disabled.");
-}
-
-
-void Platform_pd::_debug_log_pds()
-{
-	PWRN("_debug_log_pds disabled.");
-}

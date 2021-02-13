@@ -6,14 +6,14 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/lock.h>
+#include <base/mutex.h>
 
 /* libc includes */
 #include <sys/uio.h>
@@ -22,32 +22,37 @@
 #include <errno.h>
 #include <stdio.h>
 
+/* libc-internal includes */
+#include <internal/types.h>
 
-static Genode::Lock rw_lock;
+using namespace Libc;
 
 
 struct Read
 {
-     ssize_t operator()(int fd, void *buf, size_t count)
-     {
-    	 return read(fd, buf, count);
-     }
+	ssize_t operator()(int fd, void *buf, size_t count)
+	{
+		return read(fd, buf, count);
+	}
 };
 
 
 struct Write
 {
-     ssize_t operator()(int fd, const void *buf, size_t count)
-     {
-    	 return write(fd, buf, count);
-     }
+	ssize_t operator()(int fd, const void *buf, size_t count)
+	{
+		return write(fd, buf, count);
+	}
 };
 
 
 template <typename Rw_func>
 static ssize_t readv_writev_impl(Rw_func rw_func, int fd, const struct iovec *iov, int iovcnt)
 {
-	Genode::Lock_guard<Genode::Lock> rw_lock_guard(rw_lock);
+	/* FIXME this should be a pthread_mutex because function uses blocking operations */
+	static Mutex rw_mutex;
+
+	Mutex::Guard guard(rw_mutex);
 
 	char *v;
 	ssize_t bytes_transfered_total = 0;
@@ -93,25 +98,25 @@ static ssize_t readv_writev_impl(Rw_func rw_func, int fd, const struct iovec *io
 }
 
 
-extern "C" ssize_t _readv(int fd, const struct iovec *iov, int iovcnt)
+extern "C" ssize_t readv(int fd, const struct iovec *iov, int iovcnt)
 {
 	return readv_writev_impl(Read(), fd, iov, iovcnt);
 }
 
+extern "C" __attribute__((alias("readv")))
+ssize_t __sys_readv(int fd, const struct iovec *iov, int iovcnt);
 
-extern "C" ssize_t readv(int fd, const struct iovec *iov, int iovcnt)
-{
-	return _readv(fd, iov, iovcnt);
-}
-
-
-extern "C" ssize_t _writev(int fd, const struct iovec *iov, int iovcnt)
-{
-	return readv_writev_impl(Write(), fd, iov, iovcnt);
-}
+extern "C" __attribute__((alias("readv")))
+ssize_t _readv(int fd, const struct iovec *iov, int iovcnt);
 
 
 extern "C" ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
 {
-	return _writev(fd, iov, iovcnt);
+	return readv_writev_impl(Write(), fd, iov, iovcnt);
 }
+
+extern "C" __attribute__((alias("writev")))
+ssize_t __sys_writev(int fd, const struct iovec *iov, int iovcnt);
+
+extern "C" __attribute__((alias("writev")))
+ssize_t _writev(int fd, const struct iovec *iov, int iovcnt);

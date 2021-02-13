@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__INPUT__COMPONENT_H_
@@ -16,7 +16,7 @@
 
 #include <base/env.h>
 #include <base/rpc_server.h>
-#include <os/attached_ram_dataspace.h>
+#include <base/attached_ram_dataspace.h>
 #include <os/ring_buffer.h>
 #include <root/component.h>
 #include <input_session/input_session.h>
@@ -29,12 +29,21 @@ class Input::Session_component : public Genode::Rpc_object<Input::Session>
 {
 	private:
 
-		Genode::Attached_ram_dataspace _ds { Genode::env()->ram_session(),
-		                                     Event_queue::QUEUE_SIZE*sizeof(Input::Event) };
+		Genode::Attached_ram_dataspace _ds;
 
-		Event_queue _event_queue;
+		Event_queue _event_queue { };
 
 	public:
+
+		/**
+		 * Constructor
+		 *
+		 * \param ram  allocator for the session buffer
+		 */
+		Session_component(Genode::Env &env, Genode::Ram_allocator &ram)
+		:
+			_ds(ram, env.rm(), Event_queue::QUEUE_SIZE*sizeof(Input::Event))
+		{ }
 
 		/**
 		 * Return reference to event queue of the session
@@ -49,7 +58,7 @@ class Input::Session_component : public Genode::Rpc_object<Input::Session>
 			try {
 				_event_queue.add(event);
 			} catch (Input::Event_queue::Overflow) {
-				PWRN("input overflow - resetting queue");
+				Genode::warning("input overflow - resetting queue");
 				_event_queue.reset();
 			}
 		}
@@ -62,11 +71,6 @@ class Input::Session_component : public Genode::Rpc_object<Input::Session>
 		Genode::Dataspace_capability dataspace() override { return _ds.cap(); }
 
 		bool pending() const override { return !_event_queue.empty(); }
-
-		/*
-		 * \deprecated  use 'pending' instead
-		 */
-		bool is_pending() const { return pending(); }
 
 		int flush() override
 		{

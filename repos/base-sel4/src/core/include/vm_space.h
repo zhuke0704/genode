@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__VM_SPACE_H_
@@ -16,10 +16,14 @@
 
 /* Genode includes */
 #include <util/bit_allocator.h>
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
+#include <base/log.h>
 #include <base/thread.h>
+#include <base/session_label.h>
 
 /* core includes */
+#include <base/internal/capability_space_sel4.h>
+#include <base/internal/stack_area.h>
 #include <page_table_registry.h>
 #include <cnode.h>
 #include <cap_sel_alloc.h>
@@ -31,6 +35,8 @@ namespace Genode { class Vm_space; }
 class Genode::Vm_space
 {
 	private:
+
+		Session_label _pd_label;
 
 		Cap_sel_alloc &_cap_sel_alloc;
 
@@ -45,18 +51,18 @@ class Genode::Vm_space
 			/**
 			 * Number of entries of 3rd-level VM CNode ('_vm_3rd_cnode')
 			 */
-			VM_3RD_CNODE_SIZE_LOG2 = 8,
+			VM_3RD_CNODE_SIZE_LOG2 = (CONFIG_WORD_SIZE == 32) ? 8 : 7,
 
 			/**
 			 * Number of entries of each leaf CNodes
 			 */
-			LEAF_CNODE_SIZE_LOG2 = 8UL,
+			LEAF_CNODE_SIZE_LOG2 = (CONFIG_WORD_SIZE == 32) ? 8 : 7,
 			LEAF_CNODE_SIZE      = 1UL << LEAF_CNODE_SIZE_LOG2,
 
 			/**
 			 * Number of leaf CNodes
 			 */
-			NUM_LEAF_CNODES_LOG2 = 4UL,
+			NUM_LEAF_CNODES_LOG2 = (CONFIG_WORD_SIZE == 32) ? 6 : 5,
 			NUM_LEAF_CNODES      = 1UL << NUM_LEAF_CNODES_LOG2,
 
 			/**
@@ -97,7 +103,7 @@ class Genode::Vm_space
 				 * objects (where we cannot pass any arguments to the
 				 * constructors of the individual objects).
 				 */
-				Lazy_volatile_object<Cnode> _cnode;
+				Constructible<Cnode> _cnode { };
 
 			public:
 
@@ -109,8 +115,10 @@ class Genode::Vm_space
 					                 LEAF_CNODE_SIZE_LOG2, phys_alloc);
 				}
 
-				void destruct(Cap_sel_alloc &cap_sel_alloc)
+				void destruct(Cap_sel_alloc &cap_sel_alloc,
+				               Range_allocator &phys_alloc)
 				{
+					_cnode->destruct(phys_alloc);
 					cap_sel_alloc.free(_cnode->sel());
 				}
 
@@ -119,10 +127,18 @@ class Genode::Vm_space
 
 		Leaf_cnode _vm_cnodes[NUM_LEAF_CNODES];
 
+	public:
+
 		/**
 		 * Allocator for the selectors within '_vm_cnodes'
 		 */
-		Bit_allocator<1UL << NUM_VM_SEL_LOG2> _sel_alloc;
+		using Selector_allocator = Bit_allocator<1UL << NUM_VM_SEL_LOG2>;
+
+		class Alloc_page_table_failed : Exception { };
+
+	private:
+
+		Selector_allocator _sel_alloc { };
 
 		/**
 		 * Return leaf CNode that contains an index allocated from '_sel_alloc'
@@ -140,17 +156,56 @@ class Genode::Vm_space
 			return Cnode_index(idx & (LEAF_CNODE_SIZE - 1));
 		}
 
-		Lock _lock;
+		Mutex _mutex { };
 
 		/**
 		 * Return selector for a capability slot within '_vm_cnodes'
 		 */
-		unsigned _idx_to_sel(unsigned idx) const { return (_id << 20) | idx; }
+		addr_t _idx_to_sel(addr_t idx) const { return (_id << 20) | idx; }
 
-		void _map_page(addr_t from_phys, addr_t to_virt)
+
+		template <typename FN>
+		void _flush(bool const flush_support, FN const &fn)
 		{
-			/* allocate page-table entry selector */
-			unsigned pte_idx = _sel_alloc.alloc();
+			if (!flush_support) {
+				warning("mapping cache full, but can't flush");
+				throw;
+			}
+
+			warning("flush page table entries - mapping cache full - PD: ",
+			        _pd_label.string());
+
+			_page_table_registry.flush_pages(fn);
+
+		}
+
+
+		template <typename FN>
+		bool _map_frame(addr_t const from_phys, addr_t const to_dest,
+		                Cache_attribute const cacheability,
+		                bool const writable, bool const executable,
+		                bool const flush_support, bool guest, FN const &fn)
+		{
+			if (_page_table_registry.page_frame_at(to_dest)) {
+				/*
+				 * Valid behaviour if multiple threads concurrently
+				 * causing the same page-fault. For the first thread the
+				 * fault will be resolved, and the next thread will/would do
+				 * it again. We just skip this attempt in order to avoid
+				 * wasting of resources (idx selectors, creating kernel
+				 * capabilities, causing kernel warning ...).
+				 */
+				return true;
+			}
+			/* allocate page-table-entry selector */
+			addr_t pte_idx;
+			try { pte_idx = _sel_alloc.alloc(); }
+			catch (Selector_allocator::Out_of_indices) {
+
+				/* free all page-table-entry selectors and retry once */
+				_flush(flush_support, fn);
+				pte_idx = _sel_alloc.alloc();
+			}
 
 			/*
 			 * Copy page-frame selector to pte_sel
@@ -163,81 +218,77 @@ class Genode::Vm_space
 			                          Cnode_index(_leaf_cnode_entry(pte_idx)));
 
 			/* remember relationship between pte_sel and the virtual address */
-			_page_table_registry.insert_page_table_entry(to_virt, pte_idx);
+			try { _page_table_registry.insert_page_frame(to_dest, Cap_sel(pte_idx)); }
+			catch (Page_table_registry::Mapping_cache_full) {
+
+				/* free all entries of mapping cache and re-try once */
+				_flush(flush_support, fn);
+				_page_table_registry.insert_page_frame(to_dest, Cap_sel(pte_idx));
+			}
 
 			/*
 			 * Insert copy of page-frame selector into page table
 			 */
-			{
-				seL4_IA32_Page          const service = _idx_to_sel(pte_idx);
-				seL4_IA32_PageDirectory const pd      = _pd_sel.value();
-				seL4_Word               const vaddr   = to_virt;
-				seL4_CapRights          const rights  = seL4_AllRights;
-				seL4_IA32_VMAttributes  const attr    = seL4_IA32_Default_VMAttributes;
-
-				int const ret = seL4_IA32_Page_Map(service, pd, vaddr, rights, attr);
-
-				if (ret != 0)
-					PERR("seL4_IA32_Page_Map to 0x%lx returned %d",
-					     (unsigned long)vaddr, ret);
+			long ret = _map_page(Cap_sel(pte_idx), to_dest, cacheability,
+			                     writable, executable, guest);
+			if (ret != seL4_NoError) {
+				error("seL4_*_Page_Map ", Hex(from_phys), "->",
+				      Hex(to_dest), " returned ", ret);
+				return false;
 			}
+			return true;
 		}
-
-		void _unmap_page(addr_t virt)
-		{
-			/* delete copy of the mapping's page-frame selector */
-			_page_table_registry.apply(virt, [&] (unsigned idx) {
-
-			 	_leaf_cnode(idx).remove(_leaf_cnode_entry(idx));
-
-				_sel_alloc.free(idx);
-			});
-
-			/* release meta data about the mapping */
-			_page_table_registry.forget_page_table_entry(virt);
-		}
-
-		void _map_page_table(Cap_sel pt_sel, addr_t to_virt)
-		{
-			seL4_IA32_PageTable     const service = pt_sel.value();
-			seL4_IA32_PageDirectory const pd      = _pd_sel.value();
-			seL4_Word               const vaddr   = to_virt;
-			seL4_IA32_VMAttributes  const attr    = seL4_IA32_Default_VMAttributes;
-
-			PDBG("map page table 0x%lx to virt 0x%lx, pdir sel %lu",
-			     pt_sel.value(), to_virt, _pd_sel.value());
-
-			int const ret = seL4_IA32_PageTable_Map(service, pd, vaddr, attr);
-			if (ret != 0)
-				PDBG("seL4_IA32_PageTable_Map returned %d", ret);
-		}
-
-		class Alloc_page_table_failed : Exception { };
 
 		/**
-		 * Allocate and install page table at given virtual address
+		 * Platform specific map/unmap of a page frame
+		 */
+		long _map_page(Genode::Cap_sel const &idx, Genode::addr_t const virt,
+		               Cache_attribute const cacheability, bool const write,
+		               bool const writable, bool guest);
+		long _unmap_page(Genode::Cap_sel const &idx);
+		long _invalidate_page(Genode::Cap_sel const &, seL4_Word const,
+		                      seL4_Word const);
+
+		/**
+		 * Allocate and install page structures for the protection domain.
 		 *
 		 * \throw Alloc_page_table_failed
 		 */
-		void _alloc_and_map_page_table(addr_t to_virt)
+		template <typename KOBJ>
+		Cap_sel _alloc_and_map(addr_t const virt,
+			                   long (&map_fn)(Cap_sel, Cap_sel, addr_t),
+			                   addr_t &phys)
 		{
-			/* allocate page-table selector */
-			unsigned const pt_idx = _sel_alloc.alloc();
-
-			/* XXX account the consumed backing store */
+			/* allocate page-* selector */
+			addr_t const idx = _sel_alloc.alloc();
 
 			try {
-				create<Page_table_kobj>(_phys_alloc,
-				                        _leaf_cnode(pt_idx).sel(),
-				                        _leaf_cnode_entry(pt_idx));
+				phys = Untyped_memory::alloc_page(_phys_alloc);
+				seL4_Untyped const service = Untyped_memory::untyped_sel(phys).value();
+				create<KOBJ>(service, _leaf_cnode(idx).sel(),
+				             _leaf_cnode_entry(idx));
+			} catch (...) {
+				/* XXX free idx, revert untyped memory, phys_addr, */
+				 throw Alloc_page_table_failed();
+			}
 
-			} catch (...) { throw Alloc_page_table_failed(); }
+			Cap_sel const pt_sel(_idx_to_sel(idx));
 
-			Cap_sel const pt_sel(_idx_to_sel(pt_idx));
+			long const result = map_fn(pt_sel, _pd_sel, virt);
+			if (result != seL4_NoError)
+				error("seL4_*_Page*_Map(,", Hex(virt), ") returned ",
+				      result);
 
-			_page_table_registry.insert_page_table(to_virt, pt_sel);
+			return Cap_sel(idx);
+		}
 
-			_map_page_table(pt_sel, to_virt);
+		void _unmap_and_free(Cap_sel const idx, addr_t const paddr)
+		{
+			_leaf_cnode(idx.value()).remove(idx);
+
+			_sel_alloc.free(idx.value());
+
+			Untyped_memory::free_page(_phys_alloc, paddr);
 		}
 
 	public:
@@ -261,8 +312,10 @@ class Genode::Vm_space
 		         Cnode               &core_cnode,
 		         Cnode               &phys_cnode,
 		         unsigned             id,
-		         Page_table_registry &page_table_registry)
+		         Page_table_registry &page_table_registry,
+		         const char *         label)
 		:
+			_pd_label(label),
 			_cap_sel_alloc(cap_sel_alloc),
 			_page_table_registry(page_table_registry),
 			_id(id), _pd_sel(pd_sel),
@@ -291,41 +344,172 @@ class Genode::Vm_space
 			_vm_pad_cnode.copy(cspace, _vm_3rd_cnode.sel(), Cnode_index(0));
 
 			/* insert 2nd-level VM-pad CNode into 1st-level CNode */
-			_top_level_cnode.copy(cspace, _vm_pad_cnode.sel(), Cnode_index(id));
+			_top_level_cnode.copy(cspace, _vm_pad_cnode.sel(), Cnode_index(_id));
 		}
 
 		~Vm_space()
 		{
-			_cap_sel_alloc.free(_vm_pad_cnode.sel());
+			/* delete copy of the mapping's page-frame selectors */
+			_page_table_registry.flush_all([&] (Cap_sel const &idx, addr_t const virt) {
+
+				long err = _unmap_page(idx);
+				if (err != seL4_NoError)
+					error("unmap ", Hex(virt), " failed, ", idx, " res=", err);
+
+				_leaf_cnode(idx.value()).remove(_leaf_cnode_entry(idx.value()));
+
+				_sel_alloc.free(idx.value());
+
+				return true;
+			}, [&] (Cap_sel const &idx, addr_t const paddr) {
+				_unmap_and_free(idx, paddr);
+			});
+
+			for (unsigned i = 0; i < NUM_LEAF_CNODES; i++) {
+				_vm_3rd_cnode.remove(Cnode_index(i));
+				_vm_cnodes[i].destruct(_cap_sel_alloc, _phys_alloc);
+			}
+			_vm_pad_cnode.remove(Cnode_index(0));
+			_top_level_cnode.remove(Cnode_index(_id));
+
+			_vm_3rd_cnode.destruct(_phys_alloc);
+			_vm_pad_cnode.destruct(_phys_alloc);
+
 			_cap_sel_alloc.free(_vm_3rd_cnode.sel());
-
-			for (unsigned i = 0; i < NUM_LEAF_CNODES; i++)
-				_vm_cnodes[i].destruct(_cap_sel_alloc);
+			_cap_sel_alloc.free(_vm_pad_cnode.sel());
 		}
 
-		void map(addr_t from_phys, addr_t to_virt, size_t num_pages)
+		bool map(addr_t const from_phys, addr_t const to_virt,
+		         size_t const num_pages, Cache_attribute const cacheability,
+		         bool const writable, bool const executable, bool flush_support)
 		{
-			Lock::Guard guard(_lock);
+			auto fn_unmap = [&] (Cap_sel const &idx, addr_t const v_addr)
+			{
+				/* XXX - INITIAL_IPC_BUFFER can't be re-mapped currently */
+				if (v_addr == 0x1000)
+					return false;
+				/* XXX - UTCB can't be re-mapped currently */
+				if (stack_area_virtual_base() <= v_addr
+				    && (v_addr < stack_area_virtual_base() +
+				                 stack_area_virtual_size())
+				    && !((v_addr + 0x1000) & (stack_virtual_size() - 1)))
+						return false;
 
-			/* check if we need to add a page table to core's VM space */
-			if (!_page_table_registry.has_page_table_at(to_virt))
-				_alloc_and_map_page_table(to_virt);
+				long err = _unmap_page(idx);
+				if (err != seL4_NoError)
+					error("unmap failed, idx=", idx, " res=", err);
+
+				_leaf_cnode(idx.value()).remove(_leaf_cnode_entry(idx.value()));
+
+				_sel_alloc.free(idx.value());
+
+				return true;
+			};
+
+			Mutex::Guard guard(_mutex);
+
+			bool ok = true;
 
 			for (size_t i = 0; i < num_pages; i++) {
 				off_t const offset = i << get_page_size_log2();
-				_map_page(from_phys + offset, to_virt + offset);
+
+				if (_map_frame(from_phys + offset, to_virt + offset,
+				               cacheability, writable, executable,
+				               flush_support, false /* host page table */,
+				               fn_unmap))
+					continue;
+
+				ok = false;
+
+				warning("mapping failed ", Hex(from_phys + offset),
+				        " -> ", Hex(to_virt + offset), " ",
+				        !flush_support ? "core" : "");
 			}
+
+			return ok;
 		}
 
-		void unmap(addr_t virt, size_t num_pages)
+		void map_guest(addr_t const from_phys, addr_t const guest_phys,
+		               size_t const num_pages, Cache_attribute const cacheability,
+		               bool const writable, bool const executable, bool flush_support)
 		{
-			Lock::Guard guard(_lock);
+			auto fn_unmap = [&] (Cap_sel const &idx, addr_t const) {
+				long err = _unmap_page(idx);
+				if (err != seL4_NoError)
+					error("unmap failed, idx=", idx, " res=", err);
+
+				_leaf_cnode(idx.value()).remove(_leaf_cnode_entry(idx.value()));
+
+				_sel_alloc.free(idx.value());
+
+				return true;
+			};
+
+			Mutex::Guard guard(_mutex);
 
 			for (size_t i = 0; i < num_pages; i++) {
 				off_t const offset = i << get_page_size_log2();
-				_unmap_page(virt + offset);
+
+				_map_frame(from_phys + offset, guest_phys + offset,
+				           cacheability, writable, executable,
+				           flush_support, true /* guest page table */,
+				           fn_unmap);
 			}
 		}
+
+		bool unmap(addr_t const virt, size_t const num_pages,
+		           bool const invalidate = false)
+		{
+			bool unmap_success = true;
+
+			Mutex::Guard guard(_mutex);
+
+			for (size_t i = 0; unmap_success && i < num_pages; i++) {
+				off_t const offset = i << get_page_size_log2();
+
+				_page_table_registry.flush_page(virt + offset, [&] (Cap_sel const &idx, addr_t) {
+
+					if (invalidate) {
+						long result = _invalidate_page(idx, virt + offset,
+						                               virt + offset + 4096);
+						if (result != seL4_NoError)
+							error("invalidating ", Hex(virt + offset),
+							      " failed, idx=", idx, " result=", result);
+					}
+
+					long result = _unmap_page(idx);
+					if (result != seL4_NoError) {
+						error("unmap ", Hex(virt + offset), " failed, idx=",
+						      idx, " result=", result);
+						unmap_success = false;
+					}
+
+					_leaf_cnode(idx.value()).remove(_leaf_cnode_entry(idx.value()));
+
+					_sel_alloc.free(idx.value());
+				});
+			}
+			return unmap_success;
+		}
+
+		void unsynchronized_alloc_page_tables(addr_t const start,
+		                                      addr_t const size);
+
+		void unsynchronized_alloc_guest_page_tables(addr_t, addr_t);
+
+		void alloc_page_tables(addr_t const start, addr_t const size)
+		{
+			Mutex::Guard guard(_mutex);
+			unsynchronized_alloc_page_tables(start, size);
+		}
+
+		void alloc_guest_page_tables(addr_t const start, addr_t const size)
+		{
+			Mutex::Guard guard(_mutex);
+			unsynchronized_alloc_guest_page_tables(start, size);
+		}
+
+		Session_label const & pd_label() const { return _pd_label; }
 };
 
 #endif /* _CORE__INCLUDE__VM_SPACE_H_ */

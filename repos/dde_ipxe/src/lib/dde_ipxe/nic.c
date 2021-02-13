@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2010-2015 Genode Labs GmbH
+ * Copyright (C) 2010-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /* iPXE */
@@ -18,6 +18,7 @@
 #include <ipxe/iobuf.h>
 
 #include <dde_ipxe/nic.h>
+
 /* local includes */
 #include "local.h"
 #include <dde_support.h>
@@ -40,7 +41,6 @@ extern struct pci_driver
 	realtek_driver,
 	ifec_driver,
 	intel_driver,
-	pcnet32_driver,
 	tg3_pci_driver;
 
 
@@ -51,7 +51,6 @@ static struct pci_driver *pci_drivers[] = {
 	&realtek_driver,
 	&ifec_driver,
 	&intel_driver,
-	&pcnet32_driver,
 	&tg3_pci_driver
 };
 
@@ -200,10 +199,20 @@ static void irq_handler(void *p)
 
 	dde_lock_leave();
 
-	if (link_ok != netdev_link_ok(net_dev))
+	int const new_link_ok = netdev_link_ok(net_dev);
+	if (link_ok != new_link_ok) {
+
 		/* report link-state changes */
 		if (link_callback)
 			link_callback();
+
+		/* on link down, drain TX DMA to not leak packets on next link up */
+		if (!new_link_ok) {
+			netdev_close(net_dev);
+			netdev_open(net_dev);
+			netdev_irq(net_dev, 1);
+		}
+	}
 }
 
 
@@ -273,7 +282,7 @@ int dde_ipxe_nic_tx(unsigned if_index, const char *packet, unsigned packet_len)
 }
 
 
-int dde_ipxe_nic_get_mac_addr(unsigned if_index, char *out_mac_addr)
+int dde_ipxe_nic_get_mac_addr(unsigned if_index, unsigned char *out_mac_addr)
 {
 	if (if_index != 1)
 		return -1;
@@ -292,9 +301,11 @@ int dde_ipxe_nic_get_mac_addr(unsigned if_index, char *out_mac_addr)
 }
 
 
-int dde_ipxe_nic_init(void *ep)
+int dde_ipxe_nic_init()
 {
-	dde_init(ep);
+	if (!dde_support_initialized()) {
+		return 0;
+	}
 
 	dde_lock_enter();
 

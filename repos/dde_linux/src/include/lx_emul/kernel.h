@@ -9,19 +9,24 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
- * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * This file is distributed under the terms of the GNU General Public License
+ * version 2.
  */
 
 /*********************
  ** linux/kconfig.h **
  *********************/
 
-#define IS_ENABLED(x) x
-#define IS_BUILTIN(x) x
-
+#define __ARG_PLACEHOLDER_1 0,
+#define __take_second_arg(__ignored, val, ...) val
+#define ____is_defined(arg1_or_junk) __take_second_arg(arg1_or_junk 1, 0)
+#define ___is_defined(val) ____is_defined(__ARG_PLACEHOLDER_##val)
+#define __is_defined(x)    ___is_defined(x)
+#define IS_BUILTIN(option) __is_defined(option)
+#define IS_ENABLED(option) IS_BUILTIN(option)
+#define IS_REACHABLE(option) IS_BUILTIN(option)
 
 /********************
  ** linux/kernel.h **
@@ -73,7 +78,7 @@ static inline void panic(const char *fmt, ...)
 	va_start(args, fmt);
 	lx_vprintf(fmt, args);
 	va_end(args);
-	lx_printf("panic()");
+	lx_printf("\npanic()\n");
 	while (1) ;
 }
 
@@ -94,29 +99,20 @@ static inline void panic(const char *fmt, ...)
         type __max2 = (y);                      \
         __max1 > __max2 ? __max1: __max2; })
 
-/**
- * Return minimum of two given values
- *
- * XXX check how this function is used (argument types)
- */
-static inline size_t min(size_t a, size_t b) {
-        return a < b ? a : b; }
-
-/**
- * Return maximum of two given values
- *
- * XXX check how this function is used (argument types)
- */
 #define max(x, y) ({                      \
         typeof(x) _max1 = (x);                  \
         typeof(y) _max2 = (y);                  \
-        (void) (&_max1 == &_max2);              \
         _max1 > _max2 ? _max1 : _max2; })
 
 #define min_t(type, x, y) ({ \
         type __min1 = (x); \
         type __min2 = (y); \
         __min1 < __min2 ? __min1: __min2; })
+
+#define min(x, y) ({                      \
+        typeof(x) _min1 = (x);                  \
+        typeof(y) _min2 = (y);                  \
+        _min1 > _min2 ? _min2 : _min1; })
 
 #define abs(x) ( { \
                   typeof (x) _x = (x); \
@@ -134,6 +130,8 @@ static inline size_t min(size_t a, size_t b) {
 #define __round_mask(x, y) ((__typeof__(x))((y)-1))
 #define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
 #define round_down(x, y) ((x) & ~__round_mask(x, y))
+
+#define clamp(val, lo, hi) min((typeof(val))max(val, lo), hi)
 
 #define clamp_val(val, min, max) ({             \
         typeof(val) __val = (val);              \
@@ -186,3 +184,4 @@ void might_sleep();
 #define swap(a, b) \
 	do { typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
 
+#define max3(x, y, z) max((typeof(x))max(x, y), z)

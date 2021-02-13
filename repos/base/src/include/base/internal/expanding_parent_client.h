@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__INTERNAL__EXPANDING_PARENT_CLIENT_H_
@@ -28,13 +28,6 @@ namespace Genode { class Expanding_parent_client; }
 
 class Genode::Expanding_parent_client : public Parent_client
 {
-	public:
-
-		struct Emergency_ram_reserve
-		{
-			virtual void release() = 0;
-		};
-
 	private:
 
 		/**
@@ -53,69 +46,93 @@ class Genode::Expanding_parent_client : public Parent_client
 		State _state = { UNDEFINED };
 
 		/**
-		 * Lock used to serialize resource requests
+		 * Mutex used to serialize resource requests
 		 */
-		Lock _lock;
+		Mutex _mutex { };
+
+		struct Io_signal_context : Signal_context
+		{
+			Io_signal_context()
+			{ Signal_context::_level = Signal_context::Level::Io; }
+		};
 
 		/**
-		 * Return signal context capability for the fallback signal handler
+		 * Signal context for the fallback signal handler
 		 */
-		Signal_context_capability _fallback_sig_cap();
+		Io_signal_context _fallback_sig_ctx { };
+
+		/**
+		 * Signal context capability for the fallback signal handler
+		 */
+		Signal_context_capability _fallback_sig_cap { };
+
+		/**
+		 * Signal receiver for the fallback signal handler
+		 */
+		Constructible<Signal_receiver> _fallback_sig_rcv { };
 
 		/**
 		 * Block for resource response arriving at the fallback signal handler
 		 */
-		static void _wait_for_resource_response();
-
-		/**
-		 * Emergency RAM reserve for constructing the fallback signal handler
-		 *
-		 * See the comment of '_fallback_sig_cap()' in 'env/env.cc'.
-		 */
-		Emergency_ram_reserve &_emergency_ram_reserve;
+		void _wait_for_resource_response() {
+			_fallback_sig_rcv->wait_for_signal(); }
 
 	public:
 
-		Expanding_parent_client(Parent_capability cap,
-		                        Emergency_ram_reserve &emergency_ram_reserve)
-		:
-			Parent_client(cap), _emergency_ram_reserve(emergency_ram_reserve)
-		{ }
+		Expanding_parent_client(Parent_capability cap) : Parent_client(cap) { }
+
+
+		/**
+		 * Downstreamed construction of the fallback signaling, used
+		 * when the environment is ready to construct a signal receiver
+		 */
+		void init_fallback_signal_handling()
+		{
+			if (!_fallback_sig_cap.valid()) {
+				_fallback_sig_rcv.construct();
+				_fallback_sig_cap = _fallback_sig_rcv->manage(&_fallback_sig_ctx);
+			}
+		}
 
 
 		/**********************
 		 ** Parent interface **
 		 **********************/
 
-		Session_capability session(Service_name const &name,
+		void exit(int exit_value) override
+		{
+			try {
+				Parent_client::exit(exit_value);
+			} catch (Genode::Ipc_error) {
+				/*
+				 * This can happen if the child is being destroyed before
+				 * calling 'exit()'. Catching the exception avoids an
+				 * 'abort()' loop with repeated error messages, because
+				 * 'abort()' calls 'exit()' too.
+				 */
+			}
+		}
+
+		Session_capability session(Client::Id          id,
+		                           Service_name const &name,
 		                           Session_args const &args,
 		                           Affinity     const &affinity) override
 		{
-			enum { NUM_ATTEMPTS = 2 };
-			return retry<Parent::Quota_exceeded>(
-				[&] () { return Parent_client::session(name, args, affinity); },
-				[&] () {
-
-					/*
-					 * Request amount of session quota from the parent.
-					 *
-					 * XXX We could deduce the available quota of our
-					 *     own RAM session from the request.
-					 */
-					size_t const ram_quota =
-						Arg_string::find_arg(args.string(), "ram_quota")
-							.ulong_value(0);
-
-					char buf[128];
-					snprintf(buf, sizeof(buf), "ram_quota=%zu", ram_quota);
-
-					resource_request(Resource_args(buf));
-				},
-				NUM_ATTEMPTS);
+			return Parent_client::session(id, name, args, affinity);
 		}
 
-		void upgrade(Session_capability to_session, Upgrade_args const &args) override
+		Upgrade_result upgrade(Client::Id id, Upgrade_args const &args) override
 		{
+			/*
+			 * Upgrades from our PD to our own PD session are futile. The only
+			 * thing we can do when our PD is drained is requesting further
+			 * resources from our parent.
+			 */
+			if (id == Env::pd()) {
+				resource_request(Resource_args(args.string()));
+				return UPGRADE_DONE;
+			}
+
 			/*
 			 * If the upgrade fails, attempt to issue a resource request twice.
 			 *
@@ -127,19 +144,19 @@ class Genode::Expanding_parent_client : public Parent_client
 			 * immediately. The second upgrade attempt may fail too if the
 			 * parent handles the resource request asynchronously. In this
 			 * case, we escalate the problem to caller by propagating the
-			 * 'Parent::Quota_exceeded' exception. Now, it is the job of the
-			 * caller to issue (and respond to) a resource request.
+			 * 'Out_of_ram' exception. Now, it is the job of the caller to
+			 * issue (and respond to) a resource request.
 			 */
 			enum { NUM_ATTEMPTS = 2 };
-			retry<Parent::Quota_exceeded>(
-				[&] () { Parent_client::upgrade(to_session, args); },
+			return retry<Out_of_ram>(
+				[&] () { return Parent_client::upgrade(id, args); },
 				[&] () { resource_request(Resource_args(args.string())); },
 				NUM_ATTEMPTS);
 		}
 
 		void resource_avail_sigh(Signal_context_capability sigh) override
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			/*
 			 * If signal hander gets de-installed, let the next call of
@@ -160,9 +177,7 @@ class Genode::Expanding_parent_client : public Parent_client
 
 		void resource_request(Resource_args const &args) override
 		{
-			Lock::Guard guard(_lock);
-
-			PLOG("resource_request: %s", args.string());
+			Mutex::Guard guard(_mutex);
 
 			/*
 			 * Issue request but don't block if a custom signal handler is
@@ -177,7 +192,7 @@ class Genode::Expanding_parent_client : public Parent_client
 			 * Install fallback signal handler not yet installed.
 			 */
 			if (_state == UNDEFINED) {
-				Parent_client::resource_avail_sigh(_fallback_sig_cap());
+				Parent_client::resource_avail_sigh(_fallback_sig_cap);
 				_state = BLOCKING_DEFAULT;
 			}
 

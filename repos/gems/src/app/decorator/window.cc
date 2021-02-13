@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* local includes */
@@ -31,35 +31,35 @@ void Decorator::Window::draw(Decorator::Canvas_base &canvas,
 		draw_behind_fn.draw_behind(canvas, *this, canvas.clip());
 
 	_draw_corner(canvas, Rect(p1, corner), _border_size, true, true,
-	             element(Element::TOP_LEFT).color());
+	             _window_elem_attr(Element::TOP_LEFT));
 
 	_draw_corner(canvas, Rect(Point(p1.x(), p2.y() - _corner_size + 1), corner),
 	             _border_size, true, false,
-	             element(Element::BOTTOM_LEFT).color());
+	             _window_elem_attr(Element::BOTTOM_LEFT));
 
 	_draw_corner(canvas, Rect(Point(p2.x() - _corner_size + 1, p1.y()), corner),
 	             _border_size, false, true,
-	             element(Element::TOP_RIGHT).color());
+	             _window_elem_attr(Element::TOP_RIGHT));
 
 	_draw_corner(canvas, Rect(Point(p2.x() - _corner_size + 1, p2.y() - _corner_size + 1), corner),
 	             _border_size, false, false,
-	             element(Element::BOTTOM_RIGHT).color());
+	             _window_elem_attr(Element::BOTTOM_RIGHT));
 
 	_draw_raised_box(canvas, Rect(Point(p1.x() + _corner_size, p1.y()),
 	                              Area(rect.w() - 2*_corner_size, _border_size)),
-	                              element(Element::TOP).color());
+	                              _window_elem_attr(Element::TOP));
 
 	_draw_raised_box(canvas, Rect(Point(p1.x() + _corner_size, p2.y() - _border_size + 1),
 	                              Area(rect.w() - 2*_corner_size, _border_size)),
-	                              element(Element::BOTTOM).color());
+	                              _window_elem_attr(Element::BOTTOM));
 
 	_draw_raised_box(canvas, Rect(Point(p1.x(), p1.y() + _corner_size),
 	                              Area(_border_size, rect.h() - 2*_corner_size)),
-	                              element(Element::LEFT).color());
+	                              _window_elem_attr(Element::LEFT));
 
 	_draw_raised_box(canvas, Rect(Point(p2.x() - _border_size + 1, p1.y() + _corner_size),
 	                              Area(_border_size, rect.h() - 2*_corner_size)),
-	                              element(Element::RIGHT).color());
+	                              _window_elem_attr(Element::RIGHT));
 
 	Rect controls_rect(Point(p1.x() + _border_size, p1.y() + _border_size),
 	                   Area(rect.w() - 2*_border_size, _title_height));
@@ -94,7 +94,7 @@ void Decorator::Window::draw(Decorator::Canvas_base &canvas,
 	Point right_pos = controls_rect.p1() + Point(controls_rect.w() - _icon_size.w(), 0);
 
 	if (_controls.num() > 0) {
-		for (unsigned i = _controls.num() - 1; i >= 0; i--) {
+		for (int i = _controls.num() - 1; i >= 0; i--) {
 
 			Control control = _controls.control(i);
 
@@ -118,17 +118,19 @@ void Decorator::Window::draw(Decorator::Canvas_base &canvas,
 	Rect title_rect(left_pos, Area(right_pos.x() - left_pos.x() + _icon_size.w(),
 	                               _title_height));
 
-	_draw_title_box(canvas, title_rect, element(Element::TITLE).color());
+	_draw_title_box(canvas, title_rect, _window_elem_attr(Element::TITLE));
 
 	char const * const text = _title.string();
 
-	Area const label_area(default_font().str_w(text),
-	                      default_font().str_h(text));
+	Area const label_area(default_font().string_width(text).decimal(),
+	                      default_font().bounding_box().h());
 
 	/*
 	 * Position the text in the center of the window.
 	 */
-	Point const window_centered_text_pos = controls_rect.center(label_area) - Point(0, 1);
+	int const title_yshift = element(Element::TITLE).pressed() ? 0 : -1;
+	Point const window_centered_text_pos = controls_rect.center(label_area)
+	                                     + Point(0, title_yshift);
 
 	/*
 	 * Horizontal position of the title text
@@ -198,19 +200,6 @@ bool Decorator::Window::update(Genode::Xml_node window_node)
 	bool updated = false;
 
 	/*
-	 * Detect the need to bring the window to the top of the global
-	 * view stack.
-	 */
-	unsigned const topped_cnt = attribute(window_node, "topped", 0UL);
-	if (topped_cnt != _topped_cnt) {
-
-		_topped_cnt = topped_cnt;
-
-		stack(Nitpicker::Session::View_handle());
-		updated |= true;
-	}
-
-	/*
 	 * Detect geometry changes
 	 */
 	Rect new_geometry = rect_attribute(window_node);
@@ -219,7 +208,7 @@ bool Decorator::Window::update(Genode::Xml_node window_node)
 
 		geometry(new_geometry);
 
-		_nitpicker_views_up_to_date = false;
+		_gui_views_up_to_date = false;
 
 		updated |= true;
 	}
@@ -227,8 +216,8 @@ bool Decorator::Window::update(Genode::Xml_node window_node)
 	_focused   = window_node.attribute_value(  "focused", false);
 	_has_alpha = window_node.attribute_value("has_alpha", false);
 
-	Window_title title = Decorator::string_attribute(window_node, "title",
-	                                                 Window_title("<untitled>"));
+	Window_title const title =
+		window_node.attribute_value("title", Window_title("<untitled>"));
 	updated |= !(title == _title);
 	_title = title;
 
@@ -272,17 +261,31 @@ bool Decorator::Window::update(Genode::Xml_node window_node)
 	updated |= (new_controls != _controls);
 	_controls = new_controls;
 
-	try {
-		Xml_node highlight = window_node.sub_node("highlight");
+	Xml_node const highlight = window_node.has_sub_node("highlight")
+	                         ? window_node.sub_node("highlight")
+	                         : Xml_node("<highlight/>");
 
-		for (unsigned i = 0; i < num_elements(); i++)
-			updated |= _apply_state(_elements[i].type(), _focused,
-			                        highlight.has_sub_node(_elements[i].type_name()));
-	} catch (...) {
+	for (unsigned i = 0; i < num_elements(); i++) {
 
-		/* window node has no "highlight" sub node, reset highlighting */
-		for (unsigned i = 0; i < num_elements(); i++)
-			updated |= _apply_state(_elements[i].type(), _focused, false);
+		Window_element &element = _elements[i];
+
+		Window_element::State state = element.state();
+
+		state.highlighted = false;
+		state.pressed     = false;
+		state.focused     = _focused;
+
+		highlight.for_each_sub_node([&] (Xml_node node) {
+
+			if (node.type() == element.type_name()) {
+				state.highlighted = true;
+
+				if (node.attribute_value("pressed", false))
+					state.pressed = true;
+			}
+		});
+
+		updated |= element.apply_state(state);
 	}
 
 	return updated;
@@ -354,7 +357,7 @@ Decorator::Window_base::Hover Decorator::Window::hover(Point abs_pos) const
 				Point pos = titlbar_pos +
 				            Point(area.w() - _border_size - _icon_size.w(), 0);
 
-				for (unsigned i = _controls.num() - 1; i >= 0; i--) {
+				for (int i = _controls.num() - 1; i >= 0; i--) {
 
 					/* controls end when we reach the title */
 					if (_controls.control(i).type() == Control::TYPE_TITLE)

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* core includes */
@@ -16,24 +16,26 @@
 #include <util.h>
 #include <io_mem_session_component.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/ipc.h>
-#include <l4/sigma0/sigma0.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Genode;
 
 
-void Io_mem_session_component::_unmap_local(addr_t base, size_t size)
+void Io_mem_session_component::_unmap_local(addr_t base, size_t)
 {
-	platform()->region_alloc()->free(reinterpret_cast<void *>(base));
+	platform().region_alloc().free(reinterpret_cast<void *>(base));
 }
 
 
-static inline bool can_use_super_page(addr_t base, size_t size) {
-	return (base & (get_super_page_size() - 1)) == 0
-	    && (size >= get_super_page_size()); }
+static inline bool can_use_super_page(addr_t, size_t)
+{
+	/*
+	 * We disable super-page I/O mappings as unmap does not flush the local
+	 * mapping which breaks later re-mappings of different page size.
+	 */
+	return false;
+}
 
 
 addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
@@ -46,7 +48,7 @@ addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
 
 	/* find appropriate region for mapping */
 	void *local_base = 0;
-	if (platform()->region_alloc()->alloc_aligned(size, &local_base, alignment).error())
+	if (platform().region_alloc().alloc_aligned(size, &local_base, alignment).error())
 		return 0;
 
 	/* call sigma0 for I/O region */
@@ -83,7 +85,8 @@ addr_t Io_mem_session_component::_map_local(addr_t base, size_t size)
 		                      L4_IPC_NEVER, &result, &tag);
 
 		if (err || !l4_ipc_fpage_received(result)) {
-			PERR("%d %d", err, l4_ipc_fpage_received(result));
+			error("map_local failed err=", err, " "
+			      "(", l4_ipc_fpage_received(result), ")");
 			return 0;
 		}
 

@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -18,12 +18,9 @@
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
-
-/* OKL4 includes */
-namespace Okl4 { extern "C" {
-#include <l4/utcb.h>
-#include <l4/thread.h>
-} }
+#include <base/internal/native_utcb.h>
+#include <base/internal/globals.h>
+#include <base/internal/okl4.h>
 
 Okl4::L4_ThreadId_t main_thread_tid;
 
@@ -49,6 +46,8 @@ namespace Okl4
 	}
 }
 
+using namespace Genode;
+
 
 /*****************************
  ** Startup library support **
@@ -73,15 +72,17 @@ void prepare_reinit_main_thread() { prepare_init_main_thread(); }
  ** Thread **
  ************/
 
-void Genode::Thread::_thread_bootstrap()
+void Thread::_thread_bootstrap()
 {
 	native_thread().l4id.raw = Okl4::copy_uregister_to_utcb();
 }
 
 
-void Genode::Thread::_init_platform_thread(size_t, Type type)
+void Thread::_init_platform_thread(size_t, Type type)
 {
-	if (type == NORMAL) { return; }
+	if (type == NORMAL)
+		return;
+
 	native_thread().l4id.raw = main_thread_tid.raw;
-	_thread_cap   = env()->parent()->main_thread_cap();
+	_thread_cap = main_thread_cap();
 }

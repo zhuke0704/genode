@@ -5,83 +5,140 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* local includes */
-#include "widgets.h"
+#include "widget_factory.h"
+#include "button_widget.h"
+#include "label_widget.h"
+#include "box_layout_widget.h"
+#include "root_widget.h"
+#include "float_widget.h"
+#include "frame_widget.h"
+#include "depgraph_widget.h"
 
 /* Genode includes */
 #include <input/event.h>
 #include <os/reporter.h>
+#include <timer_session/connection.h>
+#include <os/vfs.h>
 
 /* gems includes */
-#include <gems/nitpicker_buffer.h>
+#include <gems/gui_buffer.h>
+
+namespace Menu_view { struct Main; }
 
 
 struct Menu_view::Main
 {
-	Nitpicker::Connection nitpicker;
+	Env &_env;
 
-	Lazy_volatile_object<Nitpicker_buffer> buffer;
+	Gui::Connection _gui { _env };
 
-	Nitpicker::Session::View_handle view_handle = nitpicker.create_view();
+	Constructible<Gui_buffer> _buffer { };
 
-	Point position;
+	Gui::Session::View_handle _view_handle = _gui.create_view();
 
-	Rect _view_geometry;
+	/**
+	 * Dialog position in screen coordinate space
+	 */
+	Point _position { };
 
-	void _update_view()
+	/**
+	 * Last pointer position at the time of the most recent hovering report,
+	 * in screen coordinate space.
+	 */
+	Point _hovered_position { };
+
+	bool _dialog_hovered = false;
+
+	Area _configured_size { };
+	Area _visible_size { };
+
+	Area _root_widget_size() const
 	{
-		if (_view_geometry.p1() == position
-		 && _view_geometry.area() == buffer->size())
-		 	return;
-
-		/* display view behind all others */
-		typedef Nitpicker::Session::Command Command;
-
-		_view_geometry = Rect(position, buffer->size());
-		nitpicker.enqueue<Command::Geometry>(view_handle, _view_geometry);
-		nitpicker.enqueue<Command::To_front>(view_handle);
-		nitpicker.execute();
+		Area const min_size = _root_widget.min_size();
+		return Area(max(_configured_size.w(), min_size.w()),
+		            max(_configured_size.h(), min_size.h()));
 	}
 
-	Signal_receiver &sig_rec;
+	Rect _view_geometry { };
+
+	void _update_view(Rect geometry)
+	{
+		if (_view_geometry.p1()   == geometry.p1()
+		 && _view_geometry.area() == geometry.area())
+			return;
+
+		/* display view behind all others */
+		typedef Gui::Session::Command     Command;
+		typedef Gui::Session::View_handle View_handle;
+
+		_view_geometry = geometry;
+		_gui.enqueue<Command::Geometry>(_view_handle, _view_geometry);
+		_gui.enqueue<Command::To_front>(_view_handle, View_handle());
+		_gui.execute();
+	}
 
 	/**
 	 * Function called on config change or mode change
 	 */
-	void handle_dialog_update(unsigned);
+	void _handle_dialog_update();
 
-	Signal_dispatcher<Main> dialog_update_dispatcher = {
-		sig_rec, *this, &Main::handle_dialog_update};
+	Signal_handler<Main> _dialog_update_handler = {
+		_env.ep(), *this, &Main::_handle_dialog_update};
 
-	Style_database styles;
+	Attached_rom_dataspace _config { _env, "config" };
 
-	Animator animator;
+	Heap _heap { _env.ram(), _env.rm() };
 
-	Widget_factory widget_factory { *env()->heap(), styles, animator };
+	struct Vfs_env : Vfs::Env
+	{
+		Genode::Env      &_env;
+		Allocator        &_alloc;
+		Vfs::File_system &_vfs;
 
-	Root_widget root_widget { widget_factory, Xml_node("<dialog/>"), Widget::Unique_id() };
+		Vfs_env(Genode::Env &env, Allocator &alloc, Vfs::File_system &vfs)
+		: _env(env), _alloc(alloc), _vfs(vfs) { }
 
-	Attached_rom_dataspace dialog_rom { "dialog" };
+		Genode::Env            &env()           override { return _env;   }
+		Allocator              &alloc()         override { return _alloc; }
+		Vfs::File_system       &root_dir()      override { return _vfs;   }
 
-	Attached_dataspace input_ds { nitpicker.input()->dataspace() };
+	} _vfs_env;
 
-	Widget::Unique_id hovered;
+	Directory _root_dir   { _vfs_env };
+	Directory _fonts_dir  { _root_dir, "fonts" };
+	Directory _styles_dir { _root_dir, "styles" };
 
-	void handle_config(unsigned);
+	Style_database _styles { _env.ram(), _env.rm(), _heap, _fonts_dir, _styles_dir,
+	                         _dialog_update_handler };
 
-	Signal_dispatcher<Main> config_dispatcher = {
-		sig_rec, *this, &Main::handle_config};
+	Animator _animator { };
 
-	void handle_input(unsigned);
+	Widget_factory _widget_factory { _heap, _styles, _animator };
 
-	Signal_dispatcher<Main> input_dispatcher = {
-		sig_rec, *this, &Main::handle_input};
+	Root_widget _root_widget { _widget_factory, Xml_node("<dialog/>"), Widget::Unique_id() };
+
+	Attached_rom_dataspace _dialog_rom { _env, "dialog" };
+
+	Attached_dataspace _input_ds { _env.rm(), _gui.input()->dataspace() };
+
+	Widget::Hovered _last_reported_hovered { };
+
+	void _handle_config();
+
+	Signal_handler<Main> _config_handler = {
+		_env.ep(), *this, &Main::_handle_config};
+
+	void _handle_input();
+
+	Signal_handler<Main> _input_handler = {
+		_env.ep(), *this, &Main::_handle_input};
 
 	/*
 	 * Timer used for animating widgets
@@ -90,199 +147,260 @@ struct Menu_view::Main
 	{
 		enum { PERIOD = 10 };
 
-		unsigned curr_frame() const { return elapsed_ms() / PERIOD; }
+		Genode::uint64_t curr_frame() const { return elapsed_ms() / PERIOD; }
 
-		void schedule() { trigger_once(Frame_timer::PERIOD*1000); }
+		void schedule() { trigger_once((Genode::uint64_t)Frame_timer::PERIOD*1000); }
 
-	} timer;
+		Frame_timer(Env &env) : Timer::Connection(env) { }
 
-	void handle_frame_timer(unsigned);
+	} _timer { _env };
 
-	Signal_dispatcher<Main> frame_timer_dispatcher = {
-		sig_rec, *this, &Main::handle_frame_timer};
+	void _handle_frame_timer();
 
-	Genode::Reporter hover_reporter = { "hover" };
+	Signal_handler<Main> _frame_timer_handler = {
+		_env.ep(), *this, &Main::_handle_frame_timer};
 
-	bool schedule_redraw = false;
+	Genode::Reporter _hover_reporter = { _env, "hover" };
+
+	void _update_hover_report();
+
+	bool _schedule_redraw = false;
 
 	/**
 	 * Frame of last call of 'handle_frame_timer'
 	 */
-	unsigned last_frame = 0;
+	Genode::uint64_t _last_frame = 0;
 
 	/**
 	 * Number of frames between two redraws
 	 */
-	enum { REDRAW_PERIOD = 4 };
+	enum { REDRAW_PERIOD = 2 };
 
 	/**
 	 * Counter used for triggering redraws. Incremented in each frame-timer
 	 * period, wraps at 'REDRAW_PERIOD'. The redraw is performed when the
 	 * counter wraps.
 	 */
-	unsigned frame_cnt = 0;
+	unsigned _frame_cnt = 0;
 
-	Main(Signal_receiver &sig_rec) : sig_rec(sig_rec)
+	Main(Env &env, Vfs::File_system &libc_vfs)
+	:
+		_env(env), _vfs_env(_env, _heap, libc_vfs)
 	{
-		dialog_rom.sigh(dialog_update_dispatcher);
-		config()->sigh(config_dispatcher);
+		_dialog_rom.sigh(_dialog_update_handler);
+		_config.sigh(_config_handler);
 
-		nitpicker.input()->sigh(input_dispatcher);
+		_gui.input()->sigh(_input_handler);
 
-		timer.sigh(frame_timer_dispatcher);
+		_timer.sigh(_frame_timer_handler);
 
 		/* apply initial configuration */
-		handle_config(0);
+		_handle_config();
 	}
 };
 
 
-void Menu_view::Main::handle_dialog_update(unsigned)
+void Menu_view::Main::_update_hover_report()
 {
-	try {
-		position = Decorator::point_attribute(config()->xml_node());
-	} catch (...) { }
+	if (!_hover_reporter.enabled())
+		return;
 
-	dialog_rom.update();
-
-	try {
-		Xml_node dialog_xml(dialog_rom.local_addr<char>());
-
-		root_widget.update(dialog_xml);
-		root_widget.size(root_widget.min_size());
-	} catch (...) {
-		PERR("failed to construct widget tree");
+	if (!_dialog_hovered) {
+		Genode::Reporter::Xml_generator xml(_hover_reporter, [&] () { });
+		return;
 	}
 
-	schedule_redraw = true;
+	Widget::Hovered const new_hovered = _root_widget.hovered(_hovered_position);
+
+	if (_last_reported_hovered != new_hovered) {
+
+		Genode::Reporter::Xml_generator xml(_hover_reporter, [&] () {
+			_root_widget.gen_hover_model(xml, _hovered_position); });
+
+		_last_reported_hovered = new_hovered;
+	}
+}
+
+
+void Menu_view::Main::_handle_dialog_update()
+{
+	_styles.flush_outdated_styles();
+
+	try {
+		Xml_node const config = _config.xml();
+
+		_position = Decorator::point_attribute(config);
+
+		_configured_size = Area(config.attribute_value("width",  0UL),
+		                        config.attribute_value("height", 0UL));
+	} catch (...) { }
+
+	_dialog_rom.update();
+
+	Xml_node dialog = _dialog_rom.xml();
+
+	if (dialog.has_type("empty"))
+		return;
+
+	_root_widget.update(dialog);
+	_root_widget.size(_root_widget_size());
+
+	_update_hover_report();
+
+	_schedule_redraw = true;
 
 	/*
 	 * If we have not processed a period for at least one frame, perform the
 	 * processing immediately. This way, we avoid latencies when the dialog
 	 * model is updated sporadically.
 	 */
-	if (timer.curr_frame() != last_frame)
-		handle_frame_timer(0);
-	else
-		timer.schedule();
+	Genode::uint64_t const curr_frame = _timer.curr_frame();
+	if (curr_frame != _last_frame) {
+
+		if (curr_frame - _last_frame > 10)
+			_last_frame = curr_frame;
+
+		_handle_frame_timer();
+	} else {
+		_timer.schedule();
+	}
 }
 
 
-void Menu_view::Main::handle_config(unsigned)
+void Menu_view::Main::_handle_config()
 {
-	config()->reload();
+	_config.update();
 
 	try {
-		hover_reporter.enabled(config()->xml_node().sub_node("report")
-		                                           .attribute_value("hover", false));
+		_hover_reporter.enabled(_config.xml().sub_node("report")
+		                                     .attribute_value("hover", false));
 	} catch (...) {
-		hover_reporter.enabled(false);
+		_hover_reporter.enabled(false);
 	}
 
-	handle_dialog_update(0);
+	_config.xml().with_sub_node("vfs", [&] (Xml_node const &vfs_node) {
+		_vfs_env.root_dir().apply_config(vfs_node); });
+
+	_handle_dialog_update();
 }
 
 
-void Menu_view::Main::handle_input(unsigned)
+void Menu_view::Main::_handle_input()
 {
-	Input::Event const *ev_buf = input_ds.local_addr<Input::Event>();
+	Point const orig_hovered_position = _hovered_position;
+	bool  const orig_dialog_hovered   = _dialog_hovered;
 
-	unsigned const num_events = nitpicker.input()->flush();
-	for (unsigned i = 0; i < num_events; i++) {
-
-		Input::Event ev = ev_buf[i];
-
-		if (ev.absolute_motion()) {
-
-			Point const at = Point(ev.ax(), ev.ay()) - position;
-			Widget::Unique_id const new_hovered = root_widget.hovered(at);
-
-			if (hovered != new_hovered) {
-
-				if (hover_reporter.enabled()) {
-					Genode::Reporter::Xml_generator xml(hover_reporter, [&] () {
-						root_widget.gen_hover_model(xml, at);
-					});
-				}
-
-				hovered = new_hovered;
-			}
-		}
+	_gui.input()->for_each_event([&] (Input::Event const &ev) {
+		ev.handle_absolute_motion([&] (int x, int y) {
+			_dialog_hovered   = true;
+			_hovered_position = Point(x, y) - _position;
+		});
 
 		/*
 		 * Reset hover model when losing the focus
 		 */
-		if ((ev.type() == Input::Event::FOCUS && ev.code() == 0)
-		 || (ev.type() == Input::Event::LEAVE)) {
-
-			hovered = Widget::Unique_id();
-
-			if (hover_reporter.enabled()) {
-				Genode::Reporter::Xml_generator xml(hover_reporter, [&] () { });
-			}
+		if (ev.hover_leave()) {
+			_dialog_hovered   = false;
+			_hovered_position = Point();
 		}
-	}
+	});
+
+	bool const hover_changed = orig_dialog_hovered   != _dialog_hovered
+	                        || orig_hovered_position != _hovered_position;
+
+	if (hover_changed)
+		_update_hover_report();
 }
 
 
-void Menu_view::Main::handle_frame_timer(unsigned)
+void Menu_view::Main::_handle_frame_timer()
 {
-	frame_cnt++;
+	_frame_cnt++;
 
-	unsigned const curr_frame = timer.curr_frame();
+	Genode::uint64_t const curr_frame = _timer.curr_frame();
 
-	if (animator.active()) {
+	if (_animator.active()) {
 
-		unsigned const passed_frames = curr_frame - last_frame;
+		Genode::uint64_t const passed_frames = max(curr_frame - _last_frame, 4U);
 
 		if (passed_frames > 0) {
 
-			for (unsigned i = 0; i < passed_frames; i++)
-				animator.animate();
+			for (Genode::uint64_t i = 0; i < passed_frames; i++)
+				_animator.animate();
 
-			schedule_redraw = true;
+			_schedule_redraw = true;
 		}
 	}
 
-	last_frame = curr_frame;
+	_last_frame = curr_frame;
 
-	if (schedule_redraw && frame_cnt >= REDRAW_PERIOD) {
+	if (_schedule_redraw && _frame_cnt >= REDRAW_PERIOD) {
 
-		frame_cnt = 0;
+		_frame_cnt = 0;
 
-		Area const old_size = buffer.constructed() ? buffer->size() : Area();
-		Area const size     = root_widget.min_size();
+		Area const size = _root_widget_size();
 
-		if (!buffer.constructed() || size != old_size)
-			buffer.construct(nitpicker, size, *env()->ram_session());
+		unsigned const buffer_w = _buffer.constructed() ? _buffer->size().w() : 0,
+		               buffer_h = _buffer.constructed() ? _buffer->size().h() : 0;
+
+		Area const max_size(max(buffer_w, size.w()), max(buffer_h, size.h()));
+
+		bool const size_increased = (max_size.w() > buffer_w)
+		                         || (max_size.h() > buffer_h);
+
+		if (!_buffer.constructed() || size_increased)
+			_buffer.construct(_gui, max_size, _env.ram(), _env.rm());
 		else
-			buffer->reset_surface();
+			_buffer->reset_surface();
 
-		root_widget.size(size);
-		root_widget.position(Point(0, 0));
-
-		Surface<Pixel_rgb888> pixel_surface = buffer->pixel_surface();
-		Surface<Pixel_alpha8> alpha_surface = buffer->alpha_surface();
+		_root_widget.position(Point(0, 0));
 
 		// XXX restrict redraw to dirty regions
 		//     don't perform a full dialog update
-		root_widget.draw(pixel_surface, alpha_surface, Point(0, 0));
+		_buffer->apply_to_surface([&] (Surface<Pixel_rgb888> &pixel,
+		                               Surface<Pixel_alpha8> &alpha) {
+			_root_widget.draw(pixel, alpha, Point(0, 0));
+		});
 
-		buffer->flush_surface();
-		nitpicker.framebuffer()->refresh(0, 0, buffer->size().w(), buffer->size().h());
-		_update_view();
+		_buffer->flush_surface();
+		_gui.framebuffer()->refresh(0, 0, _buffer->size().w(), _buffer->size().h());
+		_update_view(Rect(_position, size));
 
-		schedule_redraw = false;
+		_schedule_redraw = false;
 	}
 
 	/*
 	 * Deactivate timer periods when idle, activate timer when an animation is
 	 * in progress or a redraw is pending.
 	 */
-	bool const redraw_pending = schedule_redraw && frame_cnt != 0;
+	bool const redraw_pending = _schedule_redraw && _frame_cnt != 0;
 
-	if (animator.active() || redraw_pending)
-		timer.schedule();
+	if (_animator.active() || redraw_pending)
+		_timer.schedule();
+}
+
+
+Menu_view::Widget *
+Menu_view::Widget_factory::create(Xml_node node)
+{
+	Widget *w = nullptr;
+
+	Widget::Unique_id const unique_id(++_unique_id_cnt);
+
+	if (node.has_type("label"))    w = new (alloc) Label_widget      (*this, node, unique_id);
+	if (node.has_type("button"))   w = new (alloc) Button_widget     (*this, node, unique_id);
+	if (node.has_type("vbox"))     w = new (alloc) Box_layout_widget (*this, node, unique_id);
+	if (node.has_type("hbox"))     w = new (alloc) Box_layout_widget (*this, node, unique_id);
+	if (node.has_type("frame"))    w = new (alloc) Frame_widget      (*this, node, unique_id);
+	if (node.has_type("float"))    w = new (alloc) Float_widget      (*this, node, unique_id);
+	if (node.has_type("depgraph")) w = new (alloc) Depgraph_widget   (*this, node, unique_id);
+
+	if (!w) {
+		Genode::error("unknown widget type '", node.type(), "'");
+		return 0;
+	}
+
+	return w;
 }
 
 
@@ -291,21 +409,9 @@ void Menu_view::Main::handle_frame_timer(unsigned)
  */
 extern "C" void _sigprocmask() { }
 
-int main(int argc, char **argv)
+
+void Libc::Component::construct(Libc::Env &env)
 {
-	static Genode::Signal_receiver sig_rec;
-
-	static Menu_view::Main application(sig_rec);
-
-	/* process incoming signals */
-	for (;;) {
-		using namespace Genode;
-
-		Signal sig = sig_rec.wait_for_signal();
-		Signal_dispatcher_base *dispatcher =
-			dynamic_cast<Signal_dispatcher_base *>(sig.context());
-
-		if (dispatcher)
-			dispatcher->dispatch(sig.num());
-	}
+	static Menu_view::Main main(env, env.vfs());
 }
+

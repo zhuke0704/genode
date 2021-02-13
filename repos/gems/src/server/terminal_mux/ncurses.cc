@@ -5,8 +5,8 @@
  */
 
 /* Genode includes */
-#include <base/printf.h>
-#include <base/env.h>
+#include <base/log.h>
+#include <base/allocator.h>
 
 /* libc and ncurses includes */
 #include <ncurses.h>
@@ -68,13 +68,13 @@ void Ncurses::Window::horizontal_line(int line)
 
 Ncurses::Window *Ncurses::create_window(int x, int y, int w, int h)
 {
-	return new (Genode::env()->heap()) Ncurses::Window(x, y, w, h);
+	return new (_alloc) Ncurses::Window(x, y, w, h);
 }
 
 
 void Ncurses::destroy_window(Ncurses::Window *window)
 {
-	Genode::destroy(Genode::env()->heap(), window);
+	Genode::destroy(_alloc, window);
 }
 
 
@@ -103,7 +103,7 @@ int Ncurses::read_character()
 }
 
 
-Ncurses::Ncurses()
+Ncurses::Ncurses(Genode::Allocator &alloc) : _alloc(alloc)
 {
 	/*
 	 * Redirect stdio to terminal
@@ -111,7 +111,7 @@ Ncurses::Ncurses()
 	char const *device_name = "/dev/terminal";
 	int fd = open(device_name, O_RDWR);
 	if (fd < 0) {
-		PERR("Error: could not open %s", device_name);
+		Genode::error("could not open ", device_name);
 		return;
 	}
 	dup2(fd, 0);

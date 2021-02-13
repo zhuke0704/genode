@@ -5,14 +5,14 @@
  */
 
 /*
- * Copyright (C) 2009-2013 Genode Labs GmbH
+ * Copyright (C) 2009-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <base/printf.h>
+#include <base/log.h>
 
 /* core includes */
 #include <cpu_session_component.h>
@@ -22,9 +22,12 @@ using namespace Genode;
 
 Dataspace_capability Cpu_thread_component::utcb()
 {
-	PERR("%s: Not implemented", __PRETTY_FUNCTION__);
+	error(__PRETTY_FUNCTION__, ": not implemented");
 	return Dataspace_capability();
 }
 
 
 Cpu_session::Quota Cpu_session_component::quota() { return Quota(); }
+
+
+size_t Cpu_session_component::_utcb_quota_size() { return 0; }

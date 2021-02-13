@@ -8,10 +8,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__DEPRECATED__ENV_H_
@@ -20,14 +20,11 @@
 #include <parent/capability.h>
 #include <parent/parent.h>
 #include <region_map/region_map.h>
-#include <rm_session/rm_session.h>  /* deprecated, kept for API compatibility only */
-#include <ram_session/ram_session.h>
 #include <cpu_session/cpu_session.h>
 #include <cpu_session/capability.h>
 #include <pd_session/capability.h>
 #include <base/allocator.h>
 #include <base/snprintf.h>
-#include <base/lock.h>
 
 namespace Genode {
 
@@ -35,8 +32,22 @@ namespace Genode {
 
 	/**
 	 * Return the interface to the component's environment
+	 *
+	 * \noapi
+	 * \deprecated
 	 */
-	extern Env_deprecated *env();
+	extern Env_deprecated *env_deprecated();
+
+	/**
+	 * Return the interface to the component's environment
+	 *
+	 * \deprecated
+	 */
+	static inline Env_deprecated *env() __attribute__((deprecated));
+	static inline Env_deprecated *env()
+	{
+		return env_deprecated();
+	}
 }
 
 
@@ -47,22 +58,12 @@ namespace Genode {
  * class allows the component to interact with its environment. It is
  * initialized at the startup of the component.
  */
-struct Genode::Env_deprecated
+struct Genode::Env_deprecated : Interface
 {
 	/**
 	 * Communication channel to our parent
 	 */
 	virtual Parent *parent() = 0;
-
-	/**
-	 * RAM session of the component
-	 *
-	 * The RAM Session represents a budget of memory (quota) that is
-	 * available to the component. This budget can be used to allocate
-	 * RAM dataspaces.
-	 */
-	virtual Ram_session *ram_session() = 0;
-	virtual Ram_session_capability ram_session_cap() = 0;
 
 	/**
 	 * CPU session of the component
@@ -88,11 +89,6 @@ struct Genode::Env_deprecated
 	virtual Pd_session_capability pd_session_cap() = 0;
 
 	/**
-	 * Heap backed by the RAM session of the environment
-	 */
-	virtual Allocator *heap() = 0;
-
-	/**
 	 * Reload parent capability and reinitialize environment resources
 	 *
 	 * This function is solely used for implementing fork semantics.
@@ -106,7 +102,7 @@ struct Genode::Env_deprecated
 	 *
 	 * \noapi
 	 */
-	virtual void reinit(Native_capability::Dst, long) = 0;
+	virtual void reinit(Native_capability::Raw) = 0;
 
 	/**
 	 * Reinitialize main-thread object
@@ -119,7 +115,6 @@ struct Genode::Env_deprecated
 	 * \noapi
 	 */
 	virtual void reinit_main_thread(Capability<Region_map> &stack_area_rm) = 0;
-
 };
 
 #endif /* _INCLUDE__DEPRECATED__ENV_H_ */

@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
@@ -17,6 +17,7 @@
 
 /* base-internal includes */
 #include <base/internal/native_thread.h>
+#include <base/internal/stack.h>
 
 /* Linux syscall bindings */
 #include <linux_syscalls.h>
@@ -26,17 +27,22 @@ using namespace Genode;
 
 static void empty_signal_handler(int) { }
 
-static char signal_stack[0x2000] __attribute__((aligned(0x1000)));
 
 void Thread::_thread_start()
 {
-	lx_sigaltstack(signal_stack, sizeof(signal_stack));
+	Thread * const thread_ptr = Thread::myself();
+
+	/* use primary stack as alternate stack for fatal signals (exceptions) */
+	void   *stack_base = (void *)thread_ptr->_stack->base();
+	size_t  stack_size = thread_ptr->_stack->top() - thread_ptr->_stack->base();
+
+	lx_sigaltstack(stack_base, stack_size);
 
 	/*
 	 * Set signal handler such that canceled system calls get not transparently
 	 * retried after a signal gets received.
 	 */
-	lx_sigaction(LX_SIGUSR1, empty_signal_handler);
+	lx_sigaction(LX_SIGUSR1, empty_signal_handler, false);
 
 	/*
 	 * Deliver SIGCHLD signals to no thread other than the main thread. Core's
@@ -47,7 +53,7 @@ void Thread::_thread_start()
 	lx_sigsetmask(LX_SIGCHLD, false);
 
 	Thread::myself()->entry();
-	Thread::myself()->_join_lock.unlock();
+	Thread::myself()->_join.wakeup();
 	sleep_forever();
 }
 
@@ -63,6 +69,3 @@ void Thread::start()
 	native_thread().tid = lx_create_thread(Thread::_thread_start, stack_top(), this);
 	native_thread().pid = lx_getpid();
 }
-
-
-void Thread::cancel_blocking() { }

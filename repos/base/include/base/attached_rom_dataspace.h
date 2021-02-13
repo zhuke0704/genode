@@ -5,16 +5,16 @@
  */
 
 /*
- * Copyright (C) 2012-2013 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__BASE__ATTACHED_ROM_DATASPACE_H_
 #define _INCLUDE__BASE__ATTACHED_ROM_DATASPACE_H_
 
-#include <util/volatile_object.h>
+#include <util/reconstructible.h>
 #include <util/xml_node.h>
 #include <base/attached_dataspace.h>
 #include <rom_session/connection.h>
@@ -35,7 +35,7 @@ class Genode::Attached_rom_dataspace
 		 * always be valid once constructed, a 'Attached_rom_dataspace' has
 		 * to handle the validity of the dataspace.
 		 */
-		Lazy_volatile_object<Attached_dataspace> _ds;
+		Constructible<Attached_dataspace> _ds { };
 
 		/**
 		 * Try to attach the ROM module, ignore invalid dataspaces
@@ -66,20 +66,13 @@ class Genode::Attached_rom_dataspace
 		 * Constructor
 		 *
 		 * \throw Rom_connection::Rom_connection_failed
-		 * \throw Rm_session::Attach_failed
+		 * \throw Region_map::Region_conflict
+		 * \throw Region_map::Invalid_dataspace
+		 * \throw Out_of_ram
+		 * \throw Out_of_caps
 		 */
 		Attached_rom_dataspace(Env &env, char const *name)
 		: _rm(env.rm()), _rom(env, name) { _try_attach(); }
-
-		/**
-		 * Constructor
-		 *
-		 * \noapi
-		 * \deprecated  Use the constructor with 'Env &' as first
-		 *              argument instead
-		 */
-		Attached_rom_dataspace(char const *name)
-		: _rm(*env()->rm_session()), _rom(name) { _try_attach(); }
 
 		/**
 		 * Return capability of the used dataspace
@@ -92,7 +85,7 @@ class Genode::Attached_rom_dataspace
 		template <typename T> T const *local_addr() const {
 			return _ds->local_addr<T const>(); }
 
-		size_t size() const { return _ds->size(); }
+		size_t size() const { return _ds.constructed() ? _ds->size() : 0; }
 
 		/**
 		 * Register signal handler for ROM module changes
@@ -124,14 +117,6 @@ class Genode::Attached_rom_dataspace
 		 * Return true of content is present
 		 */
 		bool valid() const { return _ds.constructed(); }
-
-		/**
-		 * Return true of content is present
-		 *
-		 * \noapi
-		 * \deprecated use 'valid' instead
-		 */
-		bool is_valid() const { return valid(); }
 
 		/**
 		 * Return dataspace content as XML node

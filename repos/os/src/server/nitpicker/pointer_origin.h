@@ -5,42 +5,38 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _POINTER_ORIGIN_H_
 #define _POINTER_ORIGIN_H_
 
 #include "view.h"
-#include "session.h"
+#include "gui_session.h"
 
-struct Pointer_origin : Session, View
+namespace Nitpicker { struct Pointer_origin; }
+
+
+struct Nitpicker::Pointer_origin : View
 {
-	Pointer_origin()
+	Resizeable_texture<Pixel> _texture { };
+
+	Pointer_origin(View_owner &owner)
 	:
-		Session(Genode::Session_label("")),
-		View(*this, View::TRANSPARENT, View::NOT_BACKGROUND, 0)
+		View(owner, _texture, View::TRANSPARENT, View::NOT_BACKGROUND, 0)
 	{ }
-
-
-	/***********************
-	 ** Session interface **
-	 ***********************/
-
-	void submit_input_event(Input::Event) override { }
-	void submit_sync() override { }
 
 
 	/********************
 	 ** View interface **
 	 ********************/
 
-	int frame_size(Mode const &) const override { return 0; }
-	void frame(Canvas_base &, Mode const &) const override { }
-	void draw(Canvas_base &, Mode const &) const override { }
+	int  frame_size(Focus const &) const override { return 0; }
+	void frame(Canvas_base &, Focus const &) const override { }
+	void draw(Canvas_base &, Font const &, Focus const &) const override { }
 };
 
 #endif /* _POINTER_ORIGIN_H_ */

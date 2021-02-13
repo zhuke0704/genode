@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__OS__PIXEL_RGBA_H_
@@ -52,7 +52,7 @@ class Genode::Pixel_rgba
 		static const int b_mask = B_MASK, b_shift = B_SHIFT;
 		static const int a_mask = A_MASK, a_shift = A_SHIFT;
 
-		ST pixel;
+		ST pixel = 0;
 
 		/**
 		 * Constructors
@@ -115,6 +115,23 @@ class Genode::Pixel_rgba
 		static inline Pixel_rgba avr(Pixel_rgba p1, Pixel_rgba p2,
 		                             Pixel_rgba p3, Pixel_rgba p4) {
 			return avr(avr(p1, p2), avr(p3, p4)); }
+
+		/**
+		 * Copy pixel with alpha
+		 *
+		 * \param src    source color value (e.g., obtained from a texture)
+		 * \param src_a  alpha value corresponding to the 'src' pixel
+		 * \param alpha  alpha value
+		 * \param dst    destination pixel
+		 */
+		template <typename TPT, typename PT>
+		static void transfer(TPT const &src, int src_a, int alpha, PT &dst)
+		{
+			if (src_a) {
+				int a = (src_a * alpha)>>8;
+				if (a) dst = PT::mix(dst, src, a);
+			}
+		}
 
 		/**
 		 * Return alpha value of pixel

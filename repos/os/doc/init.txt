@@ -83,7 +83,6 @@ destination, the wildcard '<any-service>' becomes handy. For example, instead
 of specifying
 ! <route>
 !   <service name="ROM">    <parent/> </service>
-!   <service name="RAM">    <parent/> </service>
 !   <service name="RM">     <parent/> </service>
 !   <service name="PD">     <parent/> </service>
 !   <service name="CPU">    <parent/> </service>
@@ -181,7 +180,6 @@ child is routed to the timer service started at the first-level init instance.
 !   <parent-provides>
 !     <service name="LOG"/>
 !     <service name="ROM"/>
-!     <service name="RAM"/>
 !     <service name="CPU"/>
 !     <service name="RM"/>
 !     <service name="PD"/>
@@ -209,7 +207,6 @@ child is routed to the timer service started at the first-level init instance.
 !       <service name="Timer">  <child name="timer"/> </service>
 !       <service name="LOG">    <parent/>             </service>
 !       <service name="ROM">    <parent/>             </service>
-!       <service name="RAM">    <parent/>             </service>
 !       <service name="CPU">    <parent/>             </service>
 !       <service name="RM">     <parent/>             </service>
 !       <service name="PD">     <parent/>             </service>
@@ -222,14 +219,6 @@ init instance to create the timer-test component.
 As illustrated by this example, the use of the nested configuration feature
 enables the construction of arbitrarily complex component trees via a single
 configuration file.
-
-Alternatively to specifying all nested configurations in a single config file,
-any sub configuration can be placed in a separate file specified via the
-'configfile' node. For example:
-! <start name="nitpicker">
-!   <resource name="RAM" quantum="1M"/>
-!   <configfile name="nitpicker.config"/>
-! </start>
 
 
 Assigning subsystems to CPUs

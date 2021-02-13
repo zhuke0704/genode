@@ -5,33 +5,34 @@
  */
 
 /*
- * Copyright (C) 2011-2013 Genode Labs GmbH
+ * Copyright (C) 2011-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
 #include <base/component.h>
 #include <base/thread.h>
-#include <base/printf.h>
+#include <base/log.h>
 
 /* libc includes */
+#pragma GCC diagnostic ignored "-Weffc++"
 #include <pthread.h>
+#pragma GCC diagnostic pop
 #include <stdlib.h>
 
 
-
-static Genode::Lock *main_wait_lock()
+static Genode::Blockade *main_wait_lock()
 {
-	static Genode::Lock inst(Genode::Lock::LOCKED);
+	static Genode::Blockade inst;
 	return &inst;
 }
 
 
 static void *pthread_entry(void *)
 {
-	PINF("first message");
+	Genode::log("first message");
 
 	/*
 	 * Without the lazy initialization of 'Thread' objects for threads
@@ -42,9 +43,9 @@ static void *pthread_entry(void *)
 	 * will appear in the LOG output.
 	 */
 
-	PINF("second message");
+	Genode::log("second message");
 
-	main_wait_lock()->unlock();
+	main_wait_lock()->wakeup();
 	return 0;
 }
 
@@ -53,24 +54,21 @@ static int exit_status;
 static void exit_on_suspended() { exit(exit_status); }
 
 
-Genode::size_t Component::stack_size() { return 16*1024*sizeof(long); }
-
-
 /*
  * Component implements classical main function in construct.
  */
 void Component::construct(Genode::Env &env)
 {
-	Genode::printf("--- pthread IPC test ---\n");
+	Genode::log("--- pthread IPC test ---");
 
 	/* create thread w/o Genode's thread API */
 	pthread_t pth;
 	pthread_create(&pth, 0, pthread_entry, 0);
 
 	/* wait until 'pthread_entry' finished */
-	main_wait_lock()->lock();
+	main_wait_lock()->block();
 
-	Genode::printf("--- finished pthread IPC test ---\n");
+	Genode::log("--- finished pthread IPC test ---");
 	exit_status = 0;
 	env.ep().schedule_suspend(exit_on_suspended, nullptr);
 }

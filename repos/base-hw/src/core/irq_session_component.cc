@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2012-2015 Genode Labs GmbH
+ * Copyright (C) 2012-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* base-hw includes */
@@ -19,6 +19,9 @@
 #include <kernel/irq.h>
 #include <irq_root.h>
 #include <core_env.h>
+
+/* base-internal includes */
+#include <base/internal/capability_space.h>
 
 using namespace Genode;
 
@@ -31,24 +34,22 @@ unsigned Irq_session_component::_find_irq_number(const char * const args)
 
 void Irq_session_component::ack_irq()
 {
-	using Kernel::User_irq;
-	if (!_sig_cap.valid()) { return; }
-	User_irq * const kirq = reinterpret_cast<User_irq*>(&_kernel_object);
-	Kernel::ack_irq(kirq);
+	if (_kobj.constructed()) Kernel::ack_irq(*_kobj);
 }
 
 
 void Irq_session_component::sigh(Signal_context_capability cap)
 {
 	if (_sig_cap.valid()) {
-		PWRN("signal handler already registered for IRQ %u", _irq_number);
+		warning("signal handler already registered for IRQ ", _irq_number);
 		return;
 	}
 
 	_sig_cap = cap;
 
-	if (Kernel::new_irq((addr_t)&_kernel_object, _irq_number, _sig_cap.dst()))
-		PWRN("invalid signal handler for IRQ %u", _irq_number);
+	if (!_kobj.create(_irq_number, _irq_args.trigger(), _irq_args.polarity(),
+	                  Capability_space::capid(_sig_cap)))
+		warning("invalid signal handler for IRQ ", _irq_number);
 }
 
 
@@ -56,18 +57,16 @@ Irq_session_component::~Irq_session_component()
 {
 	using namespace Kernel;
 
-	User_irq * kirq = reinterpret_cast<User_irq*>(&_kernel_object);
-	_irq_alloc->free((void *)(addr_t)_irq_number);
-	if (_sig_cap.valid())
-		Kernel::delete_irq(kirq);
+	_irq_alloc.free((void *)(addr_t)_irq_number);
 }
 
 
-Irq_session_component::Irq_session_component(Range_allocator * const irq_alloc,
-                                             const char      * const      args)
-:
-	_irq_number(Platform::irq(_find_irq_number(args))), _irq_alloc(irq_alloc),
-	_is_msi(false), _address(0), _value(0)
+Irq_session_component::Irq_session_component(Range_allocator &irq_alloc,
+                                             const char * const args)
+: _irq_args(args),
+  _irq_number(Platform::irq(_irq_args.irq_number())),
+  _irq_alloc(irq_alloc),
+  _kobj(), _is_msi(false), _address(0), _value(0)
 {
 	const long mmconf =
 		Arg_string::find_arg(args, "device_config_phys").long_value(0);
@@ -76,54 +75,12 @@ Irq_session_component::Irq_session_component(Range_allocator * const irq_alloc,
 		_is_msi =
 			Platform::get_msi_params(mmconf, _address, _value, _irq_number);
 		if (!_is_msi)
-			throw Root::Unavailable();
+			throw Service_denied();
 	}
 
 	/* allocate interrupt */
-	if (_irq_alloc->alloc_addr(1, _irq_number).error()) {
-		PERR("unavailable interrupt %d requested", _irq_number);
-		throw Root::Invalid_args();
+	if (_irq_alloc.alloc_addr(1, _irq_number).error()) {
+		error("unavailable interrupt ", _irq_number, " requested");
+		throw Service_denied();
 	}
-
-	long irq_trg = Arg_string::find_arg(args, "irq_trigger").long_value(-1);
-	long irq_pol = Arg_string::find_arg(args, "irq_polarity").long_value(-1);
-
-	Irq_session::Trigger irq_trigger;
-	Irq_session::Polarity irq_polarity;
-
-	switch(irq_trg) {
-	case -1:
-	case Irq_session::TRIGGER_UNCHANGED:
-		irq_trigger = Irq_session::TRIGGER_UNCHANGED;
-		break;
-	case Irq_session::TRIGGER_EDGE:
-		irq_trigger = Irq_session::TRIGGER_EDGE;
-		break;
-	case Irq_session::TRIGGER_LEVEL:
-		irq_trigger = Irq_session::TRIGGER_LEVEL;
-		break;
-	default:
-		PERR("invalid trigger mode %ld specified for IRQ %u", irq_trg,
-		     _irq_number);
-		throw Root::Unavailable();
-	}
-
-	switch(irq_pol) {
-	case -1:
-	case POLARITY_UNCHANGED:
-		irq_polarity = POLARITY_UNCHANGED;
-		break;
-	case POLARITY_HIGH:
-		irq_polarity = POLARITY_HIGH;
-		break;
-	case POLARITY_LOW:
-		irq_polarity = POLARITY_LOW;
-		break;
-	default:
-		PERR("invalid polarity %ld specified for IRQ %u", irq_pol,
-		     _irq_number);
-		throw Root::Unavailable();
-	}
-
-	Platform::setup_irq_mode(_irq_number, irq_trigger, irq_polarity);
 }

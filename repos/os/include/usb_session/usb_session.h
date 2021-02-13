@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2014 Genode Labs GmbH
+ * Copyright (C) 2014-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 #ifndef _INCLUDE__USB_SESSION__USB_SESSION_H_
 #define _INCLUDE__USB_SESSION__USB_SESSION_H_
@@ -33,11 +33,15 @@ namespace Usb {
  */
 struct Usb::Packet_descriptor : Genode::Packet_descriptor
 {
-	enum Type { STRING, CTRL, BULK, IRQ, ALT_SETTING, CONFIG, RELEASE_IF };
+	enum Type { STRING, CTRL, BULK, IRQ, ISOC, ALT_SETTING, CONFIG, RELEASE_IF };
+	enum Iso  { MAX_PACKETS = 32 };
 
-	Type        type;
-	bool        succeded   = false;
-	Completion *completion = nullptr;
+	/* use the polling interval stated in the endpoint descriptor */
+	enum { DEFAULT_POLLING_INTERVAL = -1 };
+
+	Type        type       { STRING };
+	bool        succeded   { false };
+	Completion *completion { nullptr };
 
 	union
 	{
@@ -61,7 +65,9 @@ struct Usb::Packet_descriptor : Genode::Packet_descriptor
 		{
 			uint8_t ep;
 			int     actual_size; /* returned */
-			int     timeout;
+			int     polling_interval; /* for interrupt transfers */
+			int     number_of_packets;
+			size_t  packet_size[MAX_PACKETS];
 		} transfer;
 
 		struct
@@ -76,7 +82,7 @@ struct Usb::Packet_descriptor : Genode::Packet_descriptor
 		};
 	};
 
-	enum Error { NO_ERROR, STALL_ERROR };
+	enum Error { NO_ERROR, STALL_ERROR, SUBMIT_ERROR };
 
 	Error error = NO_ERROR;
 
@@ -84,14 +90,6 @@ struct Usb::Packet_descriptor : Genode::Packet_descriptor
 	 * Return true if packet is a read transfer
 	 */
 	bool read_transfer() { return transfer.ep & ENDPOINT_IN; }
-
-	/**
-	 * Return true if packet is a read transfer
-	 *
-	 * \noapi
-	 * \deprecated  use 'read_transfer' instead
-	 */
-	bool is_read_transfer() { return read_transfer(); }
 
 	Packet_descriptor(off_t offset = 0, size_t size = 0)
 	: Genode::Packet_descriptor(offset, size) { }
@@ -104,7 +102,7 @@ struct Usb::Packet_descriptor : Genode::Packet_descriptor
 /**
  * Completion for asynchronous communication
  */
-struct Usb::Completion
+struct Usb::Completion : Genode::Interface
 {
 	virtual void complete(Usb::Packet_descriptor &p) = 0;
 };
@@ -150,7 +148,12 @@ struct Usb::Session : public Genode::Session
 	 ** Session interface **
 	 ***********************/
 
+	/**
+	 * \noapi
+	 */
 	static const char *service_name() { return "Usb"; }
+
+	enum { CAP_QUOTA = 5 };
 
 	/**
 	 * Send from the server to the client upon device state change
@@ -179,6 +182,9 @@ struct Usb::Session : public Genode::Session
 	virtual void interface_descriptor(unsigned index, unsigned alt_setting,
 	                                  Interface_descriptor *interface_descr) = 0;
 
+	virtual bool interface_extra(unsigned index, unsigned alt_setting,
+	                             Interface_extra *interface_data) = 0;
+
 	/**
 	 * Return endpoint for interface index/alternate setting tuple
 	 */
@@ -205,6 +211,8 @@ struct Usb::Session : public Genode::Session
 	GENODE_RPC(Rpc_alt_settings, unsigned, alt_settings, unsigned);
 	GENODE_RPC_THROW(Rpc_iface_descr, void, interface_descriptor, GENODE_TYPE_LIST(Device_not_found,
 	                 Interface_not_found), unsigned, unsigned, Interface_descriptor *);
+	GENODE_RPC_THROW(Rpc_iface_extra, bool, interface_extra, GENODE_TYPE_LIST(Device_not_found,
+	                 Interface_not_found), unsigned, unsigned, Interface_extra *);
 	GENODE_RPC_THROW(Rpc_ep_descr, void, endpoint_descriptor, GENODE_TYPE_LIST(Device_not_found,
 	                 Interface_not_found), unsigned, unsigned, unsigned, Endpoint_descriptor *);
 	GENODE_RPC_THROW(Rpc_claim_interface, void, claim_interface, GENODE_TYPE_LIST(Interface_not_found,
@@ -212,8 +220,8 @@ struct Usb::Session : public Genode::Session
 	GENODE_RPC_THROW(Rpc_release_interface, void, release_interface, GENODE_TYPE_LIST(Interface_not_found),
 	                 unsigned);
 	GENODE_RPC_INTERFACE(Rpc_plugged, Rpc_sigh_state_change, Rpc_tx_cap, Rpc_config_descr,
-	                     Rpc_iface_descr, Rpc_ep_descr, Rpc_alt_settings, Rpc_claim_interface,
-	                     Rpc_release_interface);
+	                     Rpc_iface_descr, Rpc_iface_extra, Rpc_ep_descr, Rpc_alt_settings,
+	                     Rpc_claim_interface, Rpc_release_interface);
 };
 
 #endif /* _INCLUDE__USB_SESSION__USB_SESSION_H_ */

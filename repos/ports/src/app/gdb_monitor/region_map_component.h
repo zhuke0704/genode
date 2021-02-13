@@ -6,10 +6,10 @@
  */
 
 /*
- * Copyright (C) 2006-2016 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _REGION_MAP_COMPONENT_H_
@@ -17,6 +17,7 @@
 
 /* Genode includes */
 #include <base/rpc_server.h>
+#include <base/allocator.h>
 #include <pd_session/capability.h>
 #include <region_map/client.h>
 
@@ -31,11 +32,13 @@ namespace Gdb_monitor {
 	{
 		private:
 
-			Rpc_entrypoint &_ep;
+			Rpc_entrypoint        &_ep;
 
-			Pd_session_capability _pd;
+			Allocator             &_alloc;
 
-			Genode::Region_map_client _parent_region_map;
+			Pd_session_capability  _pd;
+
+			Region_map_client      _parent_region_map;
 
 		public:
 
@@ -44,7 +47,7 @@ namespace Gdb_monitor {
 				private:
 				  void *_start;
 				  void *_end;
-				  Genode::off_t _offset;
+				  off_t _offset;
 				  Dataspace_capability _ds_cap;
 
 				public:
@@ -63,14 +66,14 @@ namespace Gdb_monitor {
 					}
 
 					void *start() { return _start; }
-					Genode::off_t offset() { return _offset; }
+					off_t offset() { return _offset; }
 					Dataspace_capability ds_cap() { return _ds_cap; }
 			};
 
 		private:
 
 			Avl_tree<Region>  _region_map;
-			Lock              _region_map_lock;
+			Mutex             _region_map_mutex;
 			Dataspace_pool   &_managed_ds_map;
 
 		public:
@@ -78,9 +81,10 @@ namespace Gdb_monitor {
 			/**
 			 * Constructor
 			 */
-			Region_map_component(Rpc_entrypoint &ep,
-			                     Dataspace_pool &managed_ds_map,
-			                     Pd_session_capability pd,
+			Region_map_component(Rpc_entrypoint        &ep,
+			                     Allocator             &alloc,
+			                     Dataspace_pool        &managed_ds_map,
+			                     Pd_session_capability  pd,
 			                     Capability<Region_map> parent_region_map);
 
 			~Region_map_component();
@@ -98,8 +102,9 @@ namespace Gdb_monitor {
 			 ** Region manager session interface **
 			 **************************************/
 
-			Local_addr       attach        (Dataspace_capability, Genode::size_t,
-			                                Genode::off_t, bool, Local_addr, bool) override;
+			Local_addr       attach        (Dataspace_capability, size_t,
+			                                off_t, bool, Local_addr, bool,
+			                                bool) override;
 			void             detach        (Local_addr) override;
 			void             fault_handler (Signal_context_capability) override;
 			State            state         () override;

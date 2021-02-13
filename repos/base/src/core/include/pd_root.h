@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2006-2013 Genode Labs GmbH
+ * Copyright (C) 2006-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _CORE__INCLUDE__PD_ROOT_H_
@@ -29,44 +29,83 @@ class Genode::Pd_root : public Genode::Root_component<Genode::Pd_session_compone
 {
 	private:
 
-		Rpc_entrypoint   &_thread_ep;
+		Rpc_entrypoint   &_ep;
+		Rpc_entrypoint   &_signal_ep;
 		Pager_entrypoint &_pager_ep;
-		Allocator        &_md_alloc;
+		Range_allocator  &_phys_alloc;
+		Region_map       &_local_rm;
+		Range_allocator  &_core_mem;
+
+		static Ram_dataspace_factory::Phys_range _phys_range_from_args(char const *args)
+		{
+			addr_t const start = Arg_string::find_arg(args, "phys_start").ulong_value(0);
+			addr_t const size  = Arg_string::find_arg(args, "phys_size").ulong_value(0);
+			addr_t const end   = start + size - 1;
+
+			return (start <= end) ? Ram_dataspace_factory::Phys_range { start, end }
+			                      : Ram_dataspace_factory::any_phys_range();
+		}
+
+		static Ram_dataspace_factory::Virt_range _virt_range_from_args(char const *args)
+		{
+			addr_t const constrained = Arg_string::find_arg(args, "virt_space").ulong_value(Genode::Pd_connection::Virt_space::CONSTRAIN);
+
+			if (!constrained)
+				return Ram_dataspace_factory::Virt_range { 0x1000, 0UL - 0x2000 };
+
+			return Ram_dataspace_factory::Virt_range { platform().vm_start(),
+			                                           platform().vm_size() };
+		}
+
+		static Pd_session_component::Managing_system _managing_system(char const * args)
+		{
+			return (Arg_string::find_arg(args,
+			                             "managing_system").bool_value(false))
+				? Pd_session_component::Managing_system::PERMITTED
+				: Pd_session_component::Managing_system::DENIED;
+		}
 
 	protected:
 
-		Pd_session_component *_create_session(const char *args)
+		Pd_session_component *_create_session(const char *args) override
 		{
-			/* XXX use separate entrypoint for PD sessions */
-			return new (md_alloc()) Pd_session_component(_thread_ep,
-			                                             _thread_ep,
-			                                             _thread_ep,
-			                                             _md_alloc,
-			                                             _pager_ep, args);
+			return new (md_alloc())
+				Pd_session_component(_ep,
+				                     _signal_ep,
+				                     session_resources_from_args(args),
+				                     session_label_from_args(args),
+				                     session_diag_from_args(args),
+				                     _phys_alloc,
+				                     _phys_range_from_args(args),
+				                     _virt_range_from_args(args),
+				                     _managing_system(args),
+				                     _local_rm, _pager_ep, args,
+				                     _core_mem);
 		}
 
-		void _upgrade_session(Pd_session_component *p, const char *args)
+		void _upgrade_session(Pd_session_component *pd, const char *args) override
 		{
-			size_t ram_quota =
-				Arg_string::find_arg(args, "ram_quota").ulong_value(0);
-			p->upgrade_ram_quota(ram_quota);
+			pd->upgrade(ram_quota_from_args(args));
+			pd->upgrade(cap_quota_from_args(args));
 		}
 
 	public:
 
 		/**
 		 * Constructor
-		 *
-		 * \param session_ep  entry point for managing pd session objects
-		 * \param thread_ep   entry point for managing threads
-		 * \param md_alloc    meta-data allocator to be used by root component
 		 */
-		Pd_root(Rpc_entrypoint   *session_ep,
-		        Rpc_entrypoint   *thread_ep,
+		Pd_root(Rpc_entrypoint   &ep,
+		        Rpc_entrypoint   &signal_ep,
 		        Pager_entrypoint &pager_ep,
-		        Allocator        *md_alloc)
-		: Root_component<Pd_session_component>(session_ep, md_alloc),
-		  _thread_ep(*thread_ep), _pager_ep(pager_ep), _md_alloc(*md_alloc) { }
+		        Range_allocator  &phys_alloc,
+		        Region_map       &local_rm,
+		        Allocator        &md_alloc,
+		        Range_allocator  &core_mem)
+		:
+			Root_component<Pd_session_component>(&ep, &md_alloc),
+			_ep(ep), _signal_ep(signal_ep), _pager_ep(pager_ep),
+			_phys_alloc(phys_alloc), _local_rm(local_rm), _core_mem(core_mem)
+		{ }
 };
 
 #endif /* _CORE__INCLUDE__PD_ROOT_H_ */

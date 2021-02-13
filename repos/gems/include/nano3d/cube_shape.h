@@ -5,10 +5,10 @@
  */
 
 /*
- * Copyright (C) 2015 Genode Labs GmbH
+ * Copyright (C) 2015-2017 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
- * under the terms of the GNU General Public License version 2.
+ * under the terms of the GNU Affero General Public License version 3.
  */
 
 #ifndef _INCLUDE__NANO3D__CUBE_SHAPE_H_
@@ -27,7 +27,7 @@ class Nano3d::Cube_shape
 
 		typedef Nano3d::Vertex_array<NUM_VERTICES> Vertex_array;
 
-		Vertex_array _vertices;
+		Vertex_array _vertices { };
 
 		enum { VERTICES_PER_FACE = 4 };
 
